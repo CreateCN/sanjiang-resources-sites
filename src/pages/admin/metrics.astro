@@ -1,0 +1,26 @@
+---
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import { getSession } from '../../server/auth';
+import { metricsSummary, type MetricRow } from '../../server/store';
+const session = getSession(Astro.request);
+if (!session) return Astro.redirect('/admin/login/');
+if (session.user.role !== 'admin') return Astro.redirect('/admin/');
+const days = 30;
+const summary = metricsSummary(days);
+const of = (name: string): MetricRow[] => summary.rows.filter((row) => row.name === name).slice(0, 10);
+const total = (name: string) => summary.totals[name] ?? 0;
+const sections = [
+  { name: 'resource_view', title: '资源详情浏览', empty: '近 30 天还没有详情页浏览。' },
+  { name: 'outbound_click', title: '前往官方资源', empty: '还没有记录到外跳。' },
+  { name: 'guide_view', title: '指南阅读', empty: '还没有指南阅读记录。' },
+  { name: 'search_miss', title: '搜索无结果', empty: '没有零结果搜索。' },
+];
+---
+<AdminLayout title="数据概览" session={session}>
+  <div class="notice"><strong>只统计聚合计数，不做用户级追踪。</strong><p>自 {summary.since} 起按天累加：资源详情、指南阅读、官方外跳、零结果搜索。不存储 IP、UA、账户或会话标识；零结果关键词截断为 60 字以内，保留 90 天后自动清理。后台管理员与爬虫访问尽量排除，但统计仍可能有少量误差，只用于内容决策。</p></div>
+  <div class="stats"><div class="stat">详情浏览<strong>{total('resource_view')}</strong></div><div class="stat">官方外跳<strong>{total('outbound_click')}</strong></div><div class="stat">指南阅读<strong>{total('guide_view')}</strong></div><div class="stat">零结果搜索<strong>{total('search_miss')}</strong></div></div>
+  <div class="form-grid">
+    {sections.map((section) => <section class="panel"><h2>{section.title}</h2>{of(section.name).length === 0 ? <p class="muted">{section.empty}</p> : <div class="table-wrap"><table><thead><tr><th>{section.name === 'search_miss' ? '搜索词' : section.name === 'guide_view' ? '指南 slug' : '资源 ID'}</th><th>次数</th></tr></thead><tbody>{of(section.name).map((row) => <tr><td>{row.target}</td><td>{row.total}</td></tr>)}</tbody></table></div>}</section>)}
+  </div>
+  <p class="admin-footer-note">指标口径：同一访客刷新会重复计数；外跳依赖浏览器脚本，禁用 JavaScript 的点击不计。建议每月看一次 Top 10 与零结果词，用来决定补内容还是改分类。</p>
+</AdminLayout>

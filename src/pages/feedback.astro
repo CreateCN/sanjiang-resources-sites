@@ -1,0 +1,49 @@
+---
+import Layout from '../layouts/Layout.astro';
+import { getPublishedResources } from '../lib/catalog';
+const resources = getPublishedResources();
+const selected = Astro.url.searchParams.get('resource') ?? '';
+const receipt = Astro.url.searchParams.get('sent');
+const prefillKind = Astro.url.searchParams.get('kind') ?? '';
+const kinds = ['链接失效', '费用或资格变化', '信息有误', '推荐资源', '版权与下架', '其他建议'];
+---
+<Layout title="反馈与推荐">
+  <div class="page-shell portal-container prose-page">
+    <nav class="breadcrumbs" aria-label="面包屑"><a href="/">首页</a><span aria-hidden="true">/</span><span aria-current="page">反馈与推荐</span></nav>
+    <h1 class="page-title">一起把书架整理好。</h1>
+    <p class="page-lead">链接失效、信息变化，或发现了值得分享的资源？无需账户，直接告诉维护者。</p>
+    {receipt && <div class="notice" role="status"><strong>反馈已保存，感谢你的帮助。</strong><p>回执编号：{receipt}。仅表示已接收，不代表问题已解决；请勿重复提交。</p></div>}
+    <div class="feedback-layout">
+      <form class="feedback-form" action="/api/reports/" method="post" id="feedback-form">
+        <div class="field"><label for="feedback-resource">相关资源</label><select id="feedback-resource" name="resourceId"><option value="">其他问题或推荐新资源</option>{resources.map((r) => <option value={r.id} selected={r.id === selected}>{r.title}</option>)}</select></div>
+        <div class="field"><label for="feedback-kind">反馈类型</label><select id="feedback-kind" name="kind">{kinds.map((kind) => <option selected={kind === prefillKind}>{kind}</option>)}</select></div>
+        <div class="field"><label for="feedback-title">标题</label><input id="feedback-title" name="title" required maxlength="150" placeholder="例如：某资源的学生资格说明已变化" /></div>
+        <div class="field"><label for="feedback-body">具体说明</label><textarea id="feedback-body" name="body" required minlength="10" maxlength="4000" placeholder="请描述遇到的问题，或推荐资源的官方链接与用途。至少 10 个字符。"></textarea><small>不要填写学号、学生证、验证码等个人信息。反馈不会自动公开。</small></div>
+        <div class="portal-sr-only" aria-hidden="true"><label for="website">请留空</label><input id="website" name="website" tabindex="-1" autocomplete="off" /></div>
+        <div class="form-actions"><button class="portal-button" type="submit">提交站内反馈</button></div>
+        <p class="form-status" id="form-status" role="status" aria-live="polite"></p>
+        <p class="form-help">反馈由本站维护者在后台处理。请以此页的保存回执为准。</p>
+      </form>
+      <aside class="feedback-side"><h2>提交前，先确认</h2><p>资源信息会发生变化。请提供能够帮助定位的链接、页面或具体说明。</p><p>本站不会索取学生身份证明，也不能代办第三方资格申请。无需填写任何联系方式。</p><p><a class="text-link" href="/about/">反馈与隐私说明</a></p></aside>
+    </div>
+  </div>
+</Layout>
+<script>
+  const form = document.querySelector<HTMLFormElement>('#feedback-form');
+  form?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!form.reportValidity()) return;
+    const button = form.querySelector<HTMLButtonElement>('button[type=submit]');
+    const status = document.querySelector('#form-status');
+    if (button) button.disabled = true;
+    try {
+      const response = await fetch(form.action, { method: 'POST', body: new FormData(form), headers: { Accept: 'application/json' } });
+      if (response.redirected && response.ok) { window.location.assign(response.url); return; }
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(typeof data.error === 'string' ? data.error : '暂时无法保存，请稍后重试。');
+      if (status) status.textContent = '反馈已保存，感谢你的帮助。';
+      form.reset();
+    } catch (error) { if (status) status.textContent = error instanceof Error ? error.message : '提交失败，请保留文本后重试。'; }
+    finally { if (button) button.disabled = false; }
+  });
+</script>

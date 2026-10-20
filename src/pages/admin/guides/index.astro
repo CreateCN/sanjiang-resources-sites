@@ -1,0 +1,13 @@
+---
+import AdminLayout from '../../../layouts/AdminLayout.astro';
+import { getSession } from '../../../server/auth';
+import { listManagedGuides } from '../../../server/store';
+const session = getSession(Astro.request);
+if (!session) return Astro.redirect('/admin/login/');
+const guides = listManagedGuides();
+---
+<AdminLayout title="指南管理" session={session}>
+  <div class="notice"><strong>指南是长文，资源是条目。</strong><p>指南用于“怎么做”的说明，可关联已有资源。编辑者保存只更新草稿，管理员发布后才会出现在 <a href="/guides/" target="_blank" rel="noopener noreferrer">/guides/</a>。正文支持 Markdown，原始 HTML 会被转义。</p></div>
+  <div class="toolbar"><span class="muted">{guides.length} 篇指南</span><a class="button" href="/admin/guides/new/">新建指南</a></div>
+  <div class="table-wrap"><table><thead><tr><th>指南</th><th>关联资源</th><th>发布状态</th><th>操作</th></tr></thead><tbody>{guides.map((guide) => <tr><td><strong>{guide.draft.title}</strong><br/><span class="muted">/{guide.slug} · v{guide.version}</span></td><td>{guide.draft.resources.length} 项</td><td><span class:list={['badge', { published: !!guide.published }]}>{guide.published ? '已公开' : '草稿'}</span>{guide.published && JSON.stringify(guide.published) !== JSON.stringify(guide.draft) && <p class="muted">有未发布修改</p>}</td><td><a href={`/admin/guides/${guide.slug}/`}>编辑</a>{guide.published && <p><a href={`/guides/${guide.slug}/`} target="_blank" rel="noopener noreferrer">查看前台 ↗</a></p>}</td></tr>)}</tbody></table>{guides.length === 0 && <p class="empty">还没有指南，可以创建第一篇。</p>}</div>
+</AdminLayout>

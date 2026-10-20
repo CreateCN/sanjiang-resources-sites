@@ -1,0 +1,49 @@
+---
+import type { Revision } from '../server/store';
+import { ACTION_LABELS, diffFields, formatRevisionTime } from '../lib/revision-fields';
+interface Props {
+  kind: 'resource' | 'guide';
+  entityId: string;
+  current: unknown;
+  revisions: Revision[];
+  version: number;
+  csrf: string;
+}
+const { kind, entityId, current, revisions, version, csrf } = Astro.props;
+const actionLabels = ACTION_LABELS;
+const fieldParam = kind === 'resource' ? 'id' : 'slug';
+const restoreAction = kind === 'resource' ? 'restore-resource' : 'restore-guide';
+---
+<section class="panel" id="history">
+  <h2>版本历史</h2>
+  <p class="muted">每次保存草稿、发布或撤回都会留下快照，最多保留最近 50 条。恢复历史版本只改草稿，公开页面要再点发布才会更新。</p>
+  <p class="muted history-hint">表格可左右滑动查看“改动与恢复”。</p>
+  {revisions.length === 0
+    ? <p class="empty">还没有版本记录；下次保存后开始记录。</p>
+    : <div class="table-wrap"><table><thead><tr><th>时间</th><th>操作者</th><th>动作</th><th>版本</th><th>改动与恢复</th></tr></thead><tbody>{revisions.map((revision) => {
+      const changes = diffFields(kind, current, revision.data);
+      return <tr>
+        <td>{formatRevisionTime(revision.createdAt)}</td>
+        <td>{revision.actor}</td>
+        <td><span class="badge">{actionLabels[revision.action] ?? revision.action}</span>{revision.id === revisions[0]?.id && <span class="muted"> 最新</span>}</td>
+        <td>v{revision.version}</td>
+        <td>
+          <details class="revision-details">
+            <summary>查看改动（{changes.length} 项）</summary>
+            {changes.length === 0
+              ? <p class="muted">与当前草稿相比没有字段差异。</p>
+              : <ul class="revision-changes">{changes.map((change) => <li><strong>{change.label}</strong><div class="revision-diff"><div><span class="muted">当时</span><p>{change.before}</p></div><div><span class="muted">现在草稿</span><p>{change.after}</p></div></div></li>)}</ul>}
+            <form action="/api/manage/" method="post" data-admin-form data-confirm="把这个历史版本恢复为当前草稿？公开版本不会改变，需要重新发布。">
+              <input type="hidden" name="csrf" value={csrf}/>
+              <input type="hidden" name="action" value={restoreAction}/>
+              <input type="hidden" name={fieldParam} value={entityId}/>
+              <input type="hidden" name="revision" value={revision.id}/>
+              <input type="hidden" name="version" value={version}/>
+              <button type="submit" class="secondary">恢复此版本为草稿</button>
+              <p role="status" aria-live="polite"></p>
+            </form>
+          </details>
+        </td>
+      </tr>;
+    })}</tbody></table></div>}
+</section>

@@ -1,0 +1,48 @@
+---
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import { getSession } from '../../server/auth';
+const session = getSession(Astro.request);
+if (!session) return Astro.redirect('/admin/login/');
+if (session.user.role !== 'admin') return Astro.redirect('/admin/');
+const imported = Astro.url.searchParams.get('resources');
+const guides = Astro.url.searchParams.get('guides');
+const categories = Astro.url.searchParams.get('categories');
+const errors = Astro.url.searchParams.get('errors');
+---
+<AdminLayout title="导入导出" session={session}>
+  <div class="notice"><strong>导入只恢复草稿，不会改公开版本。</strong><p>导出包含草稿、发布快照、分类与设置；导入会校验每一条资源/指南，缺失分类自动创建。发布仍需在编辑页逐条确认。导出文件含草稿，请妥善保管。</p></div>
+  {imported !== null && <div class="notice" role="status"><strong>导入完成</strong><p>资源 {imported} 条，指南 {guides} 篇，新建分类 {categories} 个，失败 {errors} 条。</p></div>}
+  <section class="panel"><h2>导出</h2><p>下载 JSON 备份，可用于迁移或批量编辑前的留档。</p><div class="actions"><a class="button" href="/api/export/">下载内容 JSON</a><span class="muted">仅管理员；文件不进仓库。</span></div></section>
+  <form class="panel" action="/api/manage/" method="post" data-admin-form id="import-form">
+    <input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="import-apply"/>
+    <h2>导入</h2><p>粘贴导出的 JSON（或同结构文件）。先预检，确认新增/更新/无效条目后再应用。</p>
+    <div class="field"><label for="payload">JSON 内容</label><textarea id="payload" name="payload" required rows="12" style="min-height:260px;font-family:monospace;font-size:13px" placeholder='{"schemaVersion":1,"resources":[],"guides":[]}'></textarea></div>
+    <div class="actions"><button type="button" class="secondary" id="preview-import">预检</button><button type="submit">确认导入草稿</button></div>
+    <p role="status" aria-live="polite"></p>
+  </form>
+  <section class="panel" id="preview-result" hidden><h2>预检结果</h2><div id="preview-body"></div></section>
+</AdminLayout>
+<script>
+  const button = document.querySelector<HTMLButtonElement>('#preview-import');
+  const payload = document.querySelector<HTMLTextAreaElement>('#payload');
+  const panel = document.querySelector<HTMLElement>('#preview-result');
+  const body = document.querySelector<HTMLElement>('#preview-body');
+  const form = document.querySelector<HTMLFormElement>('#import-form');
+  const status = form?.querySelector<HTMLElement>('[role=status]');
+  button?.addEventListener('click', async () => {
+    const csrf = form?.querySelector<HTMLInputElement>('input[name=csrf]')?.value ?? '';
+    const data = new FormData();
+    data.set('csrf', csrf); data.set('payload', payload?.value ?? '');
+    button.disabled = true;
+    try {
+      const response = await fetch('/api/import/preview/', { method: 'POST', body: data, headers: { Accept: 'application/json' } });
+      const result = await response.json();
+      if (!response.ok) throw new Error(typeof result.error === 'string' ? result.error : '预检失败');
+      const lines = (title: string, part: { create: string[]; update: string[]; same: string[]; invalid: { id: string; error: string }[] }) => `<h3>${title}</h3><p>新增 ${part.create.length} · 更新 ${part.update.length} · 无变化 ${part.same.length} · 无效 ${part.invalid.length}</p>${part.invalid.length ? `<ul>${part.invalid.map((item) => `<li><strong>${item.id}</strong>：${item.error}</li>`).join('')}</ul>` : ''}`;
+      if (body) body.innerHTML = `<p>新建分类：${result.categories.create.length}</p>${lines('资源', result.resources)}${lines('指南', result.guides)}`;
+      if (panel) panel.hidden = false;
+      if (status) status.textContent = '预检完成，确认后再点“确认导入草稿”。';
+    } catch (error) { if (status) status.textContent = error instanceof Error ? error.message : '预检失败'; }
+    finally { button.disabled = false; }
+  });
+</script>

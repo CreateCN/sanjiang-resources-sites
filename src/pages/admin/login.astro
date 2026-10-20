@@ -1,0 +1,8 @@
+---
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import { getSession } from '../../server/auth';
+if (getSession(Astro.request)) return Astro.redirect('/admin/');
+---
+<AdminLayout title="登录管理工作台">
+  <section class="panel login-panel"><h2>欢迎回来</h2><p class="muted">使用管理员创建的账户登录。学生浏览资源不需要账户。</p><form action="/api/login/" method="post" data-admin-form><div class="field"><label for="username">用户名</label><input id="username" name="username" autocomplete="username" required maxlength="64" autofocus/></div><div class="field"><label for="password">密码</label><input id="password" type="password" name="password" autocomplete="current-password" required maxlength="256"/></div><button type="submit">登录后台</button><p role="status" aria-live="polite"></p></form><p class="admin-footer-note">没有初始默认密码。首次部署请在服务器终端运行管理员初始化命令。账户停用或忘记密码请联系项目管理员。</p></section>
+</AdminLayout>

@@ -1,0 +1,18 @@
+---
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import { getSession } from '../../server/auth';
+import { listManagedResources, listReports, listCategories, metricsSummary } from '../../server/store';
+import { freshness } from '../../lib/freshness';
+const session = getSession(Astro.request);
+if (!session) return Astro.redirect('/admin/login/');
+const resources = listManagedResources();
+const reports = listReports();
+const metrics = metricsSummary(30);
+const overdue = resources.filter((entry) => freshness(entry.draft).overdue).length;
+---
+<AdminLayout title="工作概览" session={session}>
+  <div class="stats"><div class="stat">全部资源<strong>{resources.length}</strong></div><div class="stat">公开资源<strong>{resources.filter((r) => r.published).length}</strong></div><div class="stat">待复核<strong>{overdue}</strong></div><div class="stat">反馈处理中<strong>{reports.filter((r) => r.status !== 'resolved').length}</strong></div><div class="stat">近 30 天外跳<strong>{metrics.totals.outbound_click ?? 0}</strong></div><div class="stat">学习场景<strong>{listCategories().length}</strong></div></div>
+  <section class="notice"><h2>先整理，再发布。</h2><p>{session.user.role === 'admin' ? '编辑者的保存只更新草稿。请核对费用、资格和来源后，由管理员明确发布；撤回后前台不再展示。' : '你可以创建和修改资源草稿、处理学生反馈。发布、撤回、删除以及人员管理需要管理员操作。'}</p></section>
+  <section class="panel"><h2>从这里继续</h2><div class="actions"><a class="button" href="/admin/resources/new/">新增资源草稿</a><a class="button secondary" href="/admin/resources/">管理资源</a><a class="button secondary" href="/admin/reports/">处理反馈</a><a class="button secondary" href="/admin/reviews/">复核过期资料</a></div></section>
+  <section class="panel"><h2>最近修改的资源</h2><div class="table-wrap"><table><thead><tr><th>资源</th><th>发布状态</th><th>更新时间</th></tr></thead><tbody>{resources.slice(0,6).map((r) => <tr><td><a href={`/admin/resources/${r.id}/`}>{r.draft.title}</a></td><td>{r.published ? '已发布 / 可继续编辑草稿' : '未发布'}</td><td>{r.updatedAt}</td></tr>)}</tbody></table></div></section>
+</AdminLayout>

@@ -1,0 +1,26 @@
+services:
+  app:
+    build: .
+    image: sanjiang-resources:latest
+    restart: unless-stopped
+    ports:
+      # 默认只监听本机，对外发布请通过 HTTPS 反向代理；不要直接暴露到公网。
+      - "127.0.0.1:4321:4321"
+    environment:
+      SITE_URL: ${SITE_URL:-http://localhost:4321}
+      DATABASE_PATH: /app/data/site.sqlite
+      BACKUP_DIR: /app/backups
+      BACKUP_KEEP: ${BACKUP_KEEP:-7}
+    volumes:
+      - site-data:/app/data
+      # 备份写到宿主机目录，避免和数据库放在同一个卷里一起丢。
+      - ${BACKUP_HOST_DIR:-./backups}:/app/backups
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4321/api/health/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+volumes:
+  site-data:

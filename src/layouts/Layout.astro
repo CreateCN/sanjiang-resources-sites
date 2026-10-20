@@ -1,0 +1,85 @@
+---
+import '../styles/site.css';
+interface Props { title: string; description?: string; type?: 'website' | 'article'; jsonLd?: Record<string, unknown>[]; noindex?: boolean; }
+const { title, description = '为三江学院同学整理的开源工具、开放课程与学生资源。先了解条件，再放心开始。', type = 'website', jsonLd = [], noindex = false } = Astro.props;
+const path = Astro.url.pathname;
+const origin = (process.env.SITE_URL ?? Astro.url.origin).replace(/\/$/, '');
+const canonical = `${origin}${path}`;
+const image = `${origin}/og-default.png`;
+const nav = [
+  { href: '/#catalog', name: '资源目录', match: '/' },
+  { href: '/guides/', name: '使用指南', match: '/guides/' },
+  { href: '/about/', name: '收录说明', match: '/about/' },
+  { href: '/feedback/', name: '反馈与推荐', match: '/feedback/' },
+];
+const safeJson = (value: unknown) => JSON.stringify(value).replaceAll('<', '\\u003c');
+---
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={description} />
+    <meta name="theme-color" content="#245c42" />
+    <link rel="canonical" href={canonical} />
+    <meta property="og:type" content={type} />
+    <meta property="og:site_name" content="三江资源" />
+    <meta property="og:locale" content="zh_CN" />
+    <meta property="og:title" content={`${title} · 三江资源`} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={image} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={`${title} · 三江资源`} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={image} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    {noindex && <meta name="robots" content="noindex, nofollow" />}
+    <title>{title} · 三江资源</title>
+    {jsonLd.length > 0 && <script type="application/ld+json" set:html={safeJson(jsonLd.length === 1 ? jsonLd[0] : jsonLd)} />}
+  </head>
+  <body>
+    <a class="portal-skip" href="#main">跳到主要内容</a>
+    <header class="portal-header portal-container">
+      <a class="portal-brand" href="/" aria-label="三江资源首页">
+        <span class="portal-brand-mark" aria-hidden="true">三</span>
+        <span><strong>三江资源</strong><span>同学们的开放工具书架</span></span>
+      </a>
+      <nav aria-label="主要导航">
+        {nav.map((item) => <a class:list={[{ current: item.match === '/' ? path === '/' : path.startsWith(item.match) }]} href={item.href} aria-current={(item.match === '/' ? path === '/' : path.startsWith(item.match)) ? 'page' : undefined}>{item.name}</a>)}
+        <a class="portal-admin" href="/admin/">管理入口 <span aria-hidden="true">↗</span></a>
+      </nav>
+    </header>
+    <main id="main"><slot /></main>
+    <footer class="portal-footer">
+      <div class="portal-container">
+        <div class="portal-footer-main">
+          <div><strong>三江资源</strong><p>让好工具走进学习日常。</p></div>
+          <nav aria-label="页脚导航"><a href="/guides/">使用指南</a><a href="/about/">收录说明</a><a href="/feedback/">反馈与推荐</a><a href="/admin/">管理入口</a></nav>
+        </div>
+        <div class="portal-footer-note">
+          <p>面向三江学院学生的非官方整理项目，不代表学校或资源方授权。</p>
+          <p>资源条件以提供方最新说明为准；核验状态不等于校内实测。</p>
+        </div>
+      </div>
+    </footer>
+    <script>
+      if ('IntersectionObserver' in window) {
+        const observer = new IntersectionObserver((entries) => {
+          for (const entry of entries) if (entry.isIntersecting) { entry.target.classList.add('is-visible'); observer.unobserve(entry.target); }
+        }, { threshold: 0.06 });
+        document.querySelectorAll('[data-reveal]').forEach((element) => observer.observe(element));
+      }
+      // 匿名聚合外跳计数；失败绝不影响导航。
+      document.addEventListener('click', (event) => {
+        const link = (event.target as Element | null)?.closest<HTMLAnchorElement>('a[data-outbound]');
+        if (!link) return;
+        const body = JSON.stringify({ name: 'outbound_click', target: link.dataset.outbound });
+        try {
+          if (navigator.sendBeacon) navigator.sendBeacon('/api/event/', new Blob([body], { type: 'application/json' }));
+          else fetch('/api/event/', { method: 'POST', body, headers: { 'Content-Type': 'application/json' }, keepalive: true }).catch(() => {});
+        } catch { /* ignore */ }
+      });
+    </script>
+  </body>
+</html>

@@ -1,0 +1,22 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import ResourceDetail from '../../components/ResourceDetail.astro';
+import { getPublishedResources, categoryName } from '../../lib/catalog';
+import { isBotRequest } from '../../lib/bot';
+import { recordEvent } from '../../server/store';
+const resource = getPublishedResources().find((entry) => entry.id === Astro.params.id);
+if (!resource) { Astro.response.status = 404; return Astro.rewrite('/404'); }
+if (!isBotRequest(Astro.request)) recordEvent('resource_view', resource.id);
+const origin = (process.env.SITE_URL ?? Astro.url.origin).replace(/\/$/, '');
+const jsonLd = [
+  { '@context': 'https://schema.org', '@type': 'BreadcrumbList', itemListElement: [
+    { '@type': 'ListItem', position: 1, name: '首页', item: `${origin}/` },
+    { '@type': 'ListItem', position: 2, name: categoryName(resource.category), item: `${origin}/?category=${resource.category}#catalog` },
+    { '@type': 'ListItem', position: 3, name: resource.title, item: `${origin}/resources/${resource.id}/` },
+  ] },
+  { '@context': 'https://schema.org', '@type': 'WebPage', name: resource.title, description: resource.summary, url: `${origin}/resources/${resource.id}/`, inLanguage: 'zh-CN' },
+];
+---
+<Layout title={resource.title} description={resource.summary} type="article" jsonLd={jsonLd}>
+  <ResourceDetail resource={resource} />
+</Layout>

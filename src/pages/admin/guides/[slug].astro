@@ -1,0 +1,53 @@
+---
+import AdminLayout from '../../../layouts/AdminLayout.astro';
+import { getSession } from '../../../server/auth';
+import { findManagedGuide, listManagedResources, listRevisions } from '../../../server/store';
+import RevisionHistory from '../../../components/RevisionHistory.astro';
+const session = getSession(Astro.request);
+if (!session) return Astro.redirect('/admin/login/');
+const isNew = Astro.params.slug === 'new';
+const entry = isNew ? undefined : findManagedGuide(Astro.params.slug ?? '');
+if (!isNew && !entry) return Astro.redirect('/admin/guides/');
+if (entry?.deletedAt) return Astro.redirect('/admin/trash/');
+const resources = listManagedResources();
+const guide = entry?.draft ?? { slug: '', title: '', summary: '', body: '', resources: [] as string[] };
+---
+<AdminLayout title={isNew ? '新建指南' : `编辑指南：${guide.title}`} session={session}>
+  <div class="section-links"><a href="/admin/guides/">返回指南列表</a>{entry && <a href={`/admin/preview/guides/${entry.slug}/`} target="_blank" rel="noopener noreferrer">预览整页草稿 ↗</a>}{entry?.published && <a href={`/guides/${entry.slug}/`} target="_blank" rel="noopener noreferrer">查看当前公开版本 ↗</a>}</div>
+  <div class="notice"><strong>{entry?.published ? '指南已公开，本次保存只更新草稿。' : '草稿尚未公开。'}</strong><p>{entry ? `当前版本 v${entry.version}；他人保存后你需要重新载入，不能覆盖新版本。` : '先保存草稿，再预览、发布。'}</p></div>
+  <form class="panel" action="/api/manage/" method="post" data-admin-form data-guide-editor>
+    <input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="save-guide"/><input type="hidden" name="version" value={entry?.version ?? ''}/>
+    <div class="form-grid">
+      <div class="field"><label for="guide-slug">链接标识（slug）</label><input id="guide-slug" name="slug" value={guide.slug} required readonly={!isNew} maxlength="100" pattern="[a-z0-9]+(-[a-z0-9]+)*"/><small>小写字母、数字与连字符；创建后不可更改。</small></div>
+      <div class="field"><label for="guide-title">标题</label><input id="guide-title" name="title" value={guide.title} required maxlength="120"/></div>
+      <div class="field full"><label for="guide-summary">摘要（可选，单行 Markdown）</label><input id="guide-summary" name="summary" value={guide.summary} maxlength="400"/><small>显示在指南列表与页面顶部；支持链接与粗体等内联 Markdown。</small></div>
+      <div class="field full"><label for="guide-body">正文（Markdown）</label><textarea id="guide-body" name="body" required maxlength="20000" rows="16" style="min-height:380px">{guide.body}</textarea><small>支持标题、列表、链接、引用、表格与代码块；原始 HTML 会被转义。外链自动添加安全属性。</small></div>
+    </div>
+    <div class="actions"><button type="button" class="secondary" id="guide-preview">预览正文</button><span class="muted">预览不会保存。</span></div>
+    <div id="guide-preview-panel" class="panel" style="display:none;background:#f7f9f5;margin-top:18px"><h3>预览</h3><div class="markdown-body" id="guide-preview-body"></div></div>
+    <fieldset class="panel" style="margin-top:24px;border:0;padding:20px 0 0"><legend><strong>关联资源</strong></legend><p class="muted">勾选指南中提到的资源，保存后会在详情页反向展示相关指南。</p><div class="form-grid">{resources.map((resource) => <label class="checkbox"><input type="checkbox" name="resources" value={resource.id} checked={guide.resources.includes(resource.id)}/>{resource.draft.title}</label>)}</div></fieldset>
+    <div class="actions"><button type="submit">保存草稿</button></div><p role="status" aria-live="polite"></p>
+  </form>
+  {entry && <RevisionHistory kind="guide" entityId={entry.slug} current={entry.draft} revisions={listRevisions('guide', entry.slug)} version={entry.version} csrf={session.csrfToken} />}
+  {entry && session.user.role === 'admin' && <section class="panel"><h2>发布与下架</h2><p>以下操作针对已保存的 v{entry.version}，未保存的正文不会被发布。</p><div class="actions">{['publish-guide', ...(entry.published ? ['unpublish-guide'] : []), 'delete-guide'].map((action) => <form action="/api/manage/" method="post" data-admin-form data-confirm={action === 'delete-guide' ? '确定把这篇指南移入回收站？前台会立即隐藏，可在回收站恢复为草稿。' : action === 'unpublish-guide' ? '确定撤回公开版本？前台将不再展示。' : '确认正文已检查，并发布当前草稿？'}><input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value={action}/><input type="hidden" name="slug" value={entry.slug}/><input type="hidden" name="version" value={entry.version}/><button type="submit" class:list={[{ danger: action === 'delete-guide', secondary: action === 'unpublish-guide' }]}>{action === 'publish-guide' ? '发布指南' : action === 'unpublish-guide' ? '撤回公开版本' : '移入回收站'}</button></form>)}</div><p id="admin-status" role="status" aria-live="polite"></p></section>}
+</AdminLayout>
+<script>
+  const previewButton = document.querySelector<HTMLButtonElement>('#guide-preview');
+  const body = document.querySelector<HTMLTextAreaElement>('#guide-body');
+  const panel = document.querySelector<HTMLElement>('#guide-preview-panel');
+  const target = document.querySelector<HTMLElement>('#guide-preview-body');
+  previewButton?.addEventListener('click', async () => {
+    const csrf = document.querySelector<HTMLInputElement>('form[data-guide-editor] input[name=csrf]')?.value ?? '';
+    const form = new FormData();
+    form.set('csrf', csrf); form.set('mode', 'block'); form.set('text', body?.value ?? '');
+    previewButton.disabled = true;
+    try {
+      const response = await fetch('/api/preview/', { method: 'POST', body: form, headers: { Accept: 'application/json' } });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(typeof data.error === 'string' ? data.error : '预览失败');
+      if (target) target.innerHTML = data.html;
+      if (panel) panel.style.display = 'block';
+    } catch (error) { if (target) target.textContent = error instanceof Error ? error.message : '预览失败'; if (panel) panel.style.display = 'block'; }
+    finally { previewButton.disabled = false; }
+  });
+</script>

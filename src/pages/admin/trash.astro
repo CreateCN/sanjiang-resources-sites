@@ -1,0 +1,16 @@
+---
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import { getSession } from '../../server/auth';
+import { listDeletedGuides, listDeletedResources } from '../../server/store';
+import { formatRevisionTime } from '../../lib/revision-fields';
+const session = getSession(Astro.request);
+if (!session) return Astro.redirect('/admin/login/');
+if (session.user.role !== 'admin') return Astro.redirect('/admin/');
+const resources = listDeletedResources();
+const guides = listDeletedGuides();
+---
+<AdminLayout title="回收站" session={session}>
+  <div class="notice"><strong>删除现在是“移入回收站”。</strong><p>回收站里的资源与指南对前台、sitemap 和搜索都不可见。恢复后回到草稿状态，需要重新发布；彻底删除会同时清除版本历史与链接检查记录，无法撤销。</p></div>
+  <section class="panel"><h2>已删除资源（{resources.length}）</h2>{resources.length === 0 ? <p class="empty">没有已删除的资源。</p> : <div class="table-wrap"><table><thead><tr><th>资源</th><th>删除时间</th><th>恢复</th><th>彻底删除</th></tr></thead><tbody>{resources.map((entry) => <tr><td><strong>{entry.draft.title}</strong><br/><span class="muted">{entry.id}</span></td><td>{entry.deletedAt ? formatRevisionTime(entry.deletedAt) : '—'}</td><td><form action="/api/manage/" method="post" data-admin-form><input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="restore-trash-resource"/><input type="hidden" name="id" value={entry.id}/><button type="submit" class="secondary">恢复为草稿</button><p role="status" aria-live="polite"></p></form></td><td><form action="/api/manage/" method="post" data-admin-form data-confirm="彻底删除后版本历史与链接检查都会消失，无法恢复。确定继续？"><input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="purge-resource"/><input type="hidden" name="id" value={entry.id}/><button type="submit" class="danger">彻底删除</button><p role="status" aria-live="polite"></p></form></td></tr>)}</tbody></table></div>}</section>
+  <section class="panel"><h2>已删除指南（{guides.length}）</h2>{guides.length === 0 ? <p class="empty">没有已删除的指南。</p> : <div class="table-wrap"><table><thead><tr><th>指南</th><th>删除时间</th><th>恢复</th><th>彻底删除</th></tr></thead><tbody>{guides.map((entry) => <tr><td><strong>{entry.draft.title}</strong><br/><span class="muted">/{entry.slug}</span></td><td>{entry.deletedAt ? formatRevisionTime(entry.deletedAt) : '—'}</td><td><form action="/api/manage/" method="post" data-admin-form><input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="restore-trash-guide"/><input type="hidden" name="slug" value={entry.slug}/><button type="submit" class="secondary">恢复为草稿</button><p role="status" aria-live="polite"></p></form></td><td><form action="/api/manage/" method="post" data-admin-form data-confirm="彻底删除后指南历史会消失，无法恢复。确定继续？"><input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="purge-guide"/><input type="hidden" name="slug" value={entry.slug}/><button type="submit" class="danger">彻底删除</button><p role="status" aria-live="polite"></p></form></td></tr>)}</tbody></table></div>}</section>
+</AdminLayout>

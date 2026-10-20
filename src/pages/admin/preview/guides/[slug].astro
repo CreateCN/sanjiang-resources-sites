@@ -1,0 +1,14 @@
+---
+import Layout from '../../../../layouts/Layout.astro';
+import GuideArticle from '../../../../components/GuideArticle.astro';
+import { getSession } from '../../../../server/auth';
+import { findManagedGuide } from '../../../../server/store';
+const session = getSession(Astro.request);
+if (!session) return Astro.redirect('/admin/login/');
+const entry = findManagedGuide(Astro.params.slug ?? '');
+if (!entry || entry.deletedAt) return Astro.redirect('/admin/trash/');
+---
+<Layout title={`预览：${entry.draft.title}`} description={entry.draft.summary} noindex>
+  <div class="preview-bar">草稿整页预览 · 未发布内容，不会出现在前台、搜索或 sitemap</div>
+  <GuideArticle guide={entry.draft} preview />
+</Layout>

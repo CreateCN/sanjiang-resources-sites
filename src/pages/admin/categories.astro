@@ -1,0 +1,14 @@
+---
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import { getSession } from '../../server/auth';
+import { listCategories } from '../../server/store';
+const session = getSession(Astro.request);
+if (!session) return Astro.redirect('/admin/login/');
+if (session.user.role !== 'admin') return Astro.redirect('/admin/');
+const categories = listCategories();
+---
+<AdminLayout title="分类与标签" session={session}>
+  <div class="notice"><strong>分类是稳定入口，标签跟随资源维护。</strong><p>分类 ID 创建后不变。任何草稿或公开资源仍引用的分类不能删除。标签可在资源编辑页增减，不额外维护一套重复标签。</p></div>
+  <section class="panel"><h2>新增学习场景</h2><form class="inline-form" action="/api/manage/" method="post" data-admin-form><input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="save-category"/><div class="field"><label for="new-id">稳定 ID</label><input id="new-id" name="id" pattern="[a-z0-9-]+" maxlength="80" placeholder="例如 career" required/></div><div class="field"><label for="new-name">显示名称</label><input id="new-name" name="name" maxlength="80" placeholder="例如 求职实习" required/></div><button type="submit">添加分类</button><p role="status" aria-live="polite"></p></form></section>
+  {categories.map((category) => <section class="panel"><form class="inline-form" action="/api/manage/" method="post" data-admin-form><input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="save-category"/><input type="hidden" name="id" value={category.id}/><div class="field"><label for={`name-${category.id}`}>{category.id}</label><input id={`name-${category.id}`} name="name" value={category.name} maxlength="80" required/></div><button type="submit">保存名称</button><p role="status" aria-live="polite"></p></form><form action="/api/manage/" method="post" data-admin-form data-confirm="确定删除这个未使用的分类？"><input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="delete-category"/><input type="hidden" name="id" value={category.id}/><div class="actions"><button class="danger" type="submit">删除分类</button></div><p role="status" aria-live="polite"></p></form></section>)}
+</AdminLayout>

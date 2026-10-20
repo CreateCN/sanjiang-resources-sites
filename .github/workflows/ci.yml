@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
+      - name: Smoke test production server
+        run: |
+          DATABASE_PATH="$PWD/.ci/site.sqlite" PORT=4321 HOST=127.0.0.1 SITE_URL=http://127.0.0.1:4321 node dist/server/entry.mjs &
+          for i in $(seq 1 40); do curl -fsS http://127.0.0.1:4321/api/health/ >/dev/null && break; sleep 0.5; done
+          curl -fsS http://127.0.0.1:4321/api/health/ | grep -q '"db":"ok"'
+          curl -fsS http://127.0.0.1:4321/ | grep -q "为学习，找到好工具"
+          curl -fsS http://127.0.0.1:4321/sitemap.xml | grep -q "<urlset"

@@ -1,0 +1,41 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import { getPublishedResources, getCategories } from '../../lib/catalog';
+import { getPublishedGuides } from '../../lib/guides';
+import { getSettings } from '../../server/settings';
+import { renderInlineMarkdown } from '../../lib/markdown';
+const categories = getCategories().filter((category) => category.id !== 'all');
+const category = categories.find((entry) => entry.id === Astro.params.id);
+if (!category) { Astro.response.status = 404; return Astro.rewrite('/404'); }
+const settings = getSettings();
+const copy = settings.scenarios[category.id] ?? { task: category.name, detail: '', glyph: '用' };
+const resources = getPublishedResources().filter((resource) => resource.category === category.id);
+const ids = new Set(resources.map((resource) => resource.id));
+const guides = getPublishedGuides().filter((guide) => guide.resources.some((id) => ids.has(id)));
+const others = categories.filter((entry) => entry.id !== category.id);
+const origin = (process.env.SITE_URL ?? Astro.url.origin).replace(/\/$/, '');
+const jsonLd = [
+  { '@context': 'https://schema.org', '@type': 'BreadcrumbList', itemListElement: [
+    { '@type': 'ListItem', position: 1, name: '首页', item: `${origin}/` },
+    { '@type': 'ListItem', position: 2, name: copy.task, item: `${origin}/scenarios/${category.id}/` },
+  ] },
+  { '@context': 'https://schema.org', '@type': 'CollectionPage', name: copy.task, description: copy.detail, url: `${origin}/scenarios/${category.id}/`, inLanguage: 'zh-CN' },
+];
+---
+<Layout title={copy.task} description={`${copy.detail} ${category.name}相关的开源工具与免费资源。`} jsonLd={jsonLd}>
+  <div class="page-shell portal-container">
+    <nav class="breadcrumbs" aria-label="面包屑"><a href="/">首页</a><span aria-hidden="true">/</span><span aria-current="page">{copy.task}</span></nav>
+    <header class="scenario-head">
+      <span class="scenario-mark" aria-hidden="true">{copy.glyph}</span>
+      <div><h1 class="page-title">{copy.task}</h1>{copy.detail && <p class="page-lead">{copy.detail}。这一页把{category.name}相关的资源与指南放在一起，先看条件，再决定用哪个。</p>}</div>
+    </header>
+    <section class="scenario-section" aria-labelledby="scenario-resources">
+      <h2 id="scenario-resources">资源（{resources.length}）</h2>
+      {resources.length === 0
+        ? <p class="muted">这个场景还没有已发布资源，可以先去 <a class="text-link" href="/#catalog">资源目录</a> 看看。</p>
+        : <div class="related-list">{resources.map((resource) => <a class="related-link scenario-resource" href={`/resources/${resource.id}/`}><span><strong>{resource.title}</strong><span class="scenario-resource-summary" set:html={renderInlineMarkdown(resource.summary)} /></span><span class="guide-resource-meta">{resource.cost} <span aria-hidden="true">↗</span></span></a>)}</div>}
+    </section>
+    {guides.length > 0 && <section class="scenario-section" aria-labelledby="scenario-guides"><h2 id="scenario-guides">相关指南</h2><div class="related-list">{guides.map((guide) => <a class="related-link" href={`/guides/${guide.slug}/`}><span>{guide.title}</span><span aria-hidden="true">↗</span></a>)}</div></section>}
+    <section class="scenario-section" aria-labelledby="scenario-other"><h2 id="scenario-other">换个场景</h2><div class="scenario-shelf">{others.map((entry) => { const other = settings.scenarios[entry.id] ?? { task: entry.name, detail: '', glyph: '用' }; return <a class="scenario-link" href={`/scenarios/${entry.id}/`}><span class="scenario-word" aria-hidden="true">{other.glyph}</span><strong>{other.task}</strong><span>{other.detail || entry.name}</span></a>; })}</div></section>
+  </div>
+</Layout>

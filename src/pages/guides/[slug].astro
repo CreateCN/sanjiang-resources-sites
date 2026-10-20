@@ -1,0 +1,22 @@
+---
+import Layout from '../../layouts/Layout.astro';
+import GuideArticle from '../../components/GuideArticle.astro';
+import { getPublishedGuides } from '../../lib/guides';
+import { isBotRequest } from '../../lib/bot';
+import { recordEvent } from '../../server/store';
+const guide = getPublishedGuides().find((entry) => entry.slug === Astro.params.slug);
+if (!guide) { Astro.response.status = 404; return Astro.rewrite('/404'); }
+if (!isBotRequest(Astro.request)) recordEvent('guide_view', guide.slug);
+const origin = (process.env.SITE_URL ?? Astro.url.origin).replace(/\/$/, '');
+const jsonLd = [
+  { '@context': 'https://schema.org', '@type': 'BreadcrumbList', itemListElement: [
+    { '@type': 'ListItem', position: 1, name: '首页', item: `${origin}/` },
+    { '@type': 'ListItem', position: 2, name: '使用指南', item: `${origin}/guides/` },
+    { '@type': 'ListItem', position: 3, name: guide.title, item: `${origin}/guides/${guide.slug}/` },
+  ] },
+  { '@context': 'https://schema.org', '@type': 'Article', headline: guide.title, description: guide.summary || guide.title, url: `${origin}/guides/${guide.slug}/`, inLanguage: 'zh-CN' },
+];
+---
+<Layout title={guide.title} description={guide.summary || guide.title} type="article" jsonLd={jsonLd}>
+  <GuideArticle guide={guide} />
+</Layout>

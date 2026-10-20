@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.astro/
+/.taste-skill/
+playwright-report/
+test-results/
+.env
+.env.*
+!.env.example
+/data/
+backups/

@@ -1,0 +1,13 @@
+---
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import { getSession } from '../../server/auth';
+import { listAudit } from '../../server/store';
+const session = getSession(Astro.request);
+if (!session) return Astro.redirect('/admin/login/');
+if (session.user.role !== 'admin') return Astro.redirect('/admin/');
+const entries = listAudit();
+---
+<AdminLayout title="操作记录" session={session}>
+  <p class="notice">记录资源、分类、人员与反馈的管理变更。审计与对应修改在同一个数据库事务内保存，后台没有删除日志入口。</p>
+  <div class="table-wrap"><table><thead><tr><th>操作者</th><th>操作</th><th>对象</th><th>时间</th></tr></thead><tbody>{entries.map((entry) => <tr><td>{entry.actor}</td><td>{entry.action}</td><td>{entry.target}</td><td>{entry.createdAt}</td></tr>)}</tbody></table>{entries.length === 0 && <p class="empty">还没有管理变更。</p>}</div>
+</AdminLayout>

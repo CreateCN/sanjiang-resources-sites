@@ -1,0 +1,163 @@
+---
+import Layout from '../layouts/Layout.astro';
+import { getPublishedResources, getCategories, categoryName } from '../lib/catalog';
+import { renderInlineMarkdown } from '../lib/markdown';
+import { accessLabel, PLATFORM_OPTIONS } from '../lib/access';
+import { getSettings } from '../server/settings';
+const resources = getPublishedResources();
+const categories = getCategories();
+const topics = categories.filter((category) => category.id !== 'all');
+const settings = getSettings();
+const topicCopy = settings.scenarios;
+const featured = resources.find((resource) => resource.id === settings.featuredResourceId) ?? resources[0];
+const pictured = resources.filter((resource) => resource.image).slice(0, 4);
+const kinds = [...new Set(resources.map((resource) => resource.kind))];
+const verifiedCount = resources.filter((resource) => resource.status === 'verified').length;
+const lastChecked = resources.map((resource) => resource.checkedAt).filter(Boolean).sort().at(-1);
+const origin = (process.env.SITE_URL ?? Astro.url.origin).replace(/\/$/, '');
+const jsonLd = [
+  { '@context': 'https://schema.org', '@type': 'WebSite', name: '三江资源', url: origin, description: '面向三江学院学生的开源工具、开放课程与免费学习资源目录。' },
+  { '@context': 'https://schema.org', '@type': 'ItemList', name: '学习资源目录', numberOfItems: resources.length,
+    itemListElement: resources.slice(0, 12).map((resource, index) => ({ '@type': 'ListItem', position: index + 1, name: resource.title, url: `${origin}/resources/${resource.id}/` })) },
+];
+---
+<Layout title="为学习，找到好工具" jsonLd={jsonLd}>
+  <div class="portal-shell portal-container">
+    <aside class="portal-sidebar" aria-label="资源导航">
+      <div class="sidebar-intro"><strong>学习资源书架</strong><p>从要完成的事开始，<br />找到这次用得上的。</p></div>
+      <nav class="shelf-navigation" aria-label="按学习场景筛选">
+        <button type="button" class="shelf-link filter-button active" data-category="all" aria-pressed="true"><span>全部资源</span><span>{resources.length}</span></button>
+        {topics.map((category) => <button type="button" class="shelf-link filter-button" data-category={category.id} aria-pressed="false"><span>{category.name}</span><span>{resources.filter((resource) => resource.category === category.id).length}</span></button>)}
+      </nav>
+      <div class="sidebar-links"><a href="#featured">精选工具</a><a href="/about/#verification">核验与使用条件</a></div>
+      <div class="sidebar-note"><span class="note-leaf" aria-hidden="true">书</span><strong>免费，也要看条件</strong><p>开源、免费层与学生权益不同；校内可用性以官方说明为准。</p><a href="/about/">了解收录标准</a></div>
+    </aside>
+
+    <div class="portal-main">
+      <section class="portal-search-section" aria-labelledby="home-title">
+        <div class="portal-intro"><div><h1 id="home-title">为学习，找到好工具。</h1><p>为三江同学整理开源工具、公开课程与学生资源。</p></div><a class="intro-about" href="/about/">先看使用条件 <span aria-hidden="true">↗</span></a></div>
+        <form class="portal-search" role="search" action="/#catalog" method="get" id="resource-search">
+          <label class="portal-sr-only" for="search">搜索资源名称、用途或关键词</label>
+          <div class="portal-search-box"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none"><circle cx="10.5" cy="10.5" r="6.5" stroke="currentColor" stroke-width="1.8"/><path d="m16 16 5 5" stroke="currentColor" stroke-width="1.8"/></svg><input id="search" name="q" type="search" autocomplete="off" placeholder="搜索工具或任务，例如：论文、Python、录屏" /><button type="submit">查找资源</button></div>
+          <div class="search-suggestions"><span>试试搜：</span><button type="button" data-search-term="论文">论文写作</button><button type="button" data-search-term="编程">编程入门</button><button type="button" data-search-term="录屏">录屏</button><span class="search-scope">{resources.length} 项公开资源，不需要本站账户</span></div>
+          <noscript><p class="portal-noscript">未开启 JavaScript，下面仍可浏览全部资源；搜索与筛选链接会刷新页面，不影响查看详情。</p></noscript>
+        </form>
+      </section>
+
+      <section class="portal-scenarios" aria-labelledby="scenarios-title"><div class="portal-section-heading"><h2 id="scenarios-title">按你要做的事找</h2><span>学习场景</span></div><div class="scenario-shelf">
+        {topics.map((category) => { const copy = topicCopy[category.id]; return <a class="scenario-link" href={`/scenarios/${category.id}/`}><span class="scenario-word" aria-hidden="true">{copy?.glyph ?? '用'}</span><strong>{copy?.task ?? category.name}</strong><span>{copy?.detail ?? category.name}</span></a>; })}
+      </div></section>
+
+      <section class="portal-catalog" id="catalog" aria-labelledby="directory-title">
+        <div class="portal-section-heading"><div class="directory-title-row"><h2 id="directory-title">资源目录</h2><span class="directory-count" id="result-count" role="status" aria-live="polite" aria-atomic="true">共 {resources.length} 项</span></div><div class="directory-controls"><label class="portal-sr-only" for="portal-kind">资源类型</label><select id="portal-kind"><option value="all">所有类型</option>{kinds.map((kind) => <option value={kind}>{kind}</option>)}</select><select id="portal-platform"><option value="all">所有平台</option>{PLATFORM_OPTIONS.map((platform) => <option value={platform}>{platform}</option>)}</select><button type="button" id="reset-search" class="portal-clear">重置筛选</button></div></div>
+        <div class="directory-column-labels" aria-hidden="true"><span>资源与用途</span><span>费用与条件</span><span>资料状态</span></div>
+        <div class="portal-resource-list" id="resource-list">
+          {resources.map((resource) => <article class="portal-resource" data-resource data-category={resource.category} data-kind={resource.kind} data-platforms={resource.platforms.join(' ')} data-search={`${resource.title} ${resource.summary} ${resource.tags.join(' ')} ${categoryName(resource.category)} ${resource.kind} ${resource.platforms.join(' ')}`}>
+            <div class="portal-resource-description"><h3><a href={`/resources/${resource.id}/`}>{resource.title}<span aria-hidden="true">↗</span></a></h3><p set:html={renderInlineMarkdown(resource.summary)} /><div class="portal-resource-tags"><span>{categoryName(resource.category)}</span><span class="access-chip">{accessLabel(resource.access)}</span>{resource.tags.slice(0, 2).map((tag) => <span>{tag}</span>)}</div></div>
+            <div class="portal-resource-cost"><strong>{resource.cost}</strong><span>{resource.kind}</span><a href={`/resources/${resource.id}/#conditions`}>查看使用条件</a></div>
+            <div class="portal-resource-state"><span class:list={['portal-state', { 'is-review': resource.status !== 'verified' }]}>{resource.status === 'verified' ? '官方信息已核对' : '资料待核对'}</span><span>{resource.checkedAt ?? '使用前请复核'}</span></div>
+          </article>)}
+          <div class="portal-empty" id="empty-state" hidden><h3>没有找到匹配的资源</h3><p>换一个用途关键词，或清除分类和类型限制再试试。</p><button class="portal-button" type="button" id="empty-reset">查看全部资源</button><a href="/feedback/">推荐一个资源</a></div>
+        </div>
+        <div class="directory-footnote"><p>资料核对不等于软件实测、校园资格验证或永久免费承诺。</p><a href="/about/#verification">如何理解状态</a></div>
+      </section>
+
+      {featured && <section class="portal-featured" id="featured" aria-labelledby="featured-title"><div class="portal-section-heading"><h2 id="featured-title">先认识一个好工具</h2><a href={`/resources/${featured.id}/`}>查看完整介绍 <span aria-hidden="true">↗</span></a></div><div class="featured-shelf"><div class="featured-copy"><h3>{featured.title}</h3><p>{featured.summary}</p><dl><div><dt>适合做什么</dt><dd>{featured.tags.join('、')}</dd></div><div><dt>使用前先看</dt><dd>{featured.cost}</dd></div></dl><a class="portal-button" href={`/resources/${featured.id}/`}>了解如何开始 <span aria-hidden="true">↗</span></a></div>{featured.image && <a class="featured-image" href={`/resources/${featured.id}/`}><img src={featured.image} alt={featured.imageAlt ?? `${featured.title} 官方产品界面`} loading="lazy" width="1200" height="800" /></a>}</div></section>}
+
+      {pictured.length > 1 && <section class="portal-tools" aria-labelledby="tools-title"><div class="portal-section-heading"><h2 id="tools-title">打开之前，先看一眼</h2><a href="/about/#credits">真实界面与图片来源</a></div><div class="tool-shelf">{pictured.map((resource) => <a class="tool-on-shelf" href={`/resources/${resource.id}/`}><div><img src={resource.image} alt={resource.imageAlt ?? `${resource.title} 官方界面`} width="1200" height="800" loading="lazy" /></div><h3>{resource.title}</h3><span>{categoryName(resource.category)} <span aria-hidden="true">↗</span></span></a>)}</div><p class="image-note">部分界面截图来自网络或官方页面，来源与再授权许可待确认；如你是权利人，可提交“版权与下架”，我们会移除或替换。<a href="/feedback/?kind=%E7%89%88%E6%9D%83%E4%B8%8E%E4%B8%8B%E6%9E%B6">联系管理员</a></p></section>}
+
+      <section class="portal-trust" aria-labelledby="trust-title"><div><h2 id="trust-title">条件透明，才值得收藏。</h2><p>我们整理入口，不代替官方条款。每个资源写清费用、资格和来源，帮你在打开外站前做判断。</p></div><dl><div><dt>已核对公开资料</dt><dd>{verifiedCount} 项<span>不代表校内实测</span></dd></div><div><dt>最近资料核对</dt><dd>{lastChecked ?? '待核对'}<span>外站条件可能变化</span></dd></div></dl><a href="/about/">阅读收录与核验说明 <span aria-hidden="true">↗</span></a></section>
+    </div>
+  </div>
+</Layout>
+<script>
+  const form = document.querySelector<HTMLFormElement>('#resource-search');
+  const input = document.querySelector<HTMLInputElement>('#search');
+  const typeSelect = document.querySelector<HTMLSelectElement>('#portal-kind');
+  const platformSelect = document.querySelector<HTMLSelectElement>('#portal-platform');
+  const rows = [...document.querySelectorAll<HTMLElement>('[data-resource]')];
+  const shelfButtons = [...document.querySelectorAll<HTMLButtonElement>('.filter-button[data-category]')];
+  const empty = document.querySelector<HTMLElement>('#empty-state');
+  const count = document.querySelector<HTMLElement>('#result-count');
+  let category = 'all';
+  const validCategories = new Set(['all', ...shelfButtons.map((button) => button.dataset.category)]);
+  function restore() {
+    const params = new URLSearchParams(window.location.search);
+    const requested = params.get('category') ?? 'all';
+    category = validCategories.has(requested) ? requested : 'all';
+    if (input) input.value = params.get('q') ?? '';
+    if (typeSelect) typeSelect.value = [...typeSelect.options].some((option) => option.value === params.get('type')) ? params.get('type')! : 'all';
+    if (platformSelect) platformSelect.value = [...platformSelect.options].some((option) => option.value === params.get('platform')) ? params.get('platform')! : 'all';
+  }
+  function applyFilter(writeUrl = false, push = false) {
+    const query = (input?.value ?? '').trim();
+    const words = query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
+    const kind = typeSelect?.value ?? 'all';
+    const platform = platformSelect?.value ?? 'all';
+    let visible = 0;
+    for (const row of rows) {
+      const text = (row.dataset.search ?? '').toLocaleLowerCase();
+      const platforms = (row.dataset.platforms ?? '').split(' ').filter(Boolean);
+      row.hidden = (category !== 'all' && row.dataset.category !== category)
+        || (kind !== 'all' && row.dataset.kind !== kind)
+        || (platform !== 'all' && !platforms.includes(platform))
+        || !words.every((word) => text.includes(word));
+      if (!row.hidden) visible++;
+    }
+    for (const button of shelfButtons) {
+      const active = button.dataset.category === category;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', String(active));
+    }
+    if (count) count.textContent = `共 ${visible} 项`;
+    if (empty) empty.hidden = visible > 0;
+    if (visible === 0 && query.length >= 2) scheduleMiss(query);
+    if (writeUrl) {
+      const url = new URL(window.location.href);
+      query ? url.searchParams.set('q', query) : url.searchParams.delete('q');
+      category !== 'all' ? url.searchParams.set('category', category) : url.searchParams.delete('category');
+      kind !== 'all' ? url.searchParams.set('type', kind) : url.searchParams.delete('type');
+      platform !== 'all' ? url.searchParams.set('platform', platform) : url.searchParams.delete('platform');
+      if (url.href !== window.location.href) push ? window.history.pushState(null, '', url) : window.history.replaceState(null, '', url);
+    }
+  }
+  function scrollToCatalog() {
+    document.querySelector('#catalog')?.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'instant' : 'smooth', block: 'start' });
+  }
+  shelfButtons.forEach((button) => button.addEventListener('click', () => { category = button.dataset.category ?? 'all'; applyFilter(true, true); scrollToCatalog(); }));
+  input?.addEventListener('input', () => applyFilter(true));
+  typeSelect?.addEventListener('change', () => applyFilter(true, true));
+  platformSelect?.addEventListener('change', () => applyFilter(true, true));
+  form?.addEventListener('submit', (event) => { event.preventDefault(); applyFilter(true); scrollToCatalog(); });
+  document.querySelectorAll<HTMLButtonElement>('[data-search-term]').forEach((button) => button.addEventListener('click', () => {
+    if (input) input.value = button.dataset.searchTerm ?? '';
+    category = 'all';
+    if (typeSelect) typeSelect.value = 'all';
+    if (platformSelect) platformSelect.value = 'all';
+    applyFilter(true, true); scrollToCatalog();
+  }));
+  const reportedMisses = new Set<string>();
+  let missTimer: number | undefined;
+  function scheduleMiss(query: string) {
+    const key = query.toLocaleLowerCase().replace(/\s+/g, ' ').slice(0, 60);
+    if (key.length < 2 || reportedMisses.has(key)) return;
+    if (missTimer) window.clearTimeout(missTimer);
+    missTimer = window.setTimeout(() => {
+      if (reportedMisses.has(key)) return;
+      reportedMisses.add(key);
+      fetch('/api/event/', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'search_miss', target: key }) }).catch(() => {});
+    }, 1200);
+  }
+  function clearFilter(focus: boolean) {
+    category = 'all';
+    if (input) input.value = '';
+    if (typeSelect) typeSelect.value = 'all';
+    if (platformSelect) platformSelect.value = 'all';
+    applyFilter(true, true);
+    if (focus) input?.focus({ preventScroll: true });
+  }
+  document.querySelector('#reset-search')?.addEventListener('click', () => clearFilter(true));
+  document.querySelector('#empty-reset')?.addEventListener('click', () => clearFilter(true));
+  window.addEventListener('popstate', () => { restore(); applyFilter(); });
+  restore(); applyFilter();
+</script>

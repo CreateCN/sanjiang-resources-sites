@@ -1,0 +1,43 @@
+---
+import '../styles/admin.css';
+import type { Session } from '../server/auth';
+import { noticeBoard } from '../lib/notices';
+interface Props { title: string; session?: Session; }
+const { title, session } = Astro.props;
+const path = Astro.url.pathname;
+const notices = session ? noticeBoard() : undefined;
+Astro.response.headers.set('Cache-Control', 'no-store');
+Astro.response.headers.set('X-Robots-Tag', 'noindex, nofollow');
+const links = [{url:'/admin/',name:'工作概览'}, {url:'/admin/notices/',name:`公告${notices && notices.count > 0 ? ` (${notices.count})` : ''}`}, {url:'/admin/resources/',name:'资源管理'}, {url:'/admin/guides/',name:'指南管理'}, {url:'/admin/reviews/',name:'复核队列'}, {url:'/admin/reports/',name:'反馈处理'}, ...(session?.user.role === 'admin' ? [{url:'/admin/metrics/',name:'数据概览'}, {url:'/admin/settings/',name:'首页编排'}, {url:'/admin/import/',name:'导入导出'}, {url:'/admin/categories/',name:'分类管理'}, {url:'/admin/users/',name:'人员与权限'}, {url:'/admin/trash/',name:'回收站'}, {url:'/admin/audit/',name:'操作记录'}] : [])];
+---
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><meta name="robots" content="noindex,nofollow"/><title>{title} · 三江资源管理</title><link rel="icon" href="/favicon.svg"/></head><body>
+<a href="#admin-main" class="skip">跳到主要内容</a>
+<header class="admin-header"><a class="admin-brand" href="/admin/">三江资源 <span>管理工作台</span></a><div><a href="/admin/notices/" class="notice-bell">公告{notices && notices.count > 0 ? ` · ${notices.count}` : ''}</a><a href="/" target="_blank" rel="noopener noreferrer">查看前台 ↗</a>{session && <form action="/api/logout/" method="post"><input type="hidden" name="csrf" value={session.csrfToken}/><button>退出登录</button></form>}</div></header>
+<div class:list={['admin-shell', { 'no-sidebar': !session }]}>{session && <aside class="admin-sidebar"><div class="account"><strong>{session.user.username}</strong><span>{session.user.role === 'admin' ? '管理员' : '内容编辑者'}</span></div><nav aria-label="后台导航">{links.map((link) => <a href={link.url} aria-current={(link.url === '/admin/' ? path === link.url : path.startsWith(link.url)) ? 'page' : undefined}>{link.name}</a>)}</nav><p class="sidebar-note">草稿不会自动公开。<br/>发布与权限变更仅限管理员。</p></aside>}<main id="admin-main"><div class="admin-title"><h1>{title}</h1>{session && <span class="role-label">{session.user.role === 'admin' ? '发布与管理权限' : '草稿编辑与反馈处理'}</span>}</div><slot/></main></div>
+<script>
+  for (const form of document.querySelectorAll<HTMLFormElement>('form[data-admin-form]')) {
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!form.reportValidity()) return;
+      const confirmText = form.dataset.confirm;
+      if (confirmText && !window.confirm(confirmText)) return;
+      const status = form.querySelector<HTMLElement>('[role=status]') ?? document.querySelector<HTMLElement>('#admin-status');
+      const button = form.querySelector<HTMLButtonElement>('button[type=submit],button:not([type])');
+      // A control named "action" shadows the native form.action property.
+      const endpoint = form.getAttribute('action') ?? '';
+      if (button) button.disabled = true;
+      try {
+        const body = new FormData(form);
+        const submitter = (event as SubmitEvent).submitter as HTMLButtonElement | null;
+        if (submitter?.name) body.append(submitter.name, submitter.value);
+        const response = await fetch(endpoint, {method:'POST',body,headers:{Accept:'application/json'}});
+        if (response.redirected && response.ok) { window.location.assign(response.url); return; }
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(typeof result.error === 'string' ? result.error : '操作未完成，请检查输入后重试。');
+        window.location.reload();
+      } catch (error) { if (status) status.textContent = error instanceof Error ? error.message : '请求失败，页面输入仍保留。'; }
+      finally { if (button) button.disabled = false; }
+    });
+  }
+</script>
+</body></html>

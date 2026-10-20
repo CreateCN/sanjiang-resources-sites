@@ -1,0 +1,51 @@
+import { z } from 'zod';
+import { database, transaction } from './db.ts';
+import type { User } from './store.ts';
+import { fail, audit } from './security.ts';
+
+export interface ScenarioCopy { task: string; detail: string; glyph: string }
+export interface SiteSettings { featuredResourceId: string; scenarios: Record<string, ScenarioCopy> }
+
+const DEFAULT_SCENARIOS: Record<string, ScenarioCopy> = {
+  writing: { task: '写好一篇报告', detail: '文献、阅读与排版', glyph: '文' },
+  development: { task: '开始写代码', detail: '编程、版本与开发', glyph: '码' },
+  design: { task: '把想法做出来', detail: '图像、视频与模型', glyph: '创' },
+  learning: { task: '选一门公开课', detail: '课程、讲义与练习', glyph: '学' },
+  efficiency: { task: '让作业更顺手', detail: '效率、录屏与协作', glyph: '用' },
+};
+
+const SettingsSchema = z.object({
+  featuredResourceId: z.string().regex(/^[a-z0-9-]*$/).max(100),
+  scenarios: z.record(z.object({ task: z.string().trim().min(1).max(30), detail: z.string().trim().max(60), glyph: z.string().trim().min(1).max(2) })).default({}),
+}).strict();
+
+export function defaultSettings(): SiteSettings {
+  return { featuredResourceId: 'zotero', scenarios: { ...DEFAULT_SCENARIOS } };
+}
+export function getSettings(): SiteSettings {
+  const row = database().prepare("SELECT value FROM settings WHERE key='site'").get();
+  if (!row) return defaultSettings();
+  try {
+    const parsed = SettingsSchema.safeParse(JSON.parse(String(row.value)));
+    if (!parsed.success) return defaultSettings();
+    return { featuredResourceId: parsed.data.featuredResourceId, scenarios: { ...DEFAULT_SCENARIOS, ...parsed.data.scenarios } };
+  } catch { return defaultSettings(); }
+}
+export function saveSettings(actor: User, input: unknown): SiteSettings {
+  const parsed = SettingsSchema.safeParse(input);
+  if (!parsed.success) fail(400, `设置校验失败：${parsed.error.issues.map((issue) => `${issue.path.join('.')} ${issue.message}`).join('；')}`);
+  return transaction((db) => {
+    const row = db.prepare('SELECT role,active FROM users WHERE id=?').get(actor.id);
+    if (!row || !row.active) fail(401, '登录已失效，请重新登录');
+    if (row.role !== 'admin') fail(403, '此操作仅限管理员');
+    if (parsed.data.featuredResourceId && !db.prepare('SELECT 1 FROM resources WHERE id=? AND deleted_at IS NULL').get(parsed.data.featuredResourceId)) {
+      fail(400, '首页精选资源不存在或在回收站中');
+    }
+    const categories = new Set(db.prepare('SELECT id FROM categories').all().map((item) => String(item.id)));
+    for (const id of Object.keys(parsed.data.scenarios)) if (!categories.has(id)) fail(400, `分类不存在：${id}`);
+    const value = JSON.stringify(parsed.data);
+    db.prepare("INSERT INTO settings (key,value) VALUES ('site',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(value);
+    audit(actor.username, 'save-settings', 'site');
+    return getSettings();
+  });
+}

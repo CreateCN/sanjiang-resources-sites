@@ -1,0 +1,23 @@
+---
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import { getSession } from '../../server/auth';
+import { listCategories, listManagedResources } from '../../server/store';
+import { getSettings } from '../../server/settings';
+const session = getSession(Astro.request);
+if (!session) return Astro.redirect('/admin/login/');
+if (session.user.role !== 'admin') return Astro.redirect('/admin/');
+const categories = listCategories();
+const resources = listManagedResources().filter((entry) => entry.published);
+const settings = getSettings();
+---
+<AdminLayout title="首页编排" session={session}>
+  <div class="notice"><strong>首页的精选与场景文案从这里改，不再写死在代码里。</strong><p>精选资源只列出已发布内容；场景文案对应首页五张“按你要做的事找”入口，并会出现在 <code>/scenarios/&lt;分类&gt;/</code> 落地页。修改会立即生效，不需要重新构建。</p></div>
+  <form class="panel" action="/api/manage/" method="post" data-admin-form>
+    <input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="save-settings"/>
+    <div class="form-grid">
+      <div class="field full"><label for="featured">首页精选资源</label><select id="featured" name="featuredResourceId"><option value="">不指定（自动取第一个）</option>{resources.map((entry) => <option value={entry.id} selected={settings.featuredResourceId === entry.id}>{entry.draft.title}</option>)}</select><small>只显示已发布资源；草稿不能在首页精选。</small></div>
+      {categories.map((category) => <div class="field full" style="border-top:1px solid #e6ebe3;padding-top:18px"><strong>{category.name}（{category.id}）</strong><div class="form-grid" style="margin-top:12px"><div class="field"><label for={`task-${category.id}`}>任务文案</label><input id={`task-${category.id}`} name={`scenario.${category.id}.task`} value={settings.scenarios[category.id]?.task ?? ''} maxlength="30"/></div><div class="field"><label for={`detail-${category.id}`}>补充说明</label><input id={`detail-${category.id}`} name={`scenario.${category.id}.detail`} value={settings.scenarios[category.id]?.detail ?? ''} maxlength="60"/></div><div class="field"><label for={`glyph-${category.id}`}>字标（1–2 字）</label><input id={`glyph-${category.id}`} name={`scenario.${category.id}.glyph`} value={settings.scenarios[category.id]?.glyph ?? ''} maxlength="2"/></div></div></div>)}
+    </div>
+    <div class="actions"><button type="submit">保存首页编排</button><a class="button secondary" href="/" target="_blank" rel="noopener noreferrer">查看首页 ↗</a></div><p role="status" aria-live="polite"></p>
+  </form>
+</AdminLayout>
