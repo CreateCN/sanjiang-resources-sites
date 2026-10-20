@@ -1,8 +1,8 @@
-import { getPublishedResources, listCategories } from '../server/store';
+import { getPublishedResources, findPublishedResource, listCategories } from '../server/store';
 import type { Resource } from './resource-schema';
 export { ResourceSchema } from './resource-schema';
 export type { Resource } from './resource-schema';
-export { getPublishedResources };
+export { getPublishedResources, findPublishedResource };
 export function getCategories() { return [{ id: 'all', name: '全部资源' }, ...listCategories()]; }
 export const repository = 'https://github.com/CreateCN/sanjiang-resources-sites';
 export const categoryName = (id: string) => getCategories().find((category) => category.id === id)?.name ?? '全部资源';

@@ -1,10 +1,10 @@
 ---
 import Layout from '../../layouts/Layout.astro';
 import GuideArticle from '../../components/GuideArticle.astro';
-import { getPublishedGuides } from '../../lib/guides';
+import { findPublishedGuide } from '../../lib/guides';
 import { isBotRequest } from '../../lib/bot';
 import { recordEvent } from '../../server/store';
-const guide = getPublishedGuides().find((entry) => entry.slug === Astro.params.slug);
+const guide = findPublishedGuide(Astro.params.slug ?? '');
 if (!guide) { Astro.response.status = 404; return Astro.rewrite('/404'); }
 if (!isBotRequest(Astro.request)) recordEvent('guide_view', guide.slug);
 const origin = (process.env.SITE_URL ?? Astro.url.origin).replace(/\/$/, '');

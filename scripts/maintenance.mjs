@@ -6,32 +6,11 @@ import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { JOB_TIMEOUT_MS, scheduledSlot, scheduleFromEnv } from '../src/lib/maintenance-schedule.ts';
+export { JOB_TIMEOUT_MS, scheduledSlot, scheduleFromEnv };
 
 const root = fileURLToPath(new URL('../', import.meta.url));
-const DAY = 86400000;
-export const JOB_TIMEOUT_MS = 15 * 60 * 1000;
 const RETRY_MS = 15 * 60 * 1000;
-
-export function scheduleFromEnv(env = process.env) {
-  function integer(key, fallback, max) {
-    const raw = env[key] ?? String(fallback);
-    if (!/^\d+$/.test(raw) || Number(raw) > max) throw new Error(`${key} 必须为 0–${max} 的整数`);
-    return Number(raw);
-  }
-  return [
-    { name: 'backup', script: 'backup-db.mjs', hour: integer('BACKUP_UTC_HOUR', 19, 23) },
-    { name: 'links', script: 'check-links.mjs', hour: integer('LINK_CHECK_UTC_HOUR', 20, 23), weekday: integer('LINK_CHECK_UTC_DAY', 0, 6) },
-  ];
-}
-
-/** Most recent UTC schedule slot; restarts catch up once rather than replaying every missed day. */
-export function scheduledSlot(job, now) {
-  const date = new Date(now);
-  let slot = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), job.hour);
-  if (job.weekday !== undefined) slot -= ((date.getUTCDay() - job.weekday + 7) % 7) * DAY;
-  if (slot > now) slot -= job.weekday === undefined ? DAY : 7 * DAY;
-  return slot;
-}
 
 export function openState(path) {
   mkdirSync(dirname(resolve(path)), { recursive: true, mode: 0o700 });
@@ -41,8 +20,14 @@ export function openState(path) {
     CREATE TABLE IF NOT EXISTS jobs (
       name TEXT PRIMARY KEY, completed_slot INTEGER NOT NULL DEFAULT 0,
       last_success INTEGER, last_exit INTEGER, retry_at INTEGER NOT NULL DEFAULT 0,
-      lease_until INTEGER NOT NULL DEFAULT 0, owner TEXT
-    )`);
+      lease_until INTEGER NOT NULL DEFAULT 0, owner TEXT, last_started INTEGER, last_finished INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS worker_status (id INTEGER PRIMARY KEY CHECK(id=1), heartbeat INTEGER NOT NULL)`);
+  // Upgrade the previous maintenance state without touching the site's database.
+  const columns = new Set(db.prepare('PRAGMA table_info(jobs)').all().map((column) => column.name));
+  for (const name of ['last_started', 'last_finished']) {
+    if (!columns.has(name)) db.exec(`ALTER TABLE jobs ADD COLUMN ${name} INTEGER`);
+  }
   return db;
 }
 
@@ -52,9 +37,9 @@ export function claimJob(db, name, slot, now) {
   db.exec('BEGIN IMMEDIATE');
   try {
     db.prepare('INSERT OR IGNORE INTO jobs (name) VALUES (?)').run(name);
-    const result = db.prepare(`UPDATE jobs SET owner=?,lease_until=?
+    const result = db.prepare(`UPDATE jobs SET owner=?,lease_until=?,last_started=?
       WHERE name=? AND completed_slot<? AND retry_at<=? AND lease_until<=?`)
-      .run(owner, now + JOB_TIMEOUT_MS + 60000, name, slot, now, now);
+      .run(owner, now + JOB_TIMEOUT_MS + 60000, now, name, slot, now, now);
     db.exec('COMMIT');
     return result.changes ? owner : undefined;
   } catch (error) { db.exec('ROLLBACK'); throw error; }
@@ -64,9 +49,9 @@ export function finishJob(db, job, slot, owner, code, now) {
   // Exit 2 means the check ran successfully but found links requiring attention.
   const completed = code === 0 || (job.name === 'links' && code === 2);
   db.prepare(`UPDATE jobs SET completed_slot=CASE WHEN ? THEN ? ELSE completed_slot END,
-    last_success=CASE WHEN ? THEN ? ELSE last_success END,last_exit=?,retry_at=?,lease_until=0,owner=NULL
+    last_success=CASE WHEN ? THEN ? ELSE last_success END,last_exit=?,retry_at=?,lease_until=0,owner=NULL,last_finished=?
     WHERE name=? AND owner=?`)
-    .run(Number(completed), slot, Number(completed), now, code, completed ? 0 : now + RETRY_MS, job.name, owner);
+    .run(Number(completed), slot, Number(completed), now, code, completed ? 0 : now + RETRY_MS, now, job.name, owner);
   return completed;
 }
 
@@ -103,6 +88,11 @@ async function main() {
   const controller = new AbortController();
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => controller.abort());
   const state = openState(process.env.MAINTENANCE_STATE_PATH || `${path}.maintenance.sqlite`);
+  const heartbeat = () => state.prepare('INSERT INTO worker_status (id,heartbeat) VALUES (1,?) ON CONFLICT(id) DO UPDATE SET heartbeat=excluded.heartbeat').run(Date.now());
+  heartbeat();
+  // Runs independently while a long backup/link-check child is active.
+  const heartbeatTimer = setInterval(heartbeat, 30000);
+  heartbeatTimer.unref();
   console.log(JSON.stringify({ event: 'maintenance-ready', jobs, state: process.env.MAINTENANCE_STATE_PATH || `${path}.maintenance.sqlite` }));
   try {
     while (!controller.signal.aborted) {
@@ -112,7 +102,7 @@ async function main() {
     }
   } catch (error) {
     if (!controller.signal.aborted) throw error;
-  } finally { state.close(); }
+  } finally { clearInterval(heartbeatTimer); state.close(); }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

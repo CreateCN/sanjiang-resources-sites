@@ -1,0 +1,16 @@
+---
+interface Props { userId: number; kind: 'resource' | 'guide'; entityId: string; }
+const { userId, kind, entityId } = Astro.props;
+---
+<section class="draft-recovery" data-draft-recovery data-draft-user={userId} data-draft-kind={kind} data-draft-entity={entityId}>
+  <p class="draft-state" aria-live="polite">尚无未保存修改。本地备份在 7 天后过期。</p>
+  <div class="draft-restore" hidden>
+    <p class="draft-message"></p>
+    <div class="actions"><button type="button" data-draft-restore>恢复本地输入</button><button type="button" class="secondary" data-draft-view>查看待合并内容</button><button type="button" class="secondary" data-draft-discard>丢弃本地备份</button></div>
+    <textarea data-draft-content readonly hidden rows="12" aria-label="本地草稿内容"></textarea>
+  </div>
+</section>
+<script>
+  import { attachDraftRecovery } from '../scripts/draft-recovery';
+  for (const element of document.querySelectorAll<HTMLElement>('[data-draft-recovery]')) attachDraftRecovery(element);
+</script>

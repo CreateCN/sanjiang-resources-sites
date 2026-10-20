@@ -2,13 +2,14 @@
 import '../styles/admin.css';
 import type { Session } from '../server/auth';
 import { noticeBoard } from '../lib/notices';
+import CommitVersion from '../components/CommitVersion.astro';
 interface Props { title: string; session?: Session; }
 const { title, session } = Astro.props;
 const path = Astro.url.pathname;
 const notices = session ? noticeBoard() : undefined;
 Astro.response.headers.set('Cache-Control', 'no-store');
 Astro.response.headers.set('X-Robots-Tag', 'noindex, nofollow');
-const links = [{url:'/admin/',name:'工作概览'}, {url:'/admin/notices/',name:`公告${notices && notices.count > 0 ? ` (${notices.count})` : ''}`}, {url:'/admin/resources/',name:'资源管理'}, {url:'/admin/guides/',name:'指南管理'}, {url:'/admin/reviews/',name:'复核队列'}, {url:'/admin/reports/',name:'反馈处理'}, ...(session?.user.role === 'admin' ? [{url:'/admin/metrics/',name:'数据概览'}, {url:'/admin/settings/',name:'首页编排'}, {url:'/admin/import/',name:'导入导出'}, {url:'/admin/categories/',name:'分类管理'}, {url:'/admin/users/',name:'人员与权限'}, {url:'/admin/trash/',name:'回收站'}, {url:'/admin/audit/',name:'操作记录'}] : [])];
+const links = [{url:'/admin/',name:'工作概览'}, {url:'/admin/notices/',name:`公告${notices && notices.count > 0 ? ` (${notices.count})` : ''}`}, {url:'/admin/resources/',name:'资源管理'}, {url:'/admin/guides/',name:'指南管理'}, {url:'/admin/reviews/',name:'复核队列'}, {url:'/admin/reports/',name:'反馈处理'}, ...(session?.user.role === 'admin' ? [{url:'/admin/metrics/',name:'数据概览'}, {url:'/admin/maintenance/',name:'维护状态'}, {url:'/admin/settings/',name:'首页编排'}, {url:'/admin/import/',name:'导入导出'}, {url:'/admin/categories/',name:'分类管理'}, {url:'/admin/users/',name:'人员与权限'}, {url:'/admin/trash/',name:'回收站'}, {url:'/admin/audit/',name:'操作记录'}] : [])];
 ---
 <!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><meta name="robots" content="noindex,nofollow"/><title>{title} · 三江资源管理</title><link rel="icon" href="/favicon.svg"/></head><body>
 <a href="#admin-main" class="skip">跳到主要内容</a>
@@ -22,22 +23,25 @@ const links = [{url:'/admin/',name:'工作概览'}, {url:'/admin/notices/',name:
       const confirmText = form.dataset.confirm;
       if (confirmText && !window.confirm(confirmText)) return;
       const status = form.querySelector<HTMLElement>('[role=status]') ?? document.querySelector<HTMLElement>('#admin-status');
-      const button = form.querySelector<HTMLButtonElement>('button[type=submit],button:not([type])');
+      const controls = [...form.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLButtonElement>('input:not([type=hidden]),textarea,select,button')].filter((control) => !control.disabled);
       // A control named "action" shadows the native form.action property.
       const endpoint = form.getAttribute('action') ?? '';
-      if (button) button.disabled = true;
       try {
         const body = new FormData(form);
         const submitter = (event as SubmitEvent).submitter as HTMLButtonElement | null;
         if (submitter?.name) body.append(submitter.name, submitter.value);
+        // Keep the submitted snapshot stable until success or error is known.
+        for (const control of controls) control.disabled = true;
         const response = await fetch(endpoint, {method:'POST',body,headers:{Accept:'application/json'}});
-        if (response.redirected && response.ok) { window.location.assign(response.url); return; }
+        if (response.redirected && response.ok) { form.dispatchEvent(new Event('draft-saved')); window.location.assign(response.url); return; }
         const result = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(typeof result.error === 'string' ? result.error : '操作未完成，请检查输入后重试。');
+        form.dispatchEvent(new Event('draft-saved'));
         window.location.reload();
       } catch (error) { if (status) status.textContent = error instanceof Error ? error.message : '请求失败，页面输入仍保留。'; }
-      finally { if (button) button.disabled = false; }
+      finally { for (const control of controls) control.disabled = false; }
     });
   }
 </script>
+<footer class="admin-version-footer"><CommitVersion /></footer>
 </body></html>

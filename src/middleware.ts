@@ -1,11 +1,12 @@
 import { defineMiddleware } from 'astro:middleware';
 import { logRequest, newRequestId } from './server/log';
+import { withRequestCache } from './server/request-cache';
 export const onRequest = defineMiddleware(async (context, next) => {
   const id = newRequestId();
   const startedAt = process.hrtime.bigint();
   let response: Response;
   try {
-    response = await next();
+    response = await withRequestCache(() => next());
   } catch (error) {
     logRequest({ id, request: context.request, status: 500, startedAt });
     throw error;

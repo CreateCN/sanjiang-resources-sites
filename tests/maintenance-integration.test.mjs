@@ -22,6 +22,7 @@ test('维护进程实际执行备份与检查，记录结果并正常关闭', { 
     const source = new DatabaseSync(path);
     // No external network in this integration test; content rows remain in the backup.
     source.exec('UPDATE resources SET published=NULL,published_category=NULL');
+    source.exec("INSERT INTO events (day,name,target,count) VALUES ('2000-01-01','resource_view','expired',1)");
     source.close();
     worker = spawn(process.execPath, ['scripts/maintenance.mjs'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
     const closed = once(worker, 'close');
@@ -34,7 +35,7 @@ test('维护进程实际执行备份与检查，记录结果并正常关闭', { 
       worker.on('close', () => { clearTimeout(timer); reject(new Error(`维护进程提前退出：${errors}`)); });
       worker.stdout.on('data', (chunk) => {
         output += chunk;
-        if (output.includes('"event":"maintenance-finish","job":"links"')) { clearTimeout(timer); resolve(); }
+        if (output.includes('"event":"maintenance-finish","job":"cleanup"')) { clearTimeout(timer); resolve(); }
       });
     });
     worker.kill('SIGTERM');
@@ -42,6 +43,10 @@ test('维护进程实际执行备份与检查，记录结果并正常关闭', { 
     assert.equal(code, 0, errors);
     assert.match(output, /"job":"backup","code":0,"status":"ok"/);
     assert.match(output, /"job":"links","code":0,"status":"ok"/);
+    assert.match(output, /"job":"cleanup","code":0,"status":"ok"/);
+    const cleaned = new DatabaseSync(path);
+    try { assert.equal(cleaned.prepare('SELECT COUNT(*) AS n FROM events').get().n, 0); }
+    finally { cleaned.close(); }
     const files = readdirSync(backupDir);
     assert.equal(files.length, 1);
     const backup = new DatabaseSync(join(backupDir, files[0]));
@@ -53,7 +58,7 @@ test('维护进程实际执行备份与检查，记录结果并正常关闭', { 
     const state = new DatabaseSync(env.MAINTENANCE_STATE_PATH);
     try {
       const jobs = state.prepare('SELECT * FROM jobs').all();
-      assert.equal(jobs.length, 2);
+      assert.equal(jobs.length, 3);
       for (const job of jobs) {
         assert.equal(job.last_exit, 0);
         assert.ok(job.last_success > 0);

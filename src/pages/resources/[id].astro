@@ -1,10 +1,10 @@
 ---
 import Layout from '../../layouts/Layout.astro';
 import ResourceDetail from '../../components/ResourceDetail.astro';
-import { getPublishedResources, categoryName } from '../../lib/catalog';
+import { findPublishedResource, categoryName } from '../../lib/catalog';
 import { isBotRequest } from '../../lib/bot';
 import { recordEvent } from '../../server/store';
-const resource = getPublishedResources().find((entry) => entry.id === Astro.params.id);
+const resource = findPublishedResource(Astro.params.id ?? '');
 if (!resource) { Astro.response.status = 404; return Astro.rewrite('/404'); }
 if (!isBotRequest(Astro.request)) recordEvent('resource_view', resource.id);
 const origin = (process.env.SITE_URL ?? Astro.url.origin).replace(/\/$/, '');

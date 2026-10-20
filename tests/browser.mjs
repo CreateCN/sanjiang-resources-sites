@@ -1,15 +1,11 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { chromium } from "@playwright/test";
+import { launchTestBrowser } from "./browser-harness.mjs";
 import { resources } from "../src/data/resources.ts";
 const base = process.env.TEST_BASE_URL ?? "http://127.0.0.1:4321";
 let browser;
 before(async () => {
-  browser = await chromium.launch({
-    executablePath: process.env.CHROME_PATH ?? "/usr/bin/google-chrome",
-    headless: true,
-    args: ["--no-sandbox"],
-  });
+  browser = await launchTestBrowser();
 });
 after(async () => {
   await browser?.close();
@@ -202,4 +198,19 @@ test("键盘跳过导航、焦点可见与404恢复入口", async () => {
   assert.equal(response.status(), 404);
   assert.ok(await page.getByRole("link", { name: "浏览资源目录" }).isVisible());
   await page.close();
+});
+
+test('页脚展示实际构建提交的短哈希并链接到完整提交', async () => {
+  const { resolveBuildRevision } = await import('../scripts/build-revision.mjs');
+  const expected = process.env.EXPECTED_COMMIT_SHA || resolveBuildRevision();
+  const page = await browser.newPage();
+  try {
+    await page.goto(base);
+    const version = page.locator('footer [data-commit-hash]');
+    assert.equal(await version.getAttribute('data-commit-hash'), expected || 'unknown');
+    if (expected) {
+      assert.equal(await version.locator('code').textContent(), expected.slice(0, 7));
+      assert.equal(await version.locator('a').getAttribute('href'), `https://github.com/CreateCN/sanjiang-resources-sites/commit/${expected}`);
+    }
+  } finally { await page.close(); }
 });

@@ -1,5 +1,6 @@
 import { defineConfig } from 'astro/config';
 import node from '@astrojs/node';
+import { resolveBuildRevision } from './scripts/build-revision.mjs';
 
 export default defineConfig({
   output: 'server',
@@ -10,5 +11,8 @@ export default defineConfig({
   // 还原成不带端口的 http://localhost，导致校验误判。服务器端在
   // src/server/security.ts 的 requireOrigin 中按 SITE_URL / Host 做更严格的校验。
   security: { checkOrigin: false },
-  vite: { server: { allowedHosts: true } },
+  vite: {
+    server: { allowedHosts: true },
+    define: { 'import.meta.env.PUBLIC_COMMIT_SHA': JSON.stringify(resolveBuildRevision()) },
+  },
 });

@@ -6,7 +6,10 @@ x-logging: &logging
 
 services:
   app:
-    build: .
+    build:
+      context: .
+      args:
+        COMMIT_SHA: ${COMMIT_SHA:-}
     image: sanjiang-resources:latest
     restart: unless-stopped
     logging: *logging
@@ -18,6 +21,10 @@ services:
       DATABASE_PATH: /app/data/site.sqlite
       BACKUP_DIR: /app/backups
       BACKUP_KEEP: ${BACKUP_KEEP:-7}
+      BACKUP_UTC_HOUR: ${BACKUP_UTC_HOUR:-19}
+      LINK_CHECK_UTC_HOUR: ${LINK_CHECK_UTC_HOUR:-20}
+      LINK_CHECK_UTC_DAY: ${LINK_CHECK_UTC_DAY:-0}
+      METRICS_CLEANUP_UTC_HOUR: ${METRICS_CLEANUP_UTC_HOUR:-18}
     volumes:
       - site-data:/app/data
       # 备份写到宿主机目录，避免和数据库放在同一个卷里一起丢。
@@ -30,7 +37,10 @@ services:
       retries: 3
 
   maintenance:
-    build: .
+    build:
+      context: .
+      args:
+        COMMIT_SHA: ${COMMIT_SHA:-}
     image: sanjiang-resources:latest
     restart: unless-stopped
     command: ["node", "scripts/maintenance.mjs"]
@@ -48,6 +58,7 @@ services:
       BACKUP_UTC_HOUR: ${BACKUP_UTC_HOUR:-19}
       LINK_CHECK_UTC_HOUR: ${LINK_CHECK_UTC_HOUR:-20}
       LINK_CHECK_UTC_DAY: ${LINK_CHECK_UTC_DAY:-0}
+      METRICS_CLEANUP_UTC_HOUR: ${METRICS_CLEANUP_UTC_HOUR:-18}
     volumes:
       - site-data:/app/data
       - ${BACKUP_HOST_DIR:-./backups}:/app/backups

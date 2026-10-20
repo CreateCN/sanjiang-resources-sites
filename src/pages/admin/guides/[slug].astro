@@ -2,6 +2,7 @@
 import AdminLayout from '../../../layouts/AdminLayout.astro';
 import { getSession } from '../../../server/auth';
 import { findManagedGuide, listManagedResources, listRevisions } from '../../../server/store';
+import DraftRecovery from '../../../components/DraftRecovery.astro';
 import RevisionHistory from '../../../components/RevisionHistory.astro';
 const session = getSession(Astro.request);
 if (!session) return Astro.redirect('/admin/login/');
@@ -15,6 +16,7 @@ const guide = entry?.draft ?? { slug: '', title: '', summary: '', body: '', reso
 <AdminLayout title={isNew ? '新建指南' : `编辑指南：${guide.title}`} session={session}>
   <div class="section-links"><a href="/admin/guides/">返回指南列表</a>{entry && <a href={`/admin/preview/guides/${entry.slug}/`} target="_blank" rel="noopener noreferrer">预览整页草稿 ↗</a>}{entry?.published && <a href={`/guides/${entry.slug}/`} target="_blank" rel="noopener noreferrer">查看当前公开版本 ↗</a>}</div>
   <div class="notice"><strong>{entry?.published ? '指南已公开，本次保存只更新草稿。' : '草稿尚未公开。'}</strong><p>{entry ? `当前版本 v${entry.version}；他人保存后你需要重新载入，不能覆盖新版本。` : '先保存草稿，再预览、发布。'}</p></div>
+  <DraftRecovery userId={session.user.id} kind="guide" entityId={Astro.params.slug ?? 'new'} />
   <form class="panel" action="/api/manage/" method="post" data-admin-form data-guide-editor>
     <input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="save-guide"/><input type="hidden" name="version" value={entry?.version ?? ''}/>
     <div class="form-grid">

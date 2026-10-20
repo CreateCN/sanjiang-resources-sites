@@ -2,6 +2,7 @@ import { ResourceSchema, type Resource } from '../lib/resource-schema.ts';
 import { GuideSchema, type Guide } from '../lib/guide-schema.ts';
 import { database, transaction } from './db.ts';
 import { audit, fail, hashPassword } from './security.ts';
+import { requestMemo } from './request-cache.ts';
 export type { Resource } from '../lib/resource-schema.ts';
 export type { Guide } from '../lib/guide-schema.ts';
 export type Role = 'admin' | 'editor';
@@ -19,10 +20,16 @@ function managed(row: Row): ManagedResource {
   return { id: String(row.id), draft: JSON.parse(String(row.draft)), published: row.published ? JSON.parse(String(row.published)) : null, version: Number(row.version), updatedAt: String(row.updated_at), deletedAt: row.deleted_at ? String(row.deleted_at) : null };
 }
 export function getPublishedResources(): Resource[] {
-  return database().prepare('SELECT published FROM resources WHERE published IS NOT NULL AND deleted_at IS NULL ORDER BY rowid').all().map((row) => JSON.parse(String(row.published)));
+  return requestMemo('published-resources', () => database().prepare('SELECT published FROM resources WHERE published IS NOT NULL AND deleted_at IS NULL ORDER BY rowid').all().map((row) => JSON.parse(String(row.published))));
+}
+export function findPublishedResource(id: string): Resource | undefined {
+  return requestMemo(`published-resource:${id}`, () => {
+    const row = database().prepare('SELECT published FROM resources WHERE id=? AND published IS NOT NULL AND deleted_at IS NULL').get(id);
+    return row ? JSON.parse(String(row.published)) : undefined;
+  });
 }
 export function listCategories(): { id: string; name: string }[] {
-  return database().prepare('SELECT id,name FROM categories ORDER BY rowid').all().map((row) => ({ id: String(row.id), name: String(row.name) }));
+  return requestMemo('categories', () => database().prepare('SELECT id,name FROM categories ORDER BY rowid').all().map((row) => ({ id: String(row.id), name: String(row.name) })));
 }
 export function listManagedResources(): ManagedResource[] { return database().prepare('SELECT * FROM resources WHERE deleted_at IS NULL ORDER BY updated_at DESC,id').all().map(managed); }
 export function listDeletedResources(): ManagedResource[] { return database().prepare('SELECT * FROM resources WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC').all().map(managed); }
@@ -188,7 +195,13 @@ function managedGuide(row: Row): ManagedGuide {
   return { slug: String(row.slug), draft: JSON.parse(String(row.draft)), published: row.published ? JSON.parse(String(row.published)) : null, version: Number(row.version), updatedAt: String(row.updated_at), deletedAt: row.deleted_at ? String(row.deleted_at) : null };
 }
 export function getPublishedGuides(): Guide[] {
-  return database().prepare('SELECT published FROM guides WHERE published IS NOT NULL AND deleted_at IS NULL ORDER BY rowid').all().map((row) => JSON.parse(String(row.published)));
+  return requestMemo('published-guides', () => database().prepare('SELECT published FROM guides WHERE published IS NOT NULL AND deleted_at IS NULL ORDER BY rowid').all().map((row) => JSON.parse(String(row.published))));
+}
+export function findPublishedGuide(slug: string): Guide | undefined {
+  return requestMemo(`published-guide:${slug}`, () => {
+    const row = database().prepare('SELECT published FROM guides WHERE slug=? AND published IS NOT NULL AND deleted_at IS NULL').get(slug);
+    return row ? JSON.parse(String(row.published)) : undefined;
+  });
 }
 export function listManagedGuides(): ManagedGuide[] {
   return database().prepare('SELECT * FROM guides WHERE deleted_at IS NULL ORDER BY updated_at DESC,slug').all().map(managedGuide);
@@ -317,8 +330,11 @@ export function recordEvent(name: MetricName, target: string): void {
   const day = utcDay(now);
   database().prepare(`INSERT INTO events (day,name,target,count) VALUES (?,?,?,1)
     ON CONFLICT(day,name,target) DO UPDATE SET count=count+1`).run(day, name, clean);
+}
+/** Maintenance work, not part of every page-view write. */
+export function pruneEvents(now = new Date()): number {
   const cutoff = utcDay(new Date(now.getTime() - EVENT_RETENTION_DAYS * 24 * 60 * 60 * 1000));
-  database().prepare('DELETE FROM events WHERE day < ?').run(cutoff);
+  return Number(database().prepare('DELETE FROM events WHERE day < ?').run(cutoff).changes);
 }
 export interface MetricRow { name: string; target: string; total: number }
 export function metricsSummary(days = 30): { since: string; totals: Record<string, number>; rows: MetricRow[] } {

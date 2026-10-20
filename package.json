@@ -24,7 +24,8 @@
     "prebuild": "npm run images:build",
     "precheck": "npm run images:build",
     "pretest": "npm run images:build",
-    "maintenance": "node scripts/maintenance.mjs"
+    "maintenance": "node scripts/maintenance.mjs",
+    "metrics:clean": "node scripts/cleanup-metrics.mjs"
   },
   "dependencies": {
     "@astrojs/node": "^9.5.5",

@@ -15,3 +15,9 @@
 .notice-list span{grid-column:1;color:#52675d;font-size:13px;line-height:1.7}
 .notice-list time{grid-column:2;grid-row:1;color:#52675d;font-size:12px;white-space:nowrap}
 .notice-list a:hover{color:#245c42}
+
+.draft-recovery{background:#e4eee1;padding:18px 24px;margin-bottom:24px;overflow-wrap:anywhere}
+.draft-state,.draft-message{font-size:14px;color:var(--muted)}
+.draft-restore{margin-top:12px}.draft-restore[hidden],.draft-restore textarea[hidden]{display:none}
+.draft-restore textarea{margin-top:18px}.draft-restore .actions{margin-top:12px}
+.admin-version-footer{padding:18px 32px;background:#fff;color:var(--muted);font-size:13px}

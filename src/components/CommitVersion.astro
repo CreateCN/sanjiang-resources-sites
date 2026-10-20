@@ -1,0 +1,8 @@
+---
+const revision: string = import.meta.env.PUBLIC_COMMIT_SHA ?? '';
+const valid = /^[a-f0-9]{40}$/.test(revision);
+---
+<span class="commit-version" data-commit-hash={valid ? revision : 'unknown'}>
+  {valid ? <a href={`https://github.com/CreateCN/sanjiang-resources-sites/commit/${revision}`} target="_blank" rel="noopener noreferrer" title={`完整提交：${revision}`}>Commit <code>{revision.slice(0, 7)}</code></a> : 'Commit 未知'}
+</span>
+<style>.commit-version{font-size:13px;color:inherit}.commit-version a{text-decoration:underline;text-underline-offset:3px}.commit-version code{font-size:inherit;overflow-wrap:anywhere}</style>

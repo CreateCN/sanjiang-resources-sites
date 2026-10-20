@@ -15,7 +15,7 @@
 ## Docker Compose 定时任务
 
 ```bash
-docker compose up -d --build
+COMMIT_SHA="$(git rev-parse HEAD)" docker compose up -d --build
 docker compose logs --tail=100 maintenance
 ```
 
@@ -27,8 +27,14 @@ Compose 默认启动 `app` 与 `maintenance` 两个容器，使用同一镜像�
 | `BACKUP_UTC_HOUR` | `19`，每天 | 每天 03:00 |
 | `LINK_CHECK_UTC_HOUR` | `20` | 04:00 |
 | `LINK_CHECK_UTC_DAY` | `0`，UTC 周日 | 每周一 |
+| `METRICS_CLEANUP_UTC_HOUR` | `18`，每天 | 每天 02:00 |
 
 修改 `.env` 后执行 `docker compose up -d`。任务每 30 秒检查一次到期状态。
+统计清理每天删除超过 90 天的聚合指标；浏览请求只更新计数，不执行历史删除。
+维护进程每 30 秒独立写入一次心跳，长任务执行期间也会更新。
+管理员可访问 `/admin/maintenance/` 查看心跳、每项任务的开始/结束/成功时间、退出码、
+下次计划/重试时间，以及当前已发布资源的异常链接。心跳超过两分钟标记中断；
+到期任务未完成会提示超期。页面只读，不创建状态文件、不运行任务。编辑者不能访问。
 首次启动或停机后重启，会立即补跑最近一期尚未完成的任务；不会重放所有历史任务。
 因此首次部署可能立即执行备份和链接检查，不必等到下一个计划时间。
 
@@ -80,3 +86,31 @@ docker compose config --quiet
 
 维护测试覆盖时间边界、持久化、重复进程互斥、崩溃租约接管、失败重试和链接轮转。
 浏览器测试验证手机与桌面真实加载 WebP，并保留原图回退地址。
+
+## 编辑草稿保护
+
+资源与指南编辑页在有未保存修改时提示离开，并把内容字段备份到当前浏览器。
+备份按账户 ID、内容类型和条目 ID 隔离，七天后过期，不包含密码、会话或 CSRF 令牌。
+重新进入页面时可以恢复、查看或丢弃；恢复只填回表单，不自动提交或发布。
+本地版本与服务器版本不一致时禁止一键恢复，只能查看并手动合并。
+成功保存后清除对应备份；网络失败、权限错误和版本冲突均保留输入。
+浏览器禁用存储或容量不足时仍可编辑和保存，并明确提示本地备份不可用。
+本地备份不是加密存储，不应在内容字段中填写密钥或其他敏感凭据。
+
+## 构建提交版本
+
+公开页和后台页脚显示七位 Commit Hash，链接到 GitHub 上对应的完整提交。
+`npm run build` 优先读取 `COMMIT_SHA`，其次 `GITHUB_SHA`，最后读取本地 `git rev-parse HEAD`。
+构建产物保存该值，运行时切换代码目录或环境变量不会改变已构建页面的版本。
+缺失 Git 元数据或传入非法版本时显示“Commit 未知”，不生成错误的提交链接。
+
+Docker 构建上下文不包含 `.git`，因此部署时使用上面的 `COMMIT_SHA=...` 命令传入完整 40 位哈希。
+从源码压缩包构建时同样应显式指定。Commit 只能标识提交，发布构建应使用干净的代码检出。
+
+## 自动浏览器回归
+
+CI 在生产构建后安装 Playwright Chromium，执行后台和公开站全部浏览器测试。
+测试优先使用 `CHROME_PATH`；未设置时优先本机 Chrome，否则使用 Playwright Chromium。
+设置 `TEST_ARTIFACTS_DIR` 后，每个浏览器上下文会保存截图和可用 `playwright show-trace`
+查看的追踪文件。CI 只在失败时上传，保留七天；这些记录只使用测试账户和临时数据。
+本地排查示例：`TEST_ARTIFACTS_DIR=/tmp/sanjiang-browser npm run test:admin`。

@@ -1,0 +1,30 @@
+---
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import { getSession } from '../../server/auth';
+import { maintenanceStatus } from '../../server/maintenance-status';
+import { getPublishedResources, listLinkChecks } from '../../server/store';
+const session = getSession(Astro.request);
+if (!session) return Astro.redirect('/admin/login/');
+if (session.user.role !== 'admin') return new Response('此页面仅限管理员', { status: 403 });
+const status = maintenanceStatus();
+const workerLabels: Record<string, string> = { ok: '运行正常', stopped: '心跳已中断', never: '尚未发现维护进程', unavailable: '无法读取维护状态' };
+const jobLabels: Record<string, string> = { never: '尚未执行', running: '执行中', retry: '失败，等待重试', overdue: '已到期，尚未完成', ok: '已完成', attention: '已完成，发现异常链接' };
+const formatTime = (time: number | null) => time ? new Date(time).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false }) : '暂无记录';
+const resources = new Map(getPublishedResources().map((resource) => [resource.id, resource]));
+const checks = listLinkChecks().filter((check) => check.status !== 'ok' && resources.has(check.resourceId));
+---
+<AdminLayout title="维护状态" session={session}>
+  <section class="notice" data-worker-status={status.worker}>
+    <strong>维护进程：{workerLabels[status.worker]}</strong>
+    <p>最近心跳：{formatTime(status.heartbeat)}。时间均为北京时间；页面刷新后更新状态。</p>
+    {status.worker !== 'ok' && <p>请检查维护容器是否启动及其运行日志；访问此页不会启动任务或修改维护状态。</p>}
+  </section>
+  <section class="panel"><h2>定时任务</h2><p>首次启动会补跑最近一期任务；失败后 15 分钟重试。备份完成表示已通过完整性校验，仍需定期演练恢复。</p>
+    <div class="table-wrap"><table><thead><tr><th>任务</th><th>状态</th><th>最近开始／结束</th><th>最近成功</th><th>下次计划／重试</th></tr></thead><tbody>
+      {status.jobs.map((job) => <tr data-maintenance-job={job.name} data-job-status={job.status}><td>{job.label}</td><td><strong>{jobLabels[job.status]}</strong>{job.lastExit !== null && <p class="muted">上次退出码：{job.lastExit}</p>}</td><td>{formatTime(job.lastStarted)}<br/>{formatTime(job.lastFinished)}</td><td>{formatTime(job.lastSuccess)}</td><td>{formatTime(job.nextRun)}{job.status === 'overdue' && <p class="muted">此前到期任务待补跑，请检查进程。</p>}</td></tr>)}
+    </tbody></table></div>
+  </section>
+  <section class="panel"><h2>待确认的链接检查</h2><p>当前已发布资源共有 {checks.length} 条异常检查结果。403、429 或检查失败需要人工核实，不会自动下架。</p>
+    {checks.length ? <div class="table-wrap"><table><thead><tr><th>资源</th><th>结果</th><th>说明</th><th>检查时间</th></tr></thead><tbody>{checks.map((check) => <tr><td><a href={`/admin/resources/${check.resourceId}/`}>{resources.get(check.resourceId)?.title}</a></td><td>{check.status === 'broken' ? '可能失效' : check.status === 'warn' ? '需人工确认' : '检查失败'}{check.statusCode ? `（${check.statusCode}）` : ''}</td><td>{check.message}</td><td>{formatTime(Date.parse(check.checkedAt))}</td></tr>)}</tbody></table></div> : <p class="muted">暂无异常检查结果；未检查的资源不代表链接已验证。</p>}
+  </section>
+</AdminLayout>

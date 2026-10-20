@@ -1,5 +1,6 @@
 ---
 import '../styles/site.css';
+import CommitVersion from '../components/CommitVersion.astro';
 interface Props { title: string; description?: string; type?: 'website' | 'article'; jsonLd?: Record<string, unknown>[]; noindex?: boolean; }
 const { title, description = '为三江学院同学整理的开源工具、开放课程与学生资源。先了解条件，再放心开始。', type = 'website', jsonLd = [], noindex = false } = Astro.props;
 const path = Astro.url.pathname;
@@ -60,6 +61,7 @@ const safeJson = (value: unknown) => JSON.stringify(value).replaceAll('<', '\\u0
         <div class="portal-footer-note">
           <p>面向三江学院学生的非官方整理项目，不代表学校或资源方授权。</p>
           <p>资源条件以提供方最新说明为准；核验状态不等于校内实测。</p>
+          <p><CommitVersion /></p>
         </div>
       </div>
     </footer>

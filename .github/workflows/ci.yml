@@ -9,6 +9,8 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      COMMIT_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -19,10 +21,27 @@ jobs:
       - run: npm run check
       - run: npm test
       - run: npm run build
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Test admin workflows
+        run: npm run test:admin
+        env:
+          TEST_ARTIFACTS_DIR: test-results/admin
       - name: Smoke test production server
         run: |
           DATABASE_PATH="$PWD/.ci/site.sqlite" PORT=4321 HOST=127.0.0.1 SITE_URL=http://127.0.0.1:4321 node dist/server/entry.mjs &
+          server_pid=$!
+          trap 'kill "$server_pid"' EXIT
           for i in $(seq 1 40); do curl -fsS http://127.0.0.1:4321/api/health/ >/dev/null && break; sleep 0.5; done
           curl -fsS http://127.0.0.1:4321/api/health/ | grep -q '"db":"ok"'
           curl -fsS http://127.0.0.1:4321/ | grep -q "为学习，找到好工具"
           curl -fsS http://127.0.0.1:4321/sitemap.xml | grep -q "<urlset"
+          TEST_BASE_URL=http://127.0.0.1:4321 TEST_ARTIFACTS_DIR=test-results/public npm run test:browser
+      - name: Upload browser evidence on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-failure-evidence
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7

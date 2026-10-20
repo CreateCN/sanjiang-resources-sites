@@ -7,6 +7,8 @@ COPY tsconfig.json astro.config.mjs ./
 COPY public ./public
 COPY src ./src
 COPY scripts ./scripts
+ARG COMMIT_SHA
+ENV COMMIT_SHA=$COMMIT_SHA
 RUN npm run build
 
 # 运行阶段

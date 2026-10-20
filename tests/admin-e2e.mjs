@@ -1,11 +1,14 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
+import { openState, claimJob, finishJob } from '../scripts/maintenance.mjs';
+import { scheduleFromEnv, scheduledSlot } from '../src/lib/maintenance-schedule.ts';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chromium } from '@playwright/test';
+import { launchTestBrowser } from './browser-harness.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), 'sj-e2e-'));
@@ -32,12 +35,12 @@ before(async () => {
   assert.equal(seeded.status, 0, seeded.stderr);
   server = spawn(process.execPath, ['dist/server/entry.mjs'], {
     cwd: root,
-    env: { ...process.env, NODE_ENV: 'production', HOST: '127.0.0.1', PORT: String(port), DATABASE_PATH: dbPath, SITE_URL: base },
+    env: { ...process.env, NODE_ENV: 'production', HOST: '127.0.0.1', PORT: String(port), DATABASE_PATH: dbPath, SITE_URL: base, MAINTENANCE_STATE_PATH: join(dir, 'maintenance.sqlite') },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
   server.stderr.on('data', (chunk) => process.stderr.write(chunk));
   await waitForServer();
-  browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? '/usr/bin/google-chrome', headless: true, args: ['--no-sandbox'] });
+  browser = await launchTestBrowser();
 });
 
 after(async () => {
@@ -150,7 +153,7 @@ test('版本冲突不会覆盖他人修改，并显示可读错误', async () =>
   await stale.goto(`${base}/admin/resources/libreoffice/`);
 
   await first.locator('[data-field="summary"]').fill('管理员最新一次修改的简介。');
-  await Promise.all([first.waitForURL(/\/admin\/resources\/libreoffice\/$/), first.getByRole('button', { name: '保存草稿' }).click()]);
+  await Promise.all([first.waitForEvent('domcontentloaded'), first.getByRole('button', { name: '保存草稿' }).click()]);
 
   await stale.locator('[data-field="summary"]').fill('过期页面的草稿应被拒绝。');
   await stale.getByRole('button', { name: '保存草稿' }).click();
@@ -417,7 +420,7 @@ test('首页编排保存后影响首页与场景落地页', async () => {
   await page.locator('#featured').selectOption('python');
   await page.locator('#task-writing').fill('写课程论文');
   await page.locator('#detail-writing').fill('从选题到引用');
-  await Promise.all([page.waitForURL(`${base}/admin/settings/`), page.getByRole('button', { name: '保存首页编排' }).click()]);
+  await Promise.all([page.waitForEvent('domcontentloaded'), page.getByRole('button', { name: '保存首页编排' }).click()]);
   await page.waitForFunction(() => document.querySelector('#task-writing')?.value === '写课程论文');
   const home = await (await fetch(`${base}/`)).text();
   assert.match(home, /写课程论文/);
@@ -471,4 +474,164 @@ test('复核队列支持批量标记已核对', async () => {
   const row = page.locator('tr', { hasText: 'Inkscape 矢量绘图' });
   assert.match(String(await row.textContent()), /官方信息已核对/);
   await page.close();
+});
+
+test('维护页只允许管理员，显示任务结果、异常链接与中断心跳', async () => {
+  const page = await browser.newPage();
+  try {
+    await page.goto(`${base}/admin/maintenance/`);
+    assert.equal(new URL(page.url()).pathname, '/admin/login/');
+    await login(page, 'rootadmin', 'root-password-123');
+    await page.goto(`${base}/admin/maintenance/`);
+    assert.equal(await page.locator('[data-worker-status]').getAttribute('data-worker-status'), 'never');
+    assert.equal(existsSync(join(dir, 'maintenance.sqlite')), false, '读取页面不创建维护状态');
+    const now = Date.now();
+    const state = openState(join(dir, 'maintenance.sqlite'));
+    for (const job of scheduleFromEnv()) {
+      const slot = scheduledSlot(job, now);
+      const owner = claimJob(state, job.name, slot, now);
+      finishJob(state, job, slot, owner, job.name === 'links' ? 2 : 0, now);
+    }
+    state.prepare('INSERT INTO worker_status (id,heartbeat) VALUES (1,?)').run(now);
+    const db = new DatabaseSync(dbPath);
+    db.prepare("INSERT OR REPLACE INTO link_checks (resource_id,status,status_code,message,checked_at) VALUES ('zotero','broken',404,'E2E 失效链接',?)").run(new Date(now).toISOString());
+    db.close();
+    await page.reload();
+    assert.equal(await page.locator('[data-worker-status]').getAttribute('data-worker-status'), 'ok');
+    assert.equal(await page.locator('[data-maintenance-job=backup]').getAttribute('data-job-status'), 'ok');
+    assert.equal(await page.locator('[data-maintenance-job=links]').getAttribute('data-job-status'), 'attention');
+    assert.equal(await page.locator('[data-maintenance-job=cleanup]').getAttribute('data-job-status'), 'ok');
+    assert.ok(await page.getByText('E2E 失效链接').isVisible());
+    assert.ok(await page.locator('table a[href="/admin/resources/zotero/"]').isVisible());
+    state.prepare('UPDATE worker_status SET heartbeat=?').run(now - 180000);
+    state.close();
+    await page.reload();
+    assert.equal(await page.locator('[data-worker-status]').getAttribute('data-worker-status'), 'stopped');
+    await login(page, 'editor1', 'editor-password-123');
+    const denied = await page.goto(`${base}/admin/maintenance/`);
+    assert.equal(denied.status(), 403);
+  } finally { await page.close(); }
+});
+
+test('资源未保存会提示离开，可恢复本地输入，成功保存后清除备份', async () => {
+  const page = await browser.newPage();
+  let prompts = 0;
+  page.on('dialog', async (dialog) => { prompts++; await dialog.accept(); });
+  try {
+    await login(page, 'rootadmin', 'root-password-123');
+    await page.goto(`${base}/admin/resources/zotero/`);
+    await page.locator('[data-field=summary]').fill('本地恢复测试：尚未提交服务器的资源简介。');
+    assert.match(await page.locator('.draft-state').textContent(), /已备份/);
+    const raw = await page.evaluate(() => Object.entries(localStorage).find(([key]) => key.startsWith('sanjiang:draft:'))?.[1]);
+    assert.ok(raw);
+    assert.doesNotMatch(raw, /csrf|password|sanjiang_session/);
+    await page.reload();
+    assert.ok(prompts > 0, '离开未保存页面时显示提示');
+    assert.ok(await page.locator('.draft-restore').isVisible());
+    await page.getByRole('button', { name: '恢复本地输入' }).click();
+    assert.equal(await page.locator('[data-field=summary]').inputValue(), '本地恢复测试：尚未提交服务器的资源简介。');
+    const beforeSave = prompts;
+    await Promise.all([page.waitForEvent('domcontentloaded'), page.getByRole('button', { name: '保存草稿', exact: true }).click()]);
+    assert.equal(prompts, beforeSave, '成功保存时不应再弹未保存提示');
+    assert.equal(await page.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith('sanjiang:draft:')).length), 0);
+    assert.equal(await page.locator('[data-field=summary]').inputValue(), '本地恢复测试：尚未提交服务器的资源简介。');
+  } finally { await page.close(); }
+});
+
+test('指南恢复包含关联资源；本地输入按账户与条目隔离，过期备份会清除', async () => {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  page.on('dialog', (dialog) => dialog.accept());
+  try {
+    await login(page, 'rootadmin', 'root-password-123');
+    await page.goto(`${base}/admin/guides/new/`);
+    await page.locator('#guide-slug').fill('local-recovery-guide');
+    await page.locator('#guide-title').fill('本地指南标题');
+    await page.locator('#guide-body').fill('## 本地正文\n\n恢复后再保存。');
+    await page.locator('input[name=resources][value=zotero]').check();
+    await page.reload();
+    await page.getByRole('button', { name: '恢复本地输入' }).click();
+    assert.equal(await page.locator('#guide-title').inputValue(), '本地指南标题');
+    assert.equal(await page.locator('#guide-body').inputValue(), '## 本地正文\n\n恢复后再保存。');
+    assert.equal(await page.locator('input[name=resources][value=zotero]').isChecked(), true);
+    await page.goto(`${base}/admin/resources/zotero/`);
+    assert.equal(await page.locator('.draft-restore').isVisible(), false);
+    await page.locator('[data-field=summary]').fill('管理员隔离测试草稿');
+    await login(page, 'editor1', 'editor-password-123');
+    await page.goto(`${base}/admin/resources/zotero/`);
+    assert.equal(await page.locator('.draft-restore').isVisible(), false);
+    assert.notEqual(await page.locator('[data-field=summary]').inputValue(), '管理员隔离测试草稿');
+    await page.locator('[data-field=summary]').fill('编辑者隔离测试草稿');
+    const accounts = await page.evaluate(() => new Set(Object.keys(localStorage).filter((key) => key.startsWith('sanjiang:draft:')).map((key) => key.split(':')[3])).size);
+    assert.equal(accounts, 2);
+    await page.evaluate(() => { for (const key of Object.keys(localStorage)) if (key.startsWith('sanjiang:draft:')) { const value = JSON.parse(localStorage.getItem(key)); value.savedAt = Date.now() - 8 * 86400000; localStorage.setItem(key, JSON.stringify(value)); } });
+    // Closing bypasses beforeunload's final backup, preserving the expiry fixture.
+    await page.close();
+    const reopened = await context.newPage();
+    await reopened.goto(`${base}/admin/resources/zotero/`);
+    assert.equal(await reopened.locator('.draft-restore').isVisible(), false);
+    assert.equal(await reopened.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith('sanjiang:draft:')).length), 0);
+  } finally { await context.close(); }
+});
+
+test('旧版本本地草稿不能覆盖新版本，可查看并丢弃待合并内容', async () => {
+  const page = await browser.newPage();
+  page.on('dialog', (dialog) => dialog.accept());
+  try {
+    await login(page, 'rootadmin', 'root-password-123');
+    await page.goto(`${base}/admin/resources/gimp/`);
+    await page.locator('[data-field=title]').fill('旧版本本地标题');
+    const saved = await page.evaluate(async () => {
+      const form = document.querySelector('[data-resource-editor]');
+      const resource = JSON.parse(form.querySelector('[name=resource]').value);
+      resource.title = '另一位编辑者的新标题';
+      const body = new FormData(form);
+      body.set('resource', JSON.stringify(resource));
+      const response = await fetch('/api/manage/', { method: 'POST', body, headers: { Accept: 'application/json' } });
+      return response.ok;
+    });
+    assert.equal(saved, true);
+    await page.reload();
+    assert.equal(await page.getByRole('button', { name: '恢复本地输入' }).isDisabled(), true);
+    assert.equal(await page.locator('[data-field=title]').inputValue(), '另一位编辑者的新标题');
+    await page.getByRole('button', { name: '查看待合并内容' }).click();
+    assert.match(await page.locator('[data-draft-content]').inputValue(), /旧版本本地标题/);
+    await page.getByRole('button', { name: '丢弃本地备份' }).click();
+    assert.equal(await page.locator('.draft-restore').isVisible(), false);
+    assert.equal(await page.locator('[data-field=title]').inputValue(), '另一位编辑者的新标题');
+  } finally { await page.close(); }
+});
+
+test('浏览器存储不可用时编辑仍可用，并明确提示本地备份失败', async () => {
+  const context = await browser.newContext();
+  await context.addInitScript(() => { Storage.prototype.setItem = () => { throw new DOMException('quota', 'QuotaExceededError'); }; });
+  const page = await context.newPage();
+  page.on('dialog', (dialog) => dialog.accept());
+  try {
+    await login(page, 'rootadmin', 'root-password-123');
+    await page.goto(`${base}/admin/resources/zotero/`);
+    await page.locator('[data-field=summary]').fill('存储失败时仍可手动保存的简介。');
+    assert.match(await page.locator('.draft-state').textContent(), /本地备份不可用/);
+    await Promise.all([page.waitForEvent('domcontentloaded'), page.getByRole('button', { name: '保存草稿', exact: true }).click()]);
+    assert.equal(await page.locator('[data-field=summary]').inputValue(), '存储失败时仍可手动保存的简介。');
+  } finally { await context.close(); }
+});
+
+test('保存期间锁定内容字段，失败后重新启用并保留输入和本地备份', async () => {
+  const page = await browser.newPage();
+  try {
+    await login(page, 'rootadmin', 'root-password-123');
+    await page.goto(`${base}/admin/resources/zotero/`);
+    await page.route('**/api/manage/', async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      await route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ error: '测试保存失败，输入应保留' }) });
+    });
+    await page.locator('[data-field=summary]').fill('保存失败不能丢失的本地输入。');
+    await Promise.all([page.waitForRequest('**/api/manage/'), page.getByRole('button', { name: '保存草稿', exact: true }).click()]);
+    assert.equal(await page.locator('[data-field=summary]').isDisabled(), true);
+    await page.waitForFunction(() => document.querySelector('[data-resource-editor] [role=status]')?.textContent?.includes('测试保存失败'));
+    assert.equal(await page.locator('[data-field=summary]').isEnabled(), true);
+    assert.equal(await page.locator('[data-field=summary]').inputValue(), '保存失败不能丢失的本地输入。');
+    assert.equal(await page.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith('sanjiang:draft:')).length), 1);
+  } finally { await page.close(); }
 });

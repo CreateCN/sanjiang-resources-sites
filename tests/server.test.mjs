@@ -18,6 +18,7 @@ const { database, closeDatabase } = await import('../src/server/db.ts');
 const auth = await import('../src/server/auth.ts');
 const http = await import('../src/server/http.ts');
 const { hashToken, hashPassword, verifyPassword } = await import('../src/server/security.ts');
+const { withRequestCache } = await import('../src/server/request-cache.ts');
 const PASSWORD = 'test-password-2026!';
 let admin, editor;
 beforeEach(() => {
@@ -532,4 +533,36 @@ test('import preview and apply restore drafts, categories and guides', () => {
   assert.ok(Array.isArray(exported.resources) && exported.resources.length > 12);
   assert.ok(exported.categories.some((category) => category.id === 'career'));
   assert.equal(exported.schemaVersion, 1);
+});
+
+test('request-scoped reads reuse results and publication invalidates them immediately', () => {
+  withRequestCache(() => {
+    assert.equal(store.listCategories(), store.listCategories());
+    assert.equal(store.getPublishedResources(), store.getPublishedResources());
+    const resource = store.getPublishedResources()[0];
+    assert.equal(store.findPublishedResource(resource.id), store.findPublishedResource(resource.id));
+    const current = store.findManagedResource(resource.id);
+    store.saveResource(admin, { ...current.draft, title: '发布后的新标题' }, current.version);
+    assert.notEqual(store.findPublishedResource(resource.id).title, '发布后的新标题');
+    store.changePublication(admin, resource.id, store.findManagedResource(resource.id).version, 'publish');
+    assert.equal(store.findPublishedResource(resource.id).title, '发布后的新标题');
+    store.changePublication(admin, resource.id, store.findManagedResource(resource.id).version, 'delete-resource');
+    assert.equal(store.findPublishedResource(resource.id), undefined);
+    store.saveGuide(admin, { slug: 'lookup-guide', title: '测试指南', summary: '', body: '正文', resources: [] }, null);
+    assert.equal(store.findPublishedGuide('lookup-guide'), undefined);
+    store.changeGuidePublication(admin, 'lookup-guide', store.findManagedGuide('lookup-guide').version, 'publish-guide');
+    assert.equal(store.findPublishedGuide('lookup-guide').title, '测试指南');
+  });
+});
+
+test('metrics retention is handled by maintenance, preserving the exact 90-day boundary', () => {
+  const now = new Date();
+  const cutoff = new Date(now.getTime() - 90 * 86400000).toISOString().slice(0, 10);
+  database().prepare('INSERT INTO events (day,name,target,count) VALUES (?,?,?,1)').run('2000-01-01', 'resource_view', 'old');
+  database().prepare('INSERT INTO events (day,name,target,count) VALUES (?,?,?,1)').run(cutoff, 'resource_view', 'boundary');
+  store.recordEvent('resource_view', 'zotero');
+  assert.ok(database().prepare("SELECT 1 FROM events WHERE target='old'").get(), '浏览请求不执行历史清理');
+  assert.equal(store.pruneEvents(now), 1);
+  assert.ok(database().prepare("SELECT 1 FROM events WHERE target='boundary'").get());
+  assert.ok(database().prepare("SELECT 1 FROM events WHERE target='zotero'").get());
 });

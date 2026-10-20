@@ -15,7 +15,7 @@ function stateTest(run) {
     finally { db.close(); rmSync(dir, { recursive: true, force: true }); }
   };
 }
-const jobs = scheduleFromEnv({});
+const jobs = scheduleFromEnv({}).slice(0, 2);
 const now = Date.parse('2026-10-20T21:00:00Z');
 
 test('默认北京时间每天03点备份、周一04点检查；UTC边界和周边界正确', () => {

@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { categories, resources } from '../data/resources.ts';
 import { ResourceSchema } from '../lib/resource-schema.ts';
 import { migrations } from './migrations.ts';
+import { clearRequestCache } from './request-cache.ts';
 
 let connection: DatabaseSync | undefined;
 
@@ -51,7 +52,7 @@ export function database(): DatabaseSync {
 export function transaction<T>(operation: (db: DatabaseSync) => T): T {
   const db = database();
   db.exec('BEGIN IMMEDIATE');
-  try { const value = operation(db); db.exec('COMMIT'); return value; }
+  try { const value = operation(db); db.exec('COMMIT'); clearRequestCache(); return value; }
   catch (error) { db.exec('ROLLBACK'); throw error; }
 }
 
