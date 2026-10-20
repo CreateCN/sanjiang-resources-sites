@@ -18,12 +18,19 @@
     "test:admin": "node --test tests/admin-e2e.mjs",
     "test:server": "node --test tests/server.test.mjs",
     "db:backup": "node scripts/backup-db.mjs",
-    "links:check": "node scripts/check-links.mjs"
+    "links:check": "node scripts/check-links.mjs",
+    "images:build": "node scripts/optimize-images.mjs",
+    "predev": "npm run images:build",
+    "prebuild": "npm run images:build",
+    "precheck": "npm run images:build",
+    "pretest": "npm run images:build",
+    "maintenance": "node scripts/maintenance.mjs"
   },
   "dependencies": {
     "@astrojs/node": "^9.5.5",
     "astro": "^5.0.0",
     "markdown-it": "^14.3.3",
+    "sharp": "0.34.5",
     "zod": "^3.24.0"
   },
   "devDependencies": {

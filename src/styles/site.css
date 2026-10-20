@@ -724,6 +724,10 @@ a:hover {
   object-position: top;
   transition: transform 0.4s;
 }
+.tool-on-shelf picture {
+  display: block;
+  height: 100%;
+}
 .tool-on-shelf:hover img {
   transform: scale(1.04);
 }

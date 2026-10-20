@@ -1,8 +1,15 @@
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   app:
     build: .
     image: sanjiang-resources:latest
     restart: unless-stopped
+    logging: *logging
     ports:
       # 默认只监听本机，对外发布请通过 HTTPS 反向代理；不要直接暴露到公网。
       - "127.0.0.1:4321:4321"
@@ -21,6 +28,29 @@ services:
       timeout: 5s
       start_period: 15s
       retries: 3
+
+  maintenance:
+    build: .
+    image: sanjiang-resources:latest
+    restart: unless-stopped
+    command: ["node", "scripts/maintenance.mjs"]
+    # The application's HTTP health check does not apply to this worker.
+    healthcheck:
+      disable: true
+    depends_on:
+      app:
+        condition: service_healthy
+    logging: *logging
+    environment:
+      DATABASE_PATH: /app/data/site.sqlite
+      BACKUP_DIR: /app/backups
+      BACKUP_KEEP: ${BACKUP_KEEP:-7}
+      BACKUP_UTC_HOUR: ${BACKUP_UTC_HOUR:-19}
+      LINK_CHECK_UTC_HOUR: ${LINK_CHECK_UTC_HOUR:-20}
+      LINK_CHECK_UTC_DAY: ${LINK_CHECK_UTC_DAY:-0}
+    volumes:
+      - site-data:/app/data
+      - ${BACKUP_HOST_DIR:-./backups}:/app/backups
 
 volumes:
   site-data:

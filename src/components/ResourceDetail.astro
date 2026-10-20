@@ -4,6 +4,7 @@ import { guidesForResource } from '../lib/guides';
 import { renderInlineMarkdown, renderMarkdown } from '../lib/markdown';
 import { freshness, freshnessNote } from '../lib/freshness';
 import { accessLabel, accessHint } from '../lib/access';
+import ResourceImage from './ResourceImage.astro';
 interface Props { resource: import('../lib/resource-schema').Resource; preview?: boolean; }
 const { resource, preview = false } = Astro.props;
 const resources = getPublishedResources();
@@ -25,7 +26,7 @@ const imageUnconfirmed = Boolean(resource.image && resource.imageRights !== 'con
         <nav class="detail-nav" aria-label="本页目录"><a href="#conditions">使用条件</a>{resource.details && <a href="#details">详细说明</a>}<a href="#start">如何开始</a><a href="#verification">核验说明</a><a href="#report">问题反馈</a></nav>
         <section id="conditions"><h2>先看看是否适合你</h2><dl class="facts"><div><dt>使用门槛</dt><dd>{accessLabel(resource.access)}：{accessHint(resource.access)}</dd></div><div><dt>费用与许可</dt><dd set:html={renderInlineMarkdown(resource.license)} /></div><div><dt>设备与平台</dt><dd>{resource.platforms.join('、')}</dd></div><div><dt>资格与身份要求</dt><dd set:html={renderInlineMarkdown(resource.eligibility)} /></div><div><dt>需要注意</dt><dd set:html={renderInlineMarkdown(resource.caveat)} /></div></dl></section>
         {resource.details && <section id="details"><h2>详细说明</h2><div class="markdown-body" set:html={renderMarkdown(resource.details)} /></section>}
-        {resource.image && <figure class="screenshot"><img src={resource.image} alt={resource.imageAlt ?? `${resource.title} 官方界面`} width="1200" height="800" loading="lazy" />
+        {resource.image && <figure class="screenshot"><ResourceImage src={resource.image} alt={resource.imageAlt ?? `${resource.title} 官方界面`} />
           {imageUnconfirmed && <p class="image-flag">网络图片，来源与授权未确认；如有侵权请联系管理员处理。</p>}
           <figcaption>{resource.imageCredit ?? '官方产品界面或官方网站截图'}。仅作资源识别与介绍，不代表对方背书。<a href="/about/#credits">来源说明</a>{imageUnconfirmed && <> · <a href={`/feedback/?resource=${encodeURIComponent(resource.id)}&kind=${encodeURIComponent('版权与下架')}`}>版权与下架</a></>}</figcaption></figure>}
         <section id="start"><h2>从这里开始</h2><ol class="steps">{resource.steps.map((step) => <li set:html={renderInlineMarkdown(step)} />)}</ol><a class="text-link" href={resource.url} target="_blank" rel="noopener noreferrer">打开官方页面 ↗</a></section>

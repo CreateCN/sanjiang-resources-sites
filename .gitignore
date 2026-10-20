@@ -9,3 +9,4 @@ test-results/
 !.env.example
 /data/
 backups/
+public/images/optimized/

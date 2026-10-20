@@ -15,6 +15,32 @@ after(async () => {
   await browser?.close();
 });
 
+test("手机和桌面实际加载响应式 WebP，原图回退地址保留", async () => {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 1 });
+  const page = await context.newPage();
+  try {
+    for (const width of [390, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      for (const path of ['/', '/resources/zotero/', '/resources/gimp/']) {
+        await page.goto(`${base}${path}`);
+        const pictures = page.locator('picture');
+        assert.ok(await pictures.count() > 0);
+        for (const picture of await pictures.all()) {
+          await picture.scrollIntoViewIfNeeded();
+          const image = picture.locator('img');
+          await image.evaluate(async (el) => { await el.decode(); });
+          const loaded = await image.evaluate((el) => ({ current: el.currentSrc, original: el.getAttribute('src'), width: el.naturalWidth }));
+          assert.match(loaded.current, /\/images\/optimized\/.*\.webp$/);
+          assert.ok(loaded.original.startsWith('/images/'));
+          assert.ok(!loaded.original.includes('/optimized/'));
+          assert.ok(loaded.width > 0);
+          assert.equal((await page.request.get(loaded.current)).status(), 200);
+        }
+      }
+    }
+  } finally { await context.close(); }
+});
+
 test("首页、搜索、分类、空结果及可分享网址", async () => {
   const page = await browser.newPage();
   const errors = [];

@@ -6,17 +6,19 @@
  *
  * 适合放到 cron 或 DSH 自动化里每天跑一次。只检查已发布资源，403/429 记为“需人工确认”。
  */
-import { getPublishedResources, saveLinkCheck } from '../src/server/store.ts';
+import { getPublishedResources, listLinkChecks, saveLinkCheck } from '../src/server/store.ts';
+import { selectLinkCheckResources } from '../src/lib/linkcheck-queue.ts';
 import { closeDatabase } from '../src/server/db.ts';
 import { checkResourceLink } from '../src/server/linkcheck.ts';
 
 const limitArg = process.argv.indexOf('--limit');
 const delayArg = process.argv.indexOf('--delay');
 const limit = limitArg > -1 ? Math.max(1, Number(process.argv[limitArg + 1]) || 50) : 50;
-const delay = delayArg > -1 ? Math.max(0, Number(process.argv[delayArg + 1]) || 500) : 500;
+const delayValue = Number(process.argv[delayArg + 1]);
+const delay = delayArg > -1 && Number.isFinite(delayValue) ? Math.max(0, delayValue) : 500;
 const summary = { checked: 0, ok: 0, warn: 0, broken: 0, error: 0, results: [] };
 try {
-  const resources = getPublishedResources().slice(0, limit);
+  const resources = selectLinkCheckResources(getPublishedResources(), listLinkChecks(), limit);
   for (const resource of resources) {
     const result = await checkResourceLink(resource.url);
     saveLinkCheck(resource.id, result);
