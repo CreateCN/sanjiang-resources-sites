@@ -177,7 +177,8 @@ server {
     ssl_prefer_server_ciphers off;
 
     server_tokens off;
-    client_max_body_size 1m;
+    # 导入 JSON 上限 3 MiB，加上表单编码开销留 4 MiB；其余表单由应用侧限制为 96 KiB
+    client_max_body_size 4m;
 
     # 应用只接受「单值」客户端地址：这里必须覆盖写，不能用 $proxy_add_x_forwarded_for
     proxy_set_header Host              $host;

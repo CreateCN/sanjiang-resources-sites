@@ -36,12 +36,13 @@
 | ✅ | Markdown 安全 | 禁用原始 HTML；拒绝 `javascript:`/`data:` 链接；外链加 `target`/`rel` | 同上 |
 | ✅ | 指南编辑 | 标题、摘要、正文、关联资源；草稿/发布/撤回 | `src/pages/admin/guides/` |
 | ✅ | 草稿与发布快照 | 公开站只读已发布快照；编辑者保存只改草稿，管理员发布后生效 | `src/server/store.ts` |
-| ✅ | 版本历史 | 保存/发布/撤回/恢复均留快照，保留最近 50 条；逐字段对比；恢复只改草稿 | `src/components/RevisionHistory.astro` |
+| ✅ | 版本历史 | 保存/发布/撤回/恢复均留快照，保留最近 50 条；逐字段对比；恢复只改草稿；缺分类可选替代分类，缺资源关联需显式勾选移除才恢复；版本号永不复用（删除重建也不会回到 v1） | `src/components/RevisionHistory.astro` |
 | ✅ | 草稿整页预览 | 登录后按真实前台样式预览，`noindex`、不写快照、不计浏览 | `src/pages/admin/preview/` |
+| ✅ | 未保存输入备份 | 每次加载生成独立归属键（`window.open` 带 opener 也不会共用），兼容旧格式键并自动迁移；保存只清理自己的（或内容完全相同的）备份；多份分歧备份可逐份查看/恢复，最新备份与服务器相同不遮挡更早内容 | `src/scripts/draft-recovery.ts` |
 | ✅ | 回收站 | 软删除；前台/sitemap 立即消失；恢复为草稿；彻底删除清历史 | `src/pages/admin/trash.astro` |
-| ✅ | 导入导出 | 导出 JSON（草稿/发布快照/分类/设置）；导入预检后只写草稿，缺失分类自动创建 | `src/lib/importer.ts` |
+| ✅ | 导入导出 | 导出 JSON（草稿/发布快照/分类/设置，设置只含仍存在的分类）；导入**必须**先预检，预检计划冻结各条目身份（版本 + uid）、内容摘要与当前设置摘要，期间被人保存/删除重建/改设置则整批取消；失败条目与原因保留在结果页（最近 20 次）；只写草稿，首页设置需显式勾选才恢复 | `src/lib/importer.ts` |
 | ✅ | 首页编排 | 精选资源与场景文案存 `settings` 表，管理员可改，保存即时生效 | `src/pages/admin/settings.astro` |
-| ✅ | 分类管理 | 稳定 ID；被草稿或发布快照引用时禁止删除 | `src/pages/admin/categories.astro` |
+| ✅ | 分类管理 | 稳定 ID；`all` 是保留标识（前台虚拟书架），导入同样拒绝；被草稿或发布快照引用时禁止删除 | `src/pages/admin/categories.astro` |
 | ✅ | 图片授权状态 | 资源记录 `imageRights` 与 `imageCredit`，未确认时前台提示 | `src/lib/resource-schema.ts` |
 | ◻ | 内容冲刺 | 目前 12 条资源、0 篇指南；计划先补 5 篇任务指南与 10 条资源（非代码功能） | — |
 | ◻ | 图片上传 / 媒体库 | 目前只能引用 `public/images/` 现有文件；无上传、裁剪与许可登记流程 | — |
@@ -53,11 +54,11 @@
 |---|---|---|---|
 | ✅ | 分级权限 | 管理员：发布/撤回/删除/分类/人员/设置/导入；编辑者：草稿、反馈、复核、链接检查 | `src/server/store.ts` |
 | ✅ | 公告板 | 站内待办：新反馈、处理中、到期复核；不发邮件、不接 webhook | `src/pages/admin/notices.astro` |
-| ✅ | 反馈关联修订 | 处理反馈时可选该资源的一次快照，服务端校验归属 | `src/pages/admin/reports.astro` |
-| ✅ | 复核队列与批量复核 | 按类型到期（180/90 天）；勾选多条批量标记已核对/待核对 | `src/pages/admin/reviews.astro` |
-| ✅ | 操作审计 | 内容、分类、人员、反馈、设置、导入等变更与审计同事务 | `src/pages/admin/audit.astro` |
+| ✅ | 反馈处理与并发 | 处理反馈时可选该资源的一次快照，服务端校验归属；处理状态/备注带版本号，旧表单提交返回冲突提示，不覆盖他人备注 | `src/pages/admin/reports.astro` |
+| ✅ | 复核队列与批量复核 | 按类型到期（180/90 天）；勾选多条批量标记已核对/待核对；复核绑定页面显示的那一版，期间被改过的条目跳过并提示重新核对 | `src/pages/admin/reviews.astro` |
+| ✅ | 操作审计 | 内容、分类、人员、反馈、设置、导入等变更与审计同事务（导入按条写审计，审计失败该条一起回滚） | `src/pages/admin/audit.astro` |
 | ✅ | 数据概览 | 近 30 天浏览/外跳/指南/零结果 Top 10 | `src/pages/admin/metrics.astro` |
-| ✅ | 链接检查 | 手动按钮 + `npm run links:check`；只记录，不下架；403/429 需人工确认 | `src/server/linkcheck.ts` |
+| ✅ | 链接检查 | 手动按钮（草稿）+ `npm run links:check`（公开快照）；记录目标 URL、版本与检查对象，列表与详情共用同一份过期判断；只记录，不下架；403/429 需人工确认 | `src/server/linkcheck.ts` |
 | ◻ | 外部通知 | 邮件、企业微信/飞书 webhook 未实现；当前仅在后台公告板提示 | — |
 | ◻ | 多角色审批流 | 仅管理员/编辑者两角色；无逐级审核 | — |
 | ◻ | 邮件找回密码 | 忘记密码只能在服务器上再建管理员 | — |

@@ -144,7 +144,7 @@ docker compose logs -n 50 app
 | 全站 502 | app 未起/健康检查失败 | `docker compose logs app`；看 `/api/health/` 是否 503 |
 | 全站 429（含正常访客） | 代理没覆盖写单值 XFF，或 `TRUST_PROXY=0`，或 Docker 改写了源 IP | 查 `rate_limits` 键分布；按 §5/§6 修 |
 | 登录后立刻掉线 | `SITE_URL` 与浏览器地址不一致（Cookie 的 `Secure`/Origin 校验） | 统一 `SITE_URL`（协议+域名+端口） |
-| 上传/导入 413 | 提交体超过 96 KiB（应用）或 Nginx `client_max_body_size` | 调整业务输入大小或 Nginx 限制，二者取小 |
+| 上传/导入 413 | 普通表单超过 96 KiB，导入超过 3 MiB；或 Nginx `client_max_body_size` 小于请求体 | 导入需 `client_max_body_size 4m`；普通表单请拆分内容 |
 | 静态资源 404 | 构建未生成图片变体 | `npm run build`（`prebuild` 会生成），确认 `public/images/optimized/` |
 | 备份目录为空 | `BACKUP_HOST_DIR` 权限/路径 | 宿主目录 `0700` 且属主可写 |
 
