@@ -7,7 +7,7 @@ export const prerender = false;
 
 export const GET: APIRoute = () => {
   const origin = (process.env.SITE_URL ?? 'http://localhost:4321').replace(/\/$/, '');
-  const staticPages = ['/', '/guides/', '/about/', '/feedback/'];
+  const staticPages = ['/', '/guides/', '/updates/', '/about/', '/feedback/'];
   const entries: string[] = [];
   const today = new Date().toISOString().slice(0, 10);
   for (const path of staticPages) {

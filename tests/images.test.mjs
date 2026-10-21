@@ -27,3 +27,14 @@ test('所有本地截图均有真实的等比例 WebP，不放大原图且总体
   }
   assert.ok(optimizedBytes < originalBytes * 0.5, `${optimizedBytes} / ${originalBytes}`);
 });
+
+test('图片构建原地更新，不删除输出目录（否则开发服务器的静态索引会失效）', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const { stat } = await import('node:fs/promises');
+  const outputDir = new URL('../public/images/optimized', import.meta.url);
+  const before = await stat(outputDir);
+  execFileSync(process.execPath, ['scripts/optimize-images.mjs'], { cwd: new URL('..', import.meta.url), stdio: 'pipe' });
+  const after = await stat(outputDir);
+  assert.equal(after.ino, before.ino, '输出目录必须保持同一个 inode：rm -rf 后重建会让 /images/optimized/* 在开发服务器上 404');
+  assert.ok(after.mtimeMs >= before.mtimeMs);
+});

@@ -1039,3 +1039,54 @@ test('importing only categories still leaves an audit entry', () => {
   assert.equal(store.listAudit()[0].action, 'save-category');
   assert.equal(store.listAudit()[0].target, 'imported-only');
 });
+
+test('pending drafts surface in the notice board until an admin publishes them', () => {
+  assert.equal(noticeBoard().pendingDrafts, 0, '初始种子全部已发布');
+  store.saveResource(editor, { ...store.getPublishedResources()[0], id: 'draft-queue', title: '等待发布的草稿' }, null);
+  const board = noticeBoard();
+  assert.equal(board.pendingDrafts, 1);
+  assert.ok(board.items.some((item) => item.id === 'pending-drafts'), '待发布应进入待办摘要');
+  const pending = store.findManagedResource('draft-queue');
+  store.changePublication(admin, 'draft-queue', pending.version, 'publish');
+  assert.equal(noticeBoard().pendingDrafts, 0, '发布后队列清空');
+});
+
+test('discontinued resources leave the catalogue but keep an explanation page', () => {
+  const target = store.findManagedResource('python');
+  assert.throws(() => store.discontinueResource(editor, 'python', target.version, null, ''), /仅限管理员/);
+  assert.throws(() => store.discontinueResource(admin, 'python', target.version, 'python', ''), /本身/);
+  assert.throws(() => store.discontinueResource(admin, 'python', target.version, 'missing-resource', ''), /替代资源/);
+  store.discontinueResource(admin, 'python', target.version, 'inkscape', '课程已停止更新');
+  assert.equal(store.getPublishedResources().some((item) => item.id === 'python'), false, '停用后不再进入公开目录');
+  assert.ok(store.findPublishedResource('python'), '详情解释页仍然可读，旧链接不会 404');
+  const lifecycle = store.findResourceLifecycle('python');
+  assert.ok(lifecycle?.discontinuedAt);
+  assert.equal(lifecycle?.replacedBy, 'inkscape');
+  assert.ok(store.listPublishedResourcesIncludingDiscontinued().some((item) => item.id === 'python'));
+  const stopped = store.findManagedResource('python');
+  store.reactivateResource(admin, 'python', stopped.version);
+  assert.ok(store.getPublishedResources().some((item) => item.id === 'python'), '恢复后回到目录');
+  assert.equal(store.findResourceLifecycle('python')?.discontinuedAt, null);
+  assert.throws(() => store.reactivateResource(admin, 'python', store.findManagedResource('python').version), /未处于停用/);
+});
+
+test('unpublished drafts cannot be discontinued', () => {
+  store.saveResource(editor, { ...store.getPublishedResources()[0], id: 'draft-only', title: '仅草稿' }, null);
+  const draft = store.findManagedResource('draft-only');
+  assert.throws(() => store.discontinueResource(admin, 'draft-only', draft.version, null, ''), /尚未发布/);
+});
+
+test('resolved feedback can publish a public announcement without leaking the report body', () => {
+  store.createReport({ resourceId: 'zotero', kind: '费用或资格变化', title: '内部反馈标题', body: '内部反馈正文，包含不应该公开的细节。' });
+  const report = store.listReports()[0];
+  assert.throws(() => store.updateReport(admin, report.id, 'processing', '', null, report.version, { title: '公告', body: '' }), /已解决/);
+  store.updateReport(admin, report.id, 'resolved', '内部备注', null, report.version, { title: '费用说明已更新', body: '已按官方页面核对。' });
+  const announcements = store.listAnnouncements();
+  assert.equal(announcements.length, 1);
+  assert.equal(announcements[0]?.title, '费用说明已更新');
+  assert.ok(announcements[0]?.resourceTitle, '公告可回链到关联资源');
+  assert.equal(JSON.stringify(announcements).includes('不应该公开'), false, '公告不得透传反馈正文或备注');
+  const current = store.listReports()[0];
+  store.updateReport(admin, current.id, 'processing', '内部备注', null, current.version, null);
+  assert.equal(store.listAnnouncements().length, 0, '取消勾选即撤下公告');
+});

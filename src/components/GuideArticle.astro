@@ -1,11 +1,15 @@
 ---
-import { getPublishedResources, categoryName } from '../lib/catalog';
+import { findPublishedResource, findResourceLifecycle, categoryName } from '../lib/catalog';
 import { getPublishedGuides } from '../lib/guides';
 import { renderInlineMarkdown, renderMarkdown } from '../lib/markdown';
 import type { Guide } from '../lib/guide-schema';
 interface Props { guide: Guide; preview?: boolean; }
 const { guide } = Astro.props;
-const resources = getPublishedResources().filter((resource) => guide.resources.includes(resource.id));
+// 已停用的关联资源仍要出现在指南里：读者需要看到“这条不能用了”，而不是链接凭空消失。
+const resources = guide.resources
+  .map((id) => findPublishedResource(id))
+  .filter((resource): resource is NonNullable<typeof resource> => Boolean(resource))
+  .map((resource) => ({ resource, stopped: Boolean(findResourceLifecycle(resource.id)?.discontinuedAt) }));
 const others = getPublishedGuides().filter((entry) => entry.slug !== guide.slug).slice(0, 4);
 ---
 <div class="page-shell portal-container">
@@ -14,7 +18,7 @@ const others = getPublishedGuides().filter((entry) => entry.slug !== guide.slug)
     <header><h1 class="page-title">{guide.title}</h1></header>
     {guide.summary && <p class="page-lead" set:html={renderInlineMarkdown(guide.summary)} />}
     <div class="markdown-body" set:html={renderMarkdown(guide.body)} />
-    {resources.length > 0 && <section class="guide-resources" aria-labelledby="guide-resources-title"><h2 id="guide-resources-title">文中提到的资源</h2><div class="related-list">{resources.map((resource) => <a class="related-link" href={`/resources/${resource.id}/`}><span>{resource.title}</span><span class="guide-resource-meta">{categoryName(resource.category)} · {resource.status === 'verified' ? '官方信息已核对' : '资料待核对'} <span aria-hidden="true">↗</span></span></a>)}</div></section>}
+    {resources.length > 0 && <section class="guide-resources" aria-labelledby="guide-resources-title"><h2 id="guide-resources-title">文中提到的资源</h2><div class="related-list">{resources.map(({ resource, stopped }) => <a class="related-link" href={`/resources/${resource.id}/`}><span>{resource.title}{stopped && <span class="state-flag">已停用</span>}</span><span class="guide-resource-meta">{categoryName(resource.category)} · {stopped ? '已停止展示' : resource.status === 'verified' ? '官方信息已核对' : '资料待核对'} <span aria-hidden="true">↗</span></span></a>)}</div></section>}
     <div class="guide-actions"><a class="portal-button" href="/feedback/">反馈或补充</a><a class="text-link" href="/guides/">更多指南</a></div>
     {others.length > 0 && <section class="guide-more"><h2>继续读</h2><div class="related-list">{others.map((entry) => <a class="related-link" href={`/guides/${entry.slug}/`}><span>{entry.title}</span><span aria-hidden="true">↗</span></a>)}</div></section>}
   </article>

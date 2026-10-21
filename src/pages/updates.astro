@@ -1,0 +1,26 @@
+---
+import Layout from '../layouts/Layout.astro';
+import { listAnnouncements } from '../server/store';
+const announcements = listAnnouncements(50);
+const origin = (process.env.SITE_URL ?? Astro.url.origin).replace(/\/$/, '');
+const jsonLd = [
+  { '@context': 'https://schema.org', '@type': 'BreadcrumbList', itemListElement: [
+    { '@type': 'ListItem', position: 1, name: '首页', item: `${origin}/` },
+    { '@type': 'ListItem', position: 2, name: '处理记录', item: `${origin}/updates/` },
+  ] },
+  { '@context': 'https://schema.org', '@type': 'CollectionPage', name: '处理记录', description: '来自站内反馈、已由维护者处理并公开说明的资源变化。', url: `${origin}/updates/`, inLanguage: 'zh-CN' },
+];
+---
+<Layout title="处理记录" description="站内反馈处理完成后，维护者在这里公开说明改了哪些资源、对使用者有什么影响。" jsonLd={jsonLd}>
+  <div class="page-shell portal-container prose-page">
+    <nav class="breadcrumbs" aria-label="面包屑"><a href="/">首页</a><span aria-hidden="true">/</span><span aria-current="page">处理记录</span></nav>
+    <h1 class="page-title">反馈处理记录。</h1>
+    <p class="page-lead">同学报告的问题，处理完成后会在这里说明改了什么。只公开维护者另写的公告，不公开反馈正文、联系方式或内部备注。</p>
+    {announcements.length === 0
+      ? <section class="panel empty"><h2>还没有公开的处理记录</h2><p>反馈仍在后台逐条处理；处理完成后，维护者可以选择把结果写在这里。</p><a class="text-link" href="/feedback/">提交一条反馈</a></section>
+      : <ul class="update-list update-list-page">
+          {announcements.map((item) => <li class="update-item"><div class="update-meta"><time datetime={item.publishedAt}>{item.publishedAt.slice(0, 10)}</time><span>{item.kind}</span></div><h2>{item.title}</h2>{item.body && <p>{item.body}</p>}{item.resourceId && <a class="text-link" href={`/resources/${item.resourceId}/`}>{item.resourceTitle ?? '查看相关资源'} <span aria-hidden="true">↗</span></a>}</li>)}
+        </ul>}
+    <div class="guide-actions"><a class="portal-button" href="/feedback/">报告问题或推荐资源</a><a class="text-link" href="/#catalog">回到资源目录</a></div>
+  </div>
+</Layout>

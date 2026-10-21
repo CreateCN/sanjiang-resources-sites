@@ -1,8 +1,9 @@
-import { getPublishedResources, findPublishedResource, listCategories } from '../server/store';
+import { getPublishedResources, findPublishedResource, findResourceLifecycle, listCategories, listPublishedResourcesIncludingDiscontinued } from '../server/store';
 import type { Resource } from './resource-schema';
 export { ResourceSchema } from './resource-schema';
 export type { Resource } from './resource-schema';
-export { getPublishedResources, findPublishedResource };
+export type { ResourceLifecycle } from '../server/store';
+export { getPublishedResources, findPublishedResource, findResourceLifecycle, listPublishedResourcesIncludingDiscontinued };
 // listCategories() 里若残留历史导入产生的 all 行，不能在书架上重复出现。
 export function getCategories() { return [{ id: 'all', name: '全部资源' }, ...listCategories().filter((category) => category.id !== 'all')]; }
 export const repository = 'https://github.com/CreateCN/sanjiang-resources-sites';

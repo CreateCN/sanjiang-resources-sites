@@ -1,6 +1,6 @@
 import { randomToken, HttpError, fail, rateLimit, requireOrigin, clientIdentity } from './security.ts';
 import { login, logout, requireCsrf, sessionCookie } from './auth.ts';
-import { changeGuidePublication, changePublication, createReport, createUser, deleteCategory, findManagedResource, isMetricTargetAllowed, pingDatabase, purgeTrashGuide, purgeTrashResource, recordEvent, restoreGuideRevision, restoreResourceRevision, restoreTrashGuide, restoreTrashResource, saveCategory, saveGuide, saveLinkCheck, saveResource, updateReport, updateUser } from './store.ts';
+import { changeGuidePublication, changePublication, createReport, createUser, deleteCategory, discontinueResource, findManagedResource, isMetricTargetAllowed, pingDatabase, purgeTrashGuide, purgeTrashResource, reactivateResource, recordEvent, restoreGuideRevision, restoreResourceRevision, restoreTrashGuide, restoreTrashResource, saveCategory, saveGuide, saveLinkCheck, saveResource, updateReport, updateUser } from './store.ts';
 import { checkResourceLink } from './linkcheck.ts';
 import { saveSettings } from './settings.ts';
 import { bulkReviewResources, saveImportRun, schemaVersion } from './store.ts';
@@ -128,8 +128,19 @@ export async function managePost(context: Context): Promise<Response> {
       case 'update-report': {
         const rawRevision = text(form, 'revisionId');
         const revisionId = rawRevision ? numberField(form, 'revisionId') : null;
-        updateReport(session.user, idNumber(form), text(form, 'status'), text(form, 'note'), revisionId, versionNumber(form));
+        // 公告是公开内容：只有管理员能发布/撤下。编辑者保存处理结果时不触碰公告字段，
+        // 否则编辑者一次普通保存就会把管理员写好的公告清空。
+        const announcement = session.user.role === 'admin'
+          ? (text(form, 'announce') === '1' ? { title: text(form, 'announceTitle'), body: text(form, 'announceBody') } : null)
+          : undefined;
+        updateReport(session.user, idNumber(form), text(form, 'status'), text(form, 'note'), revisionId, versionNumber(form), announcement);
         return redirect('/admin/reports/');
+      }
+      case 'discontinue-resource': case 'reactivate-resource': {
+        const id = text(form, 'id');
+        if (action === 'discontinue-resource') discontinueResource(session.user, id, versionNumber(form), text(form, 'replacedBy') || null, text(form, 'reason'));
+        else reactivateResource(session.user, id, versionNumber(form));
+        return redirect(`/admin/resources/${encodeURIComponent(id)}/`);
       }
       case 'check-link': {
         const id = text(form, 'id');

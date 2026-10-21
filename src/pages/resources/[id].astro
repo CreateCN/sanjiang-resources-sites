@@ -1,12 +1,16 @@
 ---
 import Layout from '../../layouts/Layout.astro';
 import ResourceDetail from '../../components/ResourceDetail.astro';
-import { findPublishedResource, categoryName } from '../../lib/catalog';
+import { findPublishedResource, findResourceLifecycle, categoryName } from '../../lib/catalog';
 import { isBotRequest } from '../../lib/bot';
 import { recordEvent } from '../../server/store';
 const resource = findPublishedResource(Astro.params.id ?? '');
 if (!resource) { Astro.response.status = 404; return Astro.rewrite('/404'); }
-if (!isBotRequest(Astro.request)) recordEvent('resource_view', resource.id);
+// 停用条目仍可访问：这一页就是它的解释页，旧链接与指南引用不该变成 404。
+const lifecycle = findResourceLifecycle(resource.id);
+const discontinued = Boolean(lifecycle?.discontinuedAt);
+const replacement = lifecycle?.replacedBy ? findPublishedResource(lifecycle.replacedBy) : undefined;
+if (!isBotRequest(Astro.request) && !discontinued) recordEvent('resource_view', resource.id);
 const origin = (process.env.SITE_URL ?? Astro.url.origin).replace(/\/$/, '');
 const jsonLd = [
   { '@context': 'https://schema.org', '@type': 'BreadcrumbList', itemListElement: [
@@ -17,6 +21,6 @@ const jsonLd = [
   { '@context': 'https://schema.org', '@type': 'WebPage', name: resource.title, description: resource.summary, url: `${origin}/resources/${resource.id}/`, inLanguage: 'zh-CN' },
 ];
 ---
-<Layout title={resource.title} description={resource.summary} type="article" jsonLd={jsonLd}>
-  <ResourceDetail resource={resource} />
+<Layout title={resource.title} description={resource.summary} type="article" jsonLd={jsonLd} noindex={discontinued}>
+  <ResourceDetail resource={resource} lifecycle={lifecycle} replacement={replacement} />
 </Layout>

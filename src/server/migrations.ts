@@ -114,4 +114,24 @@ export const migrations: Migration[] = [
       )`);
     },
   },
+  {
+    // 停用/替代是"公开可见性"状态，不是内容字段：它必须立即生效，且不能顺手发布草稿里
+    // 还没复核的修改。因此单独建列、走独立管理动作，而不是塞进 ResourceSchema。
+    // 公告同样单独建列：反馈正文是匿名的，公开文案必须由维护者另写，不能直接透传。
+    id: '007-resource-lifecycle-and-report-announcements',
+    up: (db) => {
+      for (const [column, type] of [
+        ['discontinued_at', 'TEXT'],
+        ['discontinued_reason', "TEXT NOT NULL DEFAULT ''"],
+        ['replaced_by', 'TEXT'],
+      ] as const) {
+        if (!hasColumn(db, 'resources', column)) db.exec(`ALTER TABLE resources ADD COLUMN ${column} ${type}`);
+      }
+      for (const column of ['announce_title', 'announce_body', 'announced_at'] as const) {
+        if (!hasColumn(db, 'reports', column)) db.exec(`ALTER TABLE reports ADD COLUMN ${column} TEXT`);
+      }
+      db.exec('CREATE INDEX IF NOT EXISTS resources_replaced_by ON resources(replaced_by)');
+      db.exec('CREATE INDEX IF NOT EXISTS reports_announced ON reports(announced_at DESC)');
+    },
+  },
 ];

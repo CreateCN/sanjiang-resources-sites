@@ -8,10 +8,10 @@ if (!session) return Astro.redirect('/admin/login/');
 const board = noticeBoard();
 ---
 <AdminLayout title="公告" session={session}>
-  <div class="notice"><strong>这是站内公告板，不发邮件、不接外部通知。</strong><p>登录后台即可看到待办：新反馈与到期复核。处理完的反馈会从“新反馈”里消失；复核完成后队列同步清空。外部提醒可以作为后续扩展，但当前不向第三方发送反馈正文。</p></div>
-  <div class="stats"><div class="stat">新反馈<strong>{board.newReports}</strong></div><div class="stat">处理中<strong>{board.processingReports}</strong></div><div class="stat">待复核<strong>{board.overdueResources}</strong></div><div class="stat">待办合计<strong>{board.count}</strong></div></div>
+  <div class="notice"><strong>这是站内公告板，不发邮件、不接外部通知。</strong><p>登录后台即可看到待办：待发布草稿、新反馈与到期复核。草稿发布后、反馈处理完后，对应条目会从这里消失。外部提醒可以作为后续扩展，但当前不向第三方发送反馈正文。</p></div>
+  <div class="stats"><div class="stat">待发布<strong>{board.pendingDrafts}</strong></div><div class="stat">新反馈<strong>{board.newReports}</strong></div><div class="stat">处理中<strong>{board.processingReports}</strong></div><div class="stat">待复核<strong>{board.overdueResources}</strong></div><div class="stat">待办合计<strong>{board.count}</strong></div></div>
   {board.items.length === 0
-    ? <section class="panel empty"><h2>暂时没有新公告</h2><p>新反馈与过期复核会出现在这里。</p></section>
+    ? <section class="panel empty"><h2>暂时没有新公告</h2><p>待发布草稿、新反馈与过期复核会出现在这里。</p></section>
     : <section class="panel"><h2>待办</h2><ul class="notice-list">{board.items.map((item) => <li><a href={item.href}><strong>{item.title}</strong><span>{item.body}</span><time>{formatRevisionTime(item.createdAt)}</time></a></li>)}</ul></section>}
   <p class="admin-footer-note">纪律：公告板只显示摘要，反馈正文仍在“反馈处理”页；不要把反馈内容复制到外部群聊或工单系统。</p>
 </AdminLayout>

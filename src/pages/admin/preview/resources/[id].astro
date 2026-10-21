@@ -10,5 +10,5 @@ if (!entry || entry.deletedAt) return Astro.redirect('/admin/trash/');
 ---
 <Layout title={`预览：${entry.draft.title}`} description={entry.draft.summary} noindex>
   <div class="preview-bar">草稿整页预览 · 未发布内容，不会出现在前台、搜索或 sitemap</div>
-  <ResourceDetail resource={entry.draft} preview />
+  <ResourceDetail resource={entry.draft} preview lifecycle={entry.lifecycle} />
 </Layout>

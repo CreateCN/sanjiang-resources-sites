@@ -1,7 +1,7 @@
 ---
 import AdminLayout from '../../../layouts/AdminLayout.astro';
 import { getSession } from '../../../server/auth';
-import { findManagedResource, linkCheckStaleReason, listCategories, listLinkChecks, listRevisions } from '../../../server/store';
+import { findManagedResource, linkCheckStaleReason, listCategories, listLinkChecks, listManagedResources, listRevisions } from '../../../server/store';
 import { ACCESS_OPTIONS } from '../../../lib/access';
 import { formatRevisionTime } from '../../../lib/revision-fields';
 import DraftRecovery from '../../../components/DraftRecovery.astro';
@@ -18,6 +18,8 @@ const linkCheck = entry ? listLinkChecks().find((check) => check.resourceId === 
 const linkCheckReason = linkCheck && entry ? linkCheckStaleReason(linkCheck, entry) : null;
 const checkLabels: Record<string, string> = { ok: '可访问', warn: '需人工确认', broken: '可能失效', error: '检查失败' };
 const categories = listCategories();
+// 替代资源必须是仍在展示的已发布条目：停用后再选它会让解释页指向另一个死胡同。
+const alternatives = entry ? listManagedResources().filter((item) => item.published && !item.lifecycle.discontinuedAt && item.id !== entry.id) : [];
 const resource = entry?.draft ?? {id:'',title:'',summary:'',category:categories[0]?.id ?? '',kind:'开源工具',cost:'',platforms:['网页'],tags:[],url:'',sourceUrl:'',license:'',eligibility:'',caveat:'',steps:[''],status:'review',checkedAt:null,imageRights:'unconfirmed'};
 interface EditorField { key: string; name: string; help?: string; area?: boolean; optional?: boolean; type?: 'text' | 'url'; max?: number }
 const fields: EditorField[] = [
@@ -53,6 +55,19 @@ const valueOf = (key: string) => { const value = (resource as unknown as Record<
     : <p class="muted">还没有检查记录。</p>}<form action="/api/manage/" method="post" data-admin-form><input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="check-link"/><input type="hidden" name="id" value={entry.id}/><div class="actions"><button type="submit" class="secondary">现在检查链接</button><span class="muted">检查已保存的草稿链接，超时 10 秒。</span></div><p role="status" aria-live="polite"></p></form></section>}
   {entry && <RevisionHistory kind="resource" entityId={entry.id} current={entry.draft} revisions={listRevisions('resource', entry.id)} version={entry.version} csrf={session.csrfToken} categories={categories} />}
   {entry && session.user.role === 'admin' && <section class="panel"><h2>发布与下架</h2><p>以下操作只针对已保存的 v{entry.version}。未保存的表单修改不会被发布。</p><div class="actions">{['publish', ...(entry.published ? ['unpublish'] : []), 'delete-resource'].map((action) => <form action="/api/manage/" method="post" data-admin-form data-confirm={action === 'delete-resource' ? '确定把这条资源移入回收站？前台会立即隐藏，可在回收站恢复为草稿。' : action === 'unpublish' ? '确定撤回公开版本？前台将不再展示。' : '确认已经核对来源、费用与资格，并发布当前已保存草稿？'}><input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value={action}/><input type="hidden" name="id" value={entry.id}/><input type="hidden" name="version" value={entry.version}/><button type="submit" class:list={[{danger:action === 'delete-resource',secondary:action === 'unpublish'}]}>{action === 'publish' ? '发布当前草稿' : action === 'unpublish' ? '撤回公开版本' : '移入回收站'}</button></form>)}</div><p id="admin-status" role="status" aria-live="polite"></p></section>}
+  {entry && session.user.role === 'admin' && <section class="panel" id="lifecycle"><h2>停用与替代</h2>
+    <p>停用会立即把条目移出目录、搜索与站点地图，但保留详情页解释“为什么不能用了”并指向替代资源；旧链接不会变成 404。停用不修改内容，也不会顺手发布草稿里尚未复核的修改。</p>
+    {entry.lifecycle.discontinuedAt
+      ? <>
+          <p><span class="badge">已停止展示</span> 自 {entry.lifecycle.discontinuedAt.slice(0, 10)} 起不再公开，详情页仍可访问。</p>
+          {entry.lifecycle.reason && <p class="muted">停用说明：{entry.lifecycle.reason}</p>}
+          {entry.lifecycle.replacedBy && <p>替代资源：<a href={`/admin/resources/${encodeURIComponent(entry.lifecycle.replacedBy)}/`}>{entry.lifecycle.replacedBy}</a></p>}
+          <form action="/api/manage/" method="post" data-admin-form><input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="reactivate-resource"/><input type="hidden" name="id" value={entry.id}/><input type="hidden" name="version" value={entry.version}/><div class="actions"><button type="submit">恢复展示</button><span class="muted">恢复后立即回到公开目录，公开快照保持不变。</span></div><p role="status" aria-live="polite"></p></form>
+        </>
+      : entry.published
+        ? <form action="/api/manage/" method="post" data-admin-form><input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="discontinue-resource"/><input type="hidden" name="id" value={entry.id}/><input type="hidden" name="version" value={entry.version}/><div class="form-grid"><div class="field"><label for="replaced-by">替代资源（可选）</label><select id="replaced-by" name="replacedBy"><option value="">暂时没有替代资源</option>{alternatives.map((item) => <option value={item.id}>{item.draft.title}</option>)}</select><small>只显示仍在展示的已发布资源。</small></div><div class="field full"><label for="discontinue-reason">停用说明（会显示在详情页）</label><textarea id="discontinue-reason" name="reason" maxlength="300" placeholder="例如：该学生权益已于 2026 年 9 月停止申请，改由 XX 提供。"></textarea></div></div><div class="actions"><button type="submit" class="danger">停止展示（保留解释页）</button></div><p role="status" aria-live="polite"></p></form>
+        : <p class="muted">尚未发布，无需停用；可以直接移入回收站。</p>}
+  </section>}
 </AdminLayout>
 <script>
   const form = document.querySelector<HTMLFormElement>('[data-resource-editor]');

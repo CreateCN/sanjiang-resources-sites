@@ -5,16 +5,28 @@ import { renderInlineMarkdown, renderMarkdown } from '../lib/markdown';
 import { freshness, freshnessNote } from '../lib/freshness';
 import { accessLabel, accessHint } from '../lib/access';
 import ResourceImage from './ResourceImage.astro';
-interface Props { resource: import('../lib/resource-schema').Resource; preview?: boolean; }
-const { resource, preview = false } = Astro.props;
+interface Props {
+  resource: import('../lib/resource-schema').Resource;
+  preview?: boolean;
+  lifecycle?: { discontinuedAt: string | null; reason: string; replacedBy: string | null };
+  replacement?: import('../lib/resource-schema').Resource;
+}
+const { resource, preview = false, lifecycle, replacement } = Astro.props;
 const resources = getPublishedResources();
 const related = resources.filter((item) => item.id !== resource.id && item.category === resource.category).slice(0, 3);
 const guides = guidesForResource(resource.id);
 const state = freshness(resource);
+const discontinued = Boolean(lifecycle?.discontinuedAt);
 const imageUnconfirmed = Boolean(resource.image && resource.imageRights !== 'confirmed');
 ---
 <div class="page-shell portal-container">
   <nav class="breadcrumbs" aria-label="面包屑"><a href="/">首页</a><span aria-hidden="true">/</span><a href={`/?category=${resource.category}#catalog`}>{categoryName(resource.category)}</a><span aria-hidden="true">/</span><span aria-current="page">{resource.title}</span></nav>
+  {discontinued && <section class="lifecycle-banner" aria-labelledby="lifecycle-title">
+    <h2 id="lifecycle-title">这条资源已停止展示</h2>
+    <p>{lifecycle?.reason || '提供方已停止服务或条件发生重大变化，不建议继续按原方式使用。'}{lifecycle?.discontinuedAt ? `（${lifecycle.discontinuedAt.slice(0, 10)} 起）` : ''}</p>
+    {replacement ? <p>可以改用：<a class="text-link" href={`/resources/${replacement.id}/`}>{replacement.title} <span aria-hidden="true">↗</span></a></p> : <p>我们暂时没有找到可直接替代的资源，可以在 <a class="text-link" href="/#catalog">资源目录</a> 里换一个用途关键词。</p>}
+    <p class="muted">这一页保留下来，是为了让旧链接、指南引用和搜索结果里的入口还能解释清楚发生了什么。</p>
+  </section>}
   <div class="detail-layout">
     <div>
       <section class="detail-head">
@@ -38,13 +50,21 @@ const imageUnconfirmed = Boolean(resource.image && resource.imageRights !== 'con
     </div>
     <aside class="detail-aside" aria-label="资源摘要">
       <strong>{resource.cost}</strong>
-      <p class="aside-hint">先确认下方资格与限制，再前往官方页面。</p>
-      <a class="portal-button" href={resource.url} target="_blank" rel="noopener noreferrer" data-outbound={preview ? undefined : resource.id}>前往官方资源 <span aria-hidden="true">↗</span></a>
-      {state.overdue && <p class="freshness-warning">资料可能已变化，点击前先确认费用与资格。</p>}
-      <span class:list={['state-line', { 'is-review': resource.status === 'review' }]}>{getStatusLabel(resource)}</span>
+      {discontinued
+        ? <>
+            <p class="freshness-warning">该资源已停止展示，原官方入口可能已失效。</p>
+            {replacement && <a class="portal-button" href={`/resources/${replacement.id}/`}>改用 {replacement.title} <span aria-hidden="true">↗</span></a>}
+            <a class="text-link report-link" href={resource.url} target="_blank" rel="noopener noreferrer">仍要查看原官方页面 <span aria-hidden="true">↗</span></a>
+          </>
+        : <>
+            <p class="aside-hint">先确认下方资格与限制，再前往官方页面。</p>
+            <a class="portal-button" href={resource.url} target="_blank" rel="noopener noreferrer" data-outbound={preview ? undefined : resource.id}>前往官方资源 <span aria-hidden="true">↗</span></a>
+            {state.overdue && <p class="freshness-warning">资料可能已变化，点击前先确认费用与资格。</p>}
+          </>}
+      <span class:list={['state-line', { 'is-review': resource.status === 'review' }]}>{discontinued ? '已停止展示' : getStatusLabel(resource)}</span>
       <p class="checked-date">{resource.checkedAt ? `公开页面核对：${resource.checkedAt}` : '未完成官方资料核对'}</p>
-      <p class:list={['checked-date', { 'is-stale': state.overdue }]}>{freshnessNote(resource)}</p>
-      <a class="text-link report-link" href={`/feedback/?resource=${encodeURIComponent(resource.id)}&kind=${encodeURIComponent('链接失效')}`}>报告链接打不开</a>
+      <p class:list={['checked-date', { 'is-stale': state.overdue }]}>{discontinued ? '停用状态以管理员记录为准；这一页不再作为可用资源推荐。' : freshnessNote(resource)}</p>
+      {!discontinued && <a class="text-link report-link" href={`/feedback/?resource=${encodeURIComponent(resource.id)}&kind=${encodeURIComponent('链接失效')}`}>报告链接打不开</a>}
     </aside>
   </div>
 </div>

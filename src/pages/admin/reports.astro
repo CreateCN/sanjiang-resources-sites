@@ -9,7 +9,7 @@ const reports = listReports();
 const statusNames: Record<string, string> = { new: '待处理', processing: '处理中', resolved: '已解决' };
 ---
 <AdminLayout title="反馈处理" session={session}>
-  <p class="notice">来自站内的匿名反馈仅供授权维护者查看。状态与备注不会自动公开，也不会自动修改资源核验结果；“关联修订”只记录这次处理对应哪次内容修改，便于以后追溯。</p>
+  <p class="notice">来自站内的匿名反馈仅供授权维护者查看。状态与备注不会自动公开，也不会自动修改资源核验结果；“关联修订”只记录这次处理对应哪次内容修改，便于以后追溯。勾选“前台公告”后，学生只能看到你另写的公告标题与说明，反馈正文与内部备注始终留在后台。</p>
   {reports.length === 0 && <section class="panel empty"><h2>暂时没有反馈</h2><p>学生提交的问题会出现在这里。</p></section>}
   {reports.map((report) => {
     const recent = report.resourceId ? listRevisions('resource', report.resourceId, 20) : [];
@@ -20,6 +20,34 @@ const statusNames: Record<string, string> = { new: '待处理', processing: '处
       ? [linkedOnly, ...recent].slice(0, 20)
       : recent;
     const linked = linkedOnly;
-    return <article class="report"><header><h2>{report.title}</h2><span class="badge">{statusNames[report.status]}</span></header><p class="report-meta">{report.kind} · {report.resourceId ?? '其他或新资源'} · {formatRevisionTime(report.createdAt)}</p><div class="report-body">{report.body}</div><p class="report-meta">当前处理版本 v{report.version}；若期间有人处理过，保存会提示重新加载。</p>{linked && <p class="report-meta">已关联修订：v{linked.version} · {ACTION_LABELS[linked.action] ?? linked.action} · {formatRevisionTime(linked.createdAt)}</p>}{report.revisionId && !linked && <p class="report-meta">原关联修订（#{report.revisionId}）已不存在，保存将清除该关联。</p>}<form action="/api/manage/" method="post" data-admin-form><input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="update-report"/><input type="hidden" name="id" value={report.id}/>{/* 处理也要版本校验：旧表单不能把“已解决 + 备注”改回“处理中”。 */}<input type="hidden" name="version" value={report.version}/><div class="form-grid"><div class="field"><label for={`status-${report.id}`}>处理状态</label><select id={`status-${report.id}`} name="status">{[{ id: 'new', name: '待处理' }, { id: 'processing', name: '处理中' }, { id: 'resolved', name: '已解决' }].map((status) => <option value={status.id} selected={report.status === status.id}>{status.name}</option>)}</select></div>{report.resourceId && <div class="field"><label for={`revision-${report.id}`}>关联修订（可选）</label><select id={`revision-${report.id}`} name="revisionId"><option value="">不关联</option>{revisions.map((revision) => <option value={revision.id} selected={report.revisionId === revision.id}>v{revision.version} · {ACTION_LABELS[revision.action] ?? revision.action} · {formatRevisionTime(revision.createdAt)}</option>)}</select><small>选择处理这条反馈时保存的草稿版本。</small></div>}<div class="field full"><label for={`note-${report.id}`}>内部处理备注</label><textarea id={`note-${report.id}`} name="note" maxlength="4000">{report.note}</textarea></div></div><div class="actions"><button type="submit">保存处理结果</button>{report.resourceId && <a href={`/admin/resources/${report.resourceId}/`}>检查资源草稿</a>}</div><p role="status" aria-live="polite"></p></form></article>;
+    return <article class="report">
+      <header><h2>{report.title}</h2><span class="badge">{statusNames[report.status]}</span>{report.announcedAt && <span class="badge published">前台已公告</span>}</header>
+      <p class="report-meta">{report.kind} · {report.resourceId ?? '其他或新资源'} · {formatRevisionTime(report.createdAt)}</p>
+      <div class="report-body">{report.body}</div>
+      <p class="report-meta">当前处理版本 v{report.version}；若期间有人处理过，保存会提示重新加载。</p>
+      {linked && <p class="report-meta">已关联修订：v{linked.version} · {ACTION_LABELS[linked.action] ?? linked.action} · {formatRevisionTime(linked.createdAt)}</p>}
+      {report.revisionId && !linked && <p class="report-meta">原关联修订（#{report.revisionId}）已不存在，保存将清除该关联。</p>}
+      <form action="/api/manage/" method="post" data-admin-form>
+        <input type="hidden" name="csrf" value={session.csrfToken}/>
+        <input type="hidden" name="action" value="update-report"/>
+        <input type="hidden" name="id" value={report.id}/>
+        {/* 处理也要版本校验：旧表单不能把“已解决 + 备注”改回“处理中”。 */}
+        <input type="hidden" name="version" value={report.version}/>
+        <div class="form-grid">
+          <div class="field"><label for={`status-${report.id}`}>处理状态</label><select id={`status-${report.id}`} name="status">{[{ id: 'new', name: '待处理' }, { id: 'processing', name: '处理中' }, { id: 'resolved', name: '已解决' }].map((status) => <option value={status.id} selected={report.status === status.id}>{status.name}</option>)}</select></div>
+          {report.resourceId && <div class="field"><label for={`revision-${report.id}`}>关联修订（可选）</label><select id={`revision-${report.id}`} name="revisionId"><option value="">不关联</option>{revisions.map((revision) => <option value={revision.id} selected={report.revisionId === revision.id}>v{revision.version} · {ACTION_LABELS[revision.action] ?? revision.action} · {formatRevisionTime(revision.createdAt)}</option>)}</select><small>选择处理这条反馈时保存的草稿版本。</small></div>}
+          <div class="field full"><label for={`note-${report.id}`}>内部处理备注</label><textarea id={`note-${report.id}`} name="note" maxlength="4000">{report.note}</textarea></div>
+          {session.user.role === 'admin'
+            ? <>
+                <div class="field full"><label class="checkbox-line"><input type="checkbox" name="announce" value="1" checked={Boolean(report.announcedAt)}/> 作为「已处理」公告展示在前台</label><small>只公开下面两段文案；反馈正文、处理备注和提交者信息都不会公开。可随时取消勾选撤下公告。</small></div>
+                <div class="field"><label for={`announce-title-${report.id}`}>公告标题</label><input id={`announce-title-${report.id}`} name="announceTitle" maxlength="120" value={report.announceTitle ?? ''} placeholder="例如：某资源的学生资格说明已更新"/></div>
+                <div class="field full"><label for={`announce-body-${report.id}`}>公告说明</label><textarea id={`announce-body-${report.id}`} name="announceBody" maxlength="600" placeholder="写明改了什么、对使用者有什么影响；不要写个人信息。">{report.announceBody ?? ''}</textarea></div>
+              </>
+            : <div class="field full"><small>前台公告由管理员发布{report.announcedAt ? '（当前已公告）' : ''}；你的保存不会改动公告。</small></div>}
+        </div>
+        <div class="actions"><button type="submit">保存处理结果</button>{report.resourceId && <a href={`/admin/resources/${report.resourceId}/`}>检查资源草稿</a>}</div>
+        <p role="status" aria-live="polite"></p>
+      </form>
+    </article>;
   })}
 </AdminLayout>

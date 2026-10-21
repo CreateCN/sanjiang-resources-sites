@@ -10,12 +10,14 @@ export type { Guide } from '../lib/guide-schema.ts';
 export type Role = 'admin' | 'editor';
 export interface User { id: number; username: string; role: Role; active: boolean }
 /** uid 是实体的不可复用身份：即使同 ID 被删除后重建，uid 也不会相同。 */
-export interface ManagedResource { id: string; uid: string; draft: Resource; published: Resource | null; version: number; updatedAt: string; deletedAt: string | null }
+/** 停用状态独立于草稿/发布快照：它决定"公开展示与否"，且必须立即生效。 */
+export interface ResourceLifecycle { discontinuedAt: string | null; reason: string; replacedBy: string | null }
+export interface ManagedResource { id: string; uid: string; draft: Resource; published: Resource | null; version: number; updatedAt: string; deletedAt: string | null; lifecycle: ResourceLifecycle }
 export type RevisionKind = 'resource' | 'guide';
 export type RevisionAction = 'save' | 'publish' | 'unpublish' | 'restore';
 export interface Revision { id: number; kind: RevisionKind; entityId: string; version: number; data: unknown; actor: string; action: RevisionAction; createdAt: string }
 export interface ManagedGuide { slug: string; uid: string; draft: Guide; published: Guide | null; version: number; updatedAt: string; deletedAt: string | null }
-export interface Report { id: number; resourceId: string | null; revisionId: number | null; kind: string; title: string; body: string; status: 'new' | 'processing' | 'resolved'; note: string; version: number; createdAt: string }
+export interface Report { id: number; resourceId: string | null; revisionId: number | null; kind: string; title: string; body: string; status: 'new' | 'processing' | 'resolved'; note: string; version: number; createdAt: string; announceTitle: string | null; announceBody: string | null; announcedAt: string | null }
 export interface AuditEntry { id: number; actor: string; action: string; target: string; createdAt: string }
 type Row = Record<string, unknown>;
 function user(row: Row): User { return { id: Number(row.id), username: String(row.username), role: row.role as Role, active: Boolean(row.active) }; }
@@ -33,16 +35,33 @@ function writeVersionTombstone(db: ReturnType<typeof database>, kind: RevisionKi
     ON CONFLICT(entity_kind,entity_id) DO UPDATE SET version=excluded.version`).run(kind, id, version);
 }
 function managed(row: Row): ManagedResource {
-  return { id: String(row.id), uid: row.uid === null || row.uid === undefined ? '' : String(row.uid), draft: JSON.parse(String(row.draft)), published: row.published ? JSON.parse(String(row.published)) : null, version: Number(row.version), updatedAt: String(row.updated_at), deletedAt: row.deleted_at ? String(row.deleted_at) : null };
+  return { id: String(row.id), uid: row.uid === null || row.uid === undefined ? '' : String(row.uid), draft: JSON.parse(String(row.draft)), published: row.published ? JSON.parse(String(row.published)) : null, version: Number(row.version), updatedAt: String(row.updated_at), deletedAt: row.deleted_at ? String(row.deleted_at) : null, lifecycle: lifecycleOf(row) };
 }
+function lifecycleOf(row: Row): ResourceLifecycle {
+  return {
+    discontinuedAt: row.discontinued_at ? String(row.discontinued_at) : null,
+    reason: row.discontinued_reason ? String(row.discontinued_reason) : '',
+    replacedBy: row.replaced_by ? String(row.replaced_by) : null,
+  };
+}
+/** 公开目录只含仍在展示的条目；停用条目仍可通过 findPublishedResource + lifecycle 打开解释页。 */
 export function getPublishedResources(): Resource[] {
-  return requestMemo('published-resources', () => database().prepare('SELECT published FROM resources WHERE published IS NOT NULL AND deleted_at IS NULL ORDER BY rowid').all().map((row) => JSON.parse(String(row.published))));
+  return requestMemo('published-resources', () => database().prepare('SELECT published FROM resources WHERE published IS NOT NULL AND deleted_at IS NULL AND discontinued_at IS NULL ORDER BY rowid').all().map((row) => JSON.parse(String(row.published))));
+}
+/** 含停用条目的公开快照：指南关联、替代资源校验需要看到"已停用但仍有解释页"的条目。 */
+export function listPublishedResourcesIncludingDiscontinued(): Resource[] {
+  return requestMemo('published-resources-all', () => database().prepare('SELECT published FROM resources WHERE published IS NOT NULL AND deleted_at IS NULL ORDER BY rowid').all().map((row) => JSON.parse(String(row.published))));
 }
 export function findPublishedResource(id: string): Resource | undefined {
   return requestMemo(`published-resource:${id}`, () => {
     const row = database().prepare('SELECT published FROM resources WHERE id=? AND published IS NOT NULL AND deleted_at IS NULL').get(id);
     return row ? JSON.parse(String(row.published)) : undefined;
   });
+}
+/** 停用信息：与内容快照无关，永远读当前行。 */
+export function findResourceLifecycle(id: string): ResourceLifecycle | undefined {
+  const row = database().prepare('SELECT discontinued_at,discontinued_reason,replaced_by FROM resources WHERE id=?').get(id);
+  return row ? lifecycleOf(row) : undefined;
 }
 export function listCategories(): { id: string; name: string }[] {
   return requestMemo('categories', () => database().prepare('SELECT id,name FROM categories ORDER BY rowid').all().map((row) => ({ id: String(row.id), name: String(row.name) })));
@@ -58,7 +77,7 @@ export function findManagedResource(id: string): ManagedResource | undefined {
 }
 export function listUsers(): User[] { return database().prepare('SELECT id,username,role,active FROM users ORDER BY id').all().map(user); }
 export function listReports(): Report[] {
-  return database().prepare('SELECT * FROM reports ORDER BY id DESC').all().map((r) => ({ id: Number(r.id), resourceId: r.resource_id === null ? null : String(r.resource_id), revisionId: r.revision_id === null || r.revision_id === undefined ? null : Number(r.revision_id), kind: String(r.kind), title: String(r.title), body: String(r.body), status: r.status as Report['status'], note: String(r.note), version: Number(r.version ?? 1), createdAt: String(r.created_at) }));
+  return database().prepare('SELECT * FROM reports ORDER BY id DESC').all().map((r) => ({ id: Number(r.id), resourceId: r.resource_id === null ? null : String(r.resource_id), revisionId: r.revision_id === null || r.revision_id === undefined ? null : Number(r.revision_id), kind: String(r.kind), title: String(r.title), body: String(r.body), status: r.status as Report['status'], note: String(r.note), version: Number(r.version ?? 1), createdAt: String(r.created_at), announceTitle: r.announce_title ? String(r.announce_title) : null, announceBody: r.announce_body ? String(r.announce_body) : null, announcedAt: r.announced_at ? String(r.announced_at) : null }));
 }
 export function listAudit(): AuditEntry[] {
   return database().prepare('SELECT * FROM audit ORDER BY id DESC LIMIT 1000').all().map((r) => ({ id: Number(r.id), actor: String(r.actor), action: String(r.action), target: String(r.target), createdAt: String(r.created_at) }));
@@ -158,6 +177,44 @@ export function changePublication(actor: User, id: string, version: number | nul
     audit(current.username, action, resource.id);
   });
 }
+/**
+ * 停用：保留已发布快照与解释页，只从公开目录/搜索/sitemap 移除。
+ * 不走草稿-发布两步，因为它不是内容修改：草稿里可能还有没复核的字段，
+ * 停用必须立即生效，不能顺手把草稿一起发布出去。
+ */
+export function discontinueResource(actor: User, id: string, version: number | null, replacedBy: string | null, reason: string): void {
+  transaction((db) => {
+    const current = actorUser(actor, true);
+    const resource = checkVersion(id, version);
+    if (!resource.published) fail(409, '该资源尚未发布；未公开的草稿可以直接移入回收站');
+    if (resource.lifecycle.discontinuedAt) fail(409, '该资源已经处于停用状态');
+    const replacement = replacedBy?.trim() || null;
+    if (replacement === id) fail(400, '替代资源不能指向资源本身');
+    if (replacement) {
+      const row = db.prepare('SELECT published,deleted_at,discontinued_at FROM resources WHERE id=?').get(replacement);
+      if (!row || row.published === null || row.deleted_at !== null) fail(400, '替代资源必须是已发布的资源');
+      if (row.discontinued_at) fail(400, '替代资源也已停用，请选择仍在展示的资源');
+    }
+    const clean = reason.trim();
+    if (clean.length > 300 || /\u0000/.test(clean)) fail(400, '停用说明最多 300 个字符');
+    const now = new Date().toISOString();
+    db.prepare('UPDATE resources SET discontinued_at=?,discontinued_reason=?,replaced_by=?,version=version+1,updated_at=? WHERE id=?')
+      .run(now, clean, replacement, now, id);
+    audit(current.username, 'discontinue-resource', replacement ? `${id} -> ${replacement}` : id);
+  });
+}
+/** 重新展示：清空停用信息，公开快照原样恢复，不需要重新发布。 */
+export function reactivateResource(actor: User, id: string, version: number | null): void {
+  transaction((db) => {
+    const current = actorUser(actor, true);
+    const resource = checkVersion(id, version);
+    if (!resource.lifecycle.discontinuedAt) fail(409, '该资源未处于停用状态');
+    if (!resource.published) fail(409, '该资源没有可恢复的公开版本；请先发布草稿');
+    db.prepare("UPDATE resources SET discontinued_at=NULL,discontinued_reason='',replaced_by=NULL,version=version+1,updated_at=? WHERE id=?")
+      .run(new Date().toISOString(), id);
+    audit(current.username, 'reactivate-resource', id);
+  });
+}
 export function saveCategory(actor: User, id: string, name: string): void {
   if (id === 'all' || !/^[a-z0-9-]{1,80}$/.test(id) || !name.trim() || name.trim().length > 100) fail(400, '分类标识或名称无效（all 为保留标识）');
   transaction((db) => {
@@ -244,9 +301,19 @@ export function createReport(input: { resourceId?: string; kind: string; title: 
 /**
  * 反馈处理必须带版本号：多维护者同时处理时，旧表单不能把"已解决 + 备注"改回"处理中"，
  * 也不能静默覆盖别人的内部备注（审计不保存被覆盖的正文，无法靠审计找回）。
+ *
+ * announcement：undefined = 不动公告；null = 撤下公告；对象 = 发布/更新公告。
+ * 公告文案必须由维护者单独填写——反馈正文是匿名的，不能直接透传成公开内容。
  */
-export function updateReport(actor: User, id: number, status: string, note: string, revisionId: number | null = null, version: number | null = null): void {
+export function updateReport(actor: User, id: number, status: string, note: string, revisionId: number | null = null, version: number | null = null, announcement: { title: string; body: string } | null | undefined = undefined): void {
   if (!['new', 'processing', 'resolved'].includes(status) || note.length > 4000) fail(400, '无效反馈状态或备注过长');
+  let announceTitle: string | null = null, announceBody: string | null = null;
+  if (announcement) {
+    if (status !== 'resolved') fail(400, '反馈标记为“已解决”后才能发布公告');
+    announceTitle = bounded(announcement.title, '公告标题', 1, 120);
+    announceBody = announcement.body.trim();
+    if (announceBody.length > 600 || /\u0000/.test(announceBody)) fail(400, '公告说明最多 600 个字符');
+  }
   transaction((db) => {
     const current = actorUser(actor);
     const expected = requiredVersion(version);
@@ -259,7 +326,32 @@ export function updateReport(actor: User, id: number, status: string, note: stri
       if (!revision) fail(400, '所选修订不属于这条反馈关联的资源');
     }
     db.prepare('UPDATE reports SET status=?,note=?,revision_id=?,version=version+1 WHERE id=?').run(status, note.trim(), revisionId, id);
+    if (announcement === undefined) {
+      // 调用方不关心公告：只保证“未解决”的反馈不留在前台。
+      if (status !== 'resolved') db.prepare('UPDATE reports SET announce_title=NULL,announce_body=NULL,announced_at=NULL WHERE id=?').run(id);
+    } else if (announcement === null || status !== 'resolved') {
+      db.prepare('UPDATE reports SET announce_title=NULL,announce_body=NULL,announced_at=NULL WHERE id=?').run(id);
+    } else {
+      // 首次发布保留原始时间；再次编辑只更新文案，不改变公告在列表中的位置。
+      db.prepare('UPDATE reports SET announce_title=?,announce_body=?,announced_at=COALESCE(announced_at,?) WHERE id=?')
+        .run(announceTitle, announceBody, new Date().toISOString(), id);
+    }
     audit(current.username, 'update-report', String(id));
+  });
+}
+
+export interface Announcement { id: number; title: string; body: string; publishedAt: string; resourceId: string | null; resourceTitle: string | null; kind: string }
+/** 前台“处理记录”：只暴露维护者写的公告字段，绝不返回反馈正文与内部备注。 */
+export function listAnnouncements(limit = 20): Announcement[] {
+  const rows = database().prepare(`SELECT id,kind,announce_title,announce_body,announced_at,resource_id FROM reports
+    WHERE announced_at IS NOT NULL AND announce_title IS NOT NULL ORDER BY announced_at DESC, id DESC LIMIT ?`).all(Math.max(1, Math.min(100, limit)));
+  return rows.map((row) => {
+    const resourceId = row.resource_id === null || row.resource_id === undefined ? null : String(row.resource_id);
+    return {
+      id: Number(row.id), kind: String(row.kind), title: String(row.announce_title), body: String(row.announce_body ?? ''),
+      publishedAt: String(row.announced_at), resourceId,
+      resourceTitle: resourceId ? findPublishedResource(resourceId)?.title ?? null : null,
+    };
   });
 }
 
