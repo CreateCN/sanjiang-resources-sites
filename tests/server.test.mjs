@@ -566,3 +566,67 @@ test('metrics retention is handled by maintenance, preserving the exact 90-day b
   assert.ok(database().prepare("SELECT 1 FROM events WHERE target='boundary'").get());
   assert.ok(database().prepare("SELECT 1 FROM events WHERE target='zotero'").get());
 });
+
+test('client identity only trusts a single proxy-written address', async () => {
+  const { clientIdentity } = await import('../src/server/security.ts');
+  const request = (xff) => new Request('http://localhost/', { headers: xff === null ? {} : { 'X-Forwarded-For': xff } });
+  const original = process.env.TRUST_PROXY;
+  try {
+    delete process.env.TRUST_PROXY;
+    assert.equal(clientIdentity(request('203.0.113.5'), '10.0.0.1'), 'unverified-peer', '未声明可信代理时忽略转发头');
+    assert.equal(clientIdentity(request(null), '10.0.0.1'), '10.0.0.1');
+    process.env.TRUST_PROXY = '1';
+    assert.equal(clientIdentity(request('203.0.113.5'), '10.0.0.1'), '203.0.113.5');
+    assert.equal(clientIdentity(request('203.0.113.5, 10.0.0.1'), '10.0.0.1'), 'unverified-peer', '多跳链不是身份');
+    assert.equal(clientIdentity(request('not-an-ip'), '10.0.0.1'), 'unverified-peer');
+    assert.equal(clientIdentity(request(null), '10.0.0.1'), '10.0.0.1');
+  } finally {
+    if (original === undefined) delete process.env.TRUST_PROXY; else process.env.TRUST_PROXY = original;
+  }
+});
+
+test('login throttling counts failures only and keeps clients separate', async () => {
+  const original = process.env.TRUST_PROXY;
+  try {
+    process.env.TRUST_PROXY = '1';
+    const signIn = (fields, xff) => http.loginPost(context('/api/login/', fields, { headers: { 'X-Forwarded-For': xff } }));
+    for (let index = 0; index < 20; index++) {
+      assert.equal((await signIn({ username: 'operator', password: PASSWORD }, '203.0.113.7')).status, 303, '成功登录不得消耗额度');
+    }
+    for (let index = 0; index < 10; index++) {
+      assert.equal((await signIn({ username: 'missing-user', password: 'wrong' }, '203.0.113.8')).status, 401);
+    }
+    const blocked = await signIn({ username: 'missing-user', password: 'wrong' }, '203.0.113.8');
+    assert.equal(blocked.status, 429);
+    const retry = Number(blocked.headers.get('retry-after'));
+    assert.ok(retry > 0 && retry <= 900, `Retry-After 应反映真实窗口，实际 ${retry}`);
+    assert.equal((await signIn({ username: 'missing-other', password: 'wrong' }, '203.0.113.9')).status, 401, '别的客户端/账号不受影响');
+    assert.equal((await signIn({ username: 'missing-chain', password: 'wrong' }, '1.2.3.4, 203.0.113.8')).status, 401, '多值转发头不作为身份');
+  } finally {
+    if (original === undefined) delete process.env.TRUST_PROXY; else process.env.TRUST_PROXY = original;
+  }
+});
+
+test('feedback keeps per-client budgets and reports an accurate Retry-After', async () => {
+  const fields = { kind: 'general', title: '反馈', body: '这是长度足够的反馈说明内容' };
+  for (let index = 0; index < 5; index++) {
+    assert.equal((await http.reportsPost(context('/api/reports/', fields, { address: 'reports-client-a' }))).status, 303);
+  }
+  const blocked = await http.reportsPost(context('/api/reports/', fields, { address: 'reports-client-a' }));
+  assert.equal(blocked.status, 429);
+  const retry = Number(blocked.headers.get('retry-after'));
+  assert.ok(retry > 3000 && retry <= 3600, `反馈窗口为 1 小时，Retry-After 实际 ${retry}`);
+  assert.equal((await http.reportsPost(context('/api/reports/', fields, { address: 'reports-client-b' }))).status, 303, '另一个客户端仍有自己的额度');
+});
+
+test('metrics accept only published targets and cap distinct targets per day', async () => {
+  const post = (body) => http.eventPost({ request: new Request('http://localhost/api/event/', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'http://localhost' }, body: JSON.stringify(body) }), clientAddress: '198.51.100.21' });
+  const countEvents = () => Number(database().prepare('SELECT COUNT(*) AS total FROM events').get().total);
+  const before = countEvents();
+  assert.equal((await post({ name: 'resource_view', target: 'no-such-resource' })).status, 204);
+  assert.equal(countEvents(), before, '未知目标不写库也不报错');
+  assert.equal((await post({ name: 'resource_view', target: 'zotero' })).status, 200);
+  assert.equal(countEvents(), before + 1);
+  for (let index = 0; index < 200; index++) assert.equal(store.recordEvent('search_miss', `budget-${index}`), true);
+  assert.equal(store.recordEvent('search_miss', 'budget-overflow'), false, '超过每日目标预算后新目标被丢弃');
+});

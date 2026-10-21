@@ -1,7 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { database, transaction } from './db.ts';
 import type { User } from './store.ts';
-import { fail, hashToken, randomToken, rateLimit, requireOrigin, verifyPassword } from './security.ts';
+import { consumeLimit, enforceLimits, fail, hashToken, randomToken, requireOrigin, resetLimit, verifyPassword } from './security.ts';
 
 export const SESSION_COOKIE = 'sanjiang_session';
 export const SESSION_SECONDS = 8 * 60 * 60;
@@ -33,13 +33,26 @@ export function requireCsrf(request: Request, csrf: string): Session {
   if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) fail(403, '安全令牌无效，请重新打开后台页面');
   return session;
 }
-export function login(username: string, password: string, address: string): string {
+/** Login throttling: successful logins never consume budget, failures do. */
+export const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+export const LOGIN_USER_MAX_FAILURES = 10;
+export const LOGIN_CLIENT_MAX_FAILURES = 30;
+
+export function login(username: string, password: string, clientId: string): string {
   const name = username.trim().toLowerCase();
-  rateLimit('login-ip', address, 30, 15 * 60 * 1000);
-  rateLimit('login-user', name, 10, 15 * 60 * 1000);
+  const clientRule = { scope: 'login-client', identity: clientId, maximum: LOGIN_CLIENT_MAX_FAILURES, windowMs: LOGIN_WINDOW_MS };
+  const userRule = { scope: 'login-user', identity: name, maximum: LOGIN_USER_MAX_FAILURES, windowMs: LOGIN_WINDOW_MS };
+  // Peek first: a legitimate operator must be able to sign in repeatedly.
+  enforceLimits([clientRule, userRule]);
   const row = database().prepare('SELECT id,password_hash,active FROM users WHERE username=?').get(name);
   const valid = verifyPassword(password, row ? String(row.password_hash) : undefined);
-  if (!valid || !row || !row.active) fail(401, '用户名或密码错误，或账户已停用');
+  if (!valid || !row || !row.active) {
+    // Count the failure on both dimensions, then report the same generic error.
+    consumeLimit(clientRule);
+    consumeLimit(userRule);
+    fail(401, '用户名或密码错误，或账户已停用');
+  }
+  resetLimit('login-user', name);
   const token = randomToken();
   transaction((db) => {
     // Another worker may have reset/disabled this account during scrypt work.

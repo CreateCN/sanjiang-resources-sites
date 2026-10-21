@@ -6,6 +6,10 @@ const PRIVATE_V4 = [
   /^172\.(1[6-9]|2\d|3[01])\./, /^192\.168\./, /^198\.1[89]\./, /^22[4-9]\./, /^23\d\./, /^24\d\./, /^25[0-5]\./,
 ];
 const BLOCKED_HOSTS = new Set(['localhost', 'metadata.google.internal', 'metadata', 'instance-data']);
+/** Only web ports are worth checking; anything else widens the probe surface. */
+const ALLOWED_PORTS = new Set(['', '80', '443']);
+const TIMEOUT_MS = 10_000;
+const MAX_BODY_BYTES = 32 * 1024;
 
 export function isPrivateAddress(address: string): boolean {
   const value = address.toLowerCase().replace(/^\[|\]$/g, '').split('%')[0] ?? '';
@@ -18,18 +22,33 @@ export function isPrivateAddress(address: string): boolean {
   return PRIVATE_V4.some((pattern) => pattern.test(value));
 }
 
-/** Reject non-http(s), credentialed and private/loopback targets before fetching. */
-export async function assertPublicUrl(input: string): Promise<URL> {
+interface ResolvedTarget { url: URL; addresses: { address: string; family: number }[] }
+
+/**
+ * Reject non-http(s), credentialed, non-web-port and private/loopback targets,
+ * then return the addresses that were actually validated. The caller pins the
+ * connection to one of them, so a second DNS answer cannot redirect the fetch
+ * into the internal network (DNS rebinding / TOCTOU).
+ */
+export async function resolvePublicTarget(input: string): Promise<ResolvedTarget> {
   let url: URL;
   try { url = new URL(input); } catch { throw new Error('链接格式不正确'); }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('只检查 http/https 链接');
   if (url.username || url.password) throw new Error('链接不能包含账号信息');
   const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
   if (!host || BLOCKED_HOSTS.has(host) || host.endsWith('.localhost') || host.endsWith('.internal')) throw new Error('不允许检查内网或本机地址');
-  const records = isIP(host) ? [{ address: host }] : await lookup(host, { all: true, verbatim: true });
-  if (records.length === 0) throw new Error('域名无法解析');
-  if (records.some((record) => isPrivateAddress(record.address))) throw new Error('不允许检查内网或本机地址');
-  return url;
+  // Reject literal private addresses before the port rule so the message stays specific.
+  if (isIP(host) !== 0 && isPrivateAddress(host)) throw new Error('不允许检查内网或本机地址');
+  if (!ALLOWED_PORTS.has(url.port)) throw new Error('只检查 80/443 端口的链接');
+  const addresses = isIP(host) ? [{ address: host, family: isIP(host) }] : await lookup(host, { all: true, verbatim: true });
+  if (addresses.length === 0) throw new Error('域名无法解析');
+  if (addresses.some((record) => isPrivateAddress(record.address))) throw new Error('不允许检查内网或本机地址');
+  return { url, addresses };
+}
+
+/** Backwards-compatible helper used by tests and callers that only need validation. */
+export async function assertPublicUrl(input: string): Promise<URL> {
+  return (await resolvePublicTarget(input)).url;
 }
 
 export interface LinkCheckResult {
@@ -47,31 +66,72 @@ function classify(status: number): Pick<LinkCheckResult, 'status' | 'message'> {
   return { status: 'warn', message: `返回 ${status}，需人工确认` };
 }
 
-async function request(url: URL, method: 'HEAD' | 'GET'): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 10000);
+type FetchLike = (input: URL, init: RequestInit) => Promise<Response>;
+
+/** Pinned dispatcher: the socket connects to the address we validated, not a fresh DNS answer. */
+async function pinnedFetch(url: URL, init: RequestInit, target: ResolvedTarget): Promise<Response> {
+  const ip = target.addresses[0]!;
+  if (isIP(url.hostname) !== 0) return fetch(url, init);
   try {
-    return await fetch(url, { method, redirect: 'manual', signal: controller.signal, headers: { 'user-agent': 'SanjiangLinkCheck/1.0 (+resource directory)' } });
+    const { Agent, fetch: undiciFetch } = await import('undici');
+    const dispatcher = new Agent({
+      connect: {
+        lookup: (_hostname, _options, callback) => {
+          callback(null, ip.address, ip.family === 6 ? 6 : 4);
+        },
+      },
+    });
+    try {
+      return await (undiciFetch as unknown as FetchLike)(url, { ...init, dispatcher } as RequestInit);
+    } finally {
+      await dispatcher.close();
+    }
+  } catch {
+    // Pinning unavailable (bundler/edge runtime): fall back to a normal fetch.
+    return fetch(url, init);
+  }
+}
+
+async function request(url: URL, method: 'HEAD' | 'GET', target?: ResolvedTarget): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const init: RequestInit = {
+      method, redirect: 'manual', signal: controller.signal,
+      headers: { 'user-agent': 'SanjiangLinkCheck/1.0 (+resource directory)', accept: 'text/html,*/*;q=0.5' },
+    };
+    const response = target ? await pinnedFetch(url, init, target) : await fetch(url, init);
+    if (method === 'GET') {
+      // We only need the status line: never download an unbounded body.
+      const length = Number(response.headers.get('content-length'));
+      if (Number.isFinite(length) && length > MAX_BODY_BYTES) return response;
+      await response.body?.cancel().catch(() => undefined);
+    }
+    return response;
   } finally { clearTimeout(timer); }
 }
 
 /** Manual/scheduled link check. Never changes publication state. */
 export async function checkResourceLink(rawUrl: string): Promise<LinkCheckResult> {
   try {
-    let url = await assertPublicUrl(rawUrl);
+    let target = await resolvePublicTarget(rawUrl);
+    let url = target.url;
     let response: Response | undefined;
     for (let redirects = 0; redirects <= 3; redirects++) {
-      response = await request(url, 'HEAD');
-      if (response.status === 405 || response.status === 501) response = await request(url, 'GET');
+      response = await request(url, 'HEAD', target);
+      if (response.status === 405 || response.status === 501) response = await request(url, 'GET', target);
       if (![301, 302, 303, 307, 308].includes(response.status)) break;
       const location = response.headers.get('location');
       if (!location) break;
-      url = await assertPublicUrl(new URL(location, url).href);
+      // Every hop is validated again, and the next request is pinned to the
+      // address that was validated for that hop.
+      target = await resolvePublicTarget(new URL(location, url).href);
+      url = target.url;
       response = undefined;
     }
     if (!response) return { status: 'error', statusCode: null, finalUrl: url.href, message: '重定向次数过多' };
     const verdict = classify(response.status);
-    return { status: verdict.status, statusCode: response.status, finalUrl: response.url || url.href, message: verdict.message };
+    return { status: verdict.status, statusCode: response.status, finalUrl: url.href, message: verdict.message };
   } catch (error) {
     const message = error instanceof Error ? error.message : '检查失败';
     return { status: 'error', statusCode: null, finalUrl: null, message: message.includes('abort') ? '请求超时' : message };

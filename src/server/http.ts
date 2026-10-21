@@ -1,6 +1,6 @@
-import { randomToken, HttpError, fail, rateLimit, requireOrigin } from './security.ts';
+import { randomToken, HttpError, fail, rateLimit, requireOrigin, clientIdentity } from './security.ts';
 import { login, logout, requireCsrf, sessionCookie } from './auth.ts';
-import { changeGuidePublication, changePublication, createReport, createUser, deleteCategory, findManagedResource, pingDatabase, purgeTrashGuide, purgeTrashResource, recordEvent, restoreGuideRevision, restoreResourceRevision, restoreTrashGuide, restoreTrashResource, saveCategory, saveGuide, saveLinkCheck, saveResource, updateReport, updateUser } from './store.ts';
+import { changeGuidePublication, changePublication, createReport, createUser, deleteCategory, findManagedResource, isMetricTargetAllowed, pingDatabase, purgeTrashGuide, purgeTrashResource, recordEvent, restoreGuideRevision, restoreResourceRevision, restoreTrashGuide, restoreTrashResource, saveCategory, saveGuide, saveLinkCheck, saveResource, updateReport, updateUser } from './store.ts';
 import { checkResourceLink } from './linkcheck.ts';
 import { saveSettings } from './settings.ts';
 import { bulkReviewResources, schemaVersion } from './store.ts';
@@ -64,7 +64,10 @@ function errorResponse(request: Request, error: unknown, draft?: string): Respon
   const message = error instanceof HttpError ? error.message : '服务暂时不可用，请稍后重试';
   if (!(error instanceof HttpError)) console.error('API operation failed:', error instanceof Error ? error.name : 'UnknownError');
   const headers = new Headers(privateHeaders);
-  if (status === 429) headers.set('Retry-After', '900');
+  if (status === 429) {
+    const retryAfterMs = error instanceof HttpError ? error.retryAfterMs : undefined;
+    headers.set('Retry-After', String(Math.max(1, Math.ceil((retryAfterMs ?? 60_000) / 1000))));
+  }
   if (request.headers.get('accept')?.includes('application/json')) {
     headers.set('Content-Type', 'application/json; charset=utf-8');
     return new Response(JSON.stringify({ error: message, ...(draft ? { draft } : {}) }), { status, headers });
@@ -73,12 +76,13 @@ function errorResponse(request: Request, error: unknown, draft?: string): Respon
   headers.set('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
   return new Response(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>提交未完成</title><main style="max-width:48rem;margin:4rem auto;padding:1rem;font:18px/1.6 system-ui"><h1>提交未完成</h1><p>${escape(message)}</p>${draft ? `<p>未保存的草稿保留如下。请复制备份后返回编辑页面；版本冲突时请与最新版本合并，不要直接覆盖。</p><textarea readonly rows="18" style="width:100%" aria-label="未保存草稿">${escape(draft)}</textarea>` : ''}<p>可使用浏览器返回按钮回到原表单。</p><a href="/admin/">返回后台</a> · <a href="/feedback/">反馈页面</a></main></html>`, { status, headers });
 }
-function address(context: Context): string {
-  // Astro's Node adapter itself trusts XFF when computing clientAddress. When
-  // that header exists we cannot recover the socket peer here: use one shared
-  // conservative bucket, never an attacker-controlled forwarded address.
-  if (context.request.headers.has('x-forwarded-for')) return 'untrusted-forwarded-peer';
-  try { return context.clientAddress || 'unknown-peer'; } catch { return 'unknown-peer'; }
+/**
+ * Client identity for throttling. The deployment contract lives in
+ * security.ts#clientIdentity: only a single peer address written by our own
+ * proxy is accepted, everything else collapses to a dedicated bucket.
+ */
+function identity(context: Context): string {
+  return clientIdentity(context.request, context.clientAddress);
 }
 
 export async function managePost(context: Context): Promise<Response> {
@@ -120,6 +124,9 @@ export async function managePost(context: Context): Promise<Response> {
       }
       case 'check-link': {
         const id = text(form, 'id');
+        // Outbound checks are expensive and reachable by editors: bound them per
+        // operator so a loop cannot be turned into an egress amplifier.
+        rateLimit('linkcheck-user', session.user.username, 30, 10 * 60 * 1000);
         const resource = findManagedResource(id);
         if (!resource || resource.deletedAt) fail(404, '资源不存在');
         const result = await checkResourceLink(resource.draft.url);
@@ -197,7 +204,7 @@ export async function loginPost(context: Context): Promise<Response> {
   try {
     requireOrigin(context.request);
     const form = await readForm(context.request);
-    const token = login(text(form, 'username'), text(form, 'password'), address(context));
+    const token = login(text(form, 'username'), text(form, 'password'), identity(context));
     return redirect('/admin/', sessionCookie(token, false, secureCookie(context.request)));
   } catch (error) { return errorResponse(context.request, error); }
 }
@@ -213,7 +220,10 @@ export async function logoutPost(context: Context): Promise<Response> {
 export async function reportsPost(context: Context): Promise<Response> {
   try {
     requireOrigin(context.request);
-    rateLimit('reports-ip', address(context), 5, 60 * 60 * 1000);
+    // Per-client budget keeps one visitor from blocking everyone; the site-wide
+    // circuit breaker only trips under a distributed flood.
+    rateLimit('reports-client', identity(context), 5, 60 * 60 * 1000);
+    rateLimit('reports-site', 'site', 500, 60 * 60 * 1000);
     const form = await readForm(context.request);
     // Return the same opaque receipt for honeypots without storing the submission.
     if (!text(form, 'website').trim()) createReport({ resourceId: text(form, 'resourceId'), kind: text(form, 'kind'), title: text(form, 'title'), body: text(form, 'body') });
@@ -260,8 +270,14 @@ export async function eventPost(context: Context): Promise<Response> {
     const { name, target } = payload as { name?: unknown; target?: unknown };
     if (typeof name !== 'string' || !METRIC_NAMES.includes(name as typeof METRIC_NAMES[number])) fail(400, '未知事件');
     if (typeof target !== 'string' || target.length > 80) fail(400, '事件目标无效');
-    rateLimit('event-ip', address(context), 600, 60 * 60 * 1000);
-    recordEvent(name as typeof METRIC_NAMES[number], target);
+    rateLimit('event-client', identity(context), 600, 60 * 60 * 1000);
+    rateLimit('event-site', 'site', 20000, 60 * 60 * 1000);
+    const metric = name as typeof METRIC_NAMES[number];
+    // Targets must reference something that exists and is published. Unknown
+    // targets are acknowledged without being stored: no probe oracle, and no
+    // junk in the admin Top 10.
+    if (!isMetricTargetAllowed(metric, target)) return new Response(null, { status: 204, headers: privateHeaders });
+    recordEvent(metric, target);
     return new Response(JSON.stringify({ ok: true }), { headers: { ...privateHeaders, 'Content-Type': 'application/json' } });
   } catch (error) { return errorResponse(context.request, error); }
 }

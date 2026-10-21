@@ -320,16 +320,37 @@ export function restoreGuideRevision(actor: User, slug: string, revisionId: numb
 export type MetricName = 'resource_view' | 'guide_view' | 'outbound_click' | 'search_miss';
 const METRIC_NAMES: readonly MetricName[] = ['resource_view', 'guide_view', 'outbound_click', 'search_miss'];
 const EVENT_RETENTION_DAYS = 90;
+/** Upper bound on distinct targets per event per day; new targets beyond it are dropped. */
+const EVENT_TARGET_LIMIT = 200;
 function utcDay(date: Date): string { return date.toISOString().slice(0, 10); }
+
+/** Only published entities may receive view/click metrics; anything else is ignored. */
+export function isMetricTargetAllowed(name: MetricName, target: string): boolean {
+  if (name === 'search_miss') return target.trim().length >= 2;
+  if (name === 'guide_view') return Boolean(database().prepare('SELECT 1 FROM guides WHERE slug=? AND published IS NOT NULL AND deleted_at IS NULL').get(target));
+  return Boolean(database().prepare('SELECT 1 FROM resources WHERE id=? AND published IS NOT NULL AND deleted_at IS NULL').get(target));
+}
+
 /** Privacy-safe counter: only a day, an allow-listed event name and a normalised target. */
-export function recordEvent(name: MetricName, target: string): void {
-  if (!METRIC_NAMES.includes(name)) return;
+export function recordEvent(name: MetricName, target: string): boolean {
+  if (!METRIC_NAMES.includes(name)) return false;
   const clean = target.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
-  if (!clean) return;
+  if (!clean) return false;
   const now = new Date();
   const day = utcDay(now);
-  database().prepare(`INSERT INTO events (day,name,target,count) VALUES (?,?,?,1)
-    ON CONFLICT(day,name,target) DO UPDATE SET count=count+1`).run(day, name, clean);
+  return transaction((db) => {
+    const existing = db.prepare('SELECT count FROM events WHERE day=? AND name=? AND target=?').get(day, name, clean);
+    if (existing) {
+      db.prepare('UPDATE events SET count=count+1 WHERE day=? AND name=? AND target=?').run(day, name, clean);
+      return true;
+    }
+    const distinct = db.prepare('SELECT COUNT(*) AS total FROM events WHERE day=? AND name=?').get(day, name);
+    // Bound pollution: once the per-day target budget is spent, only existing
+    // targets keep counting, so a flood cannot fill the Top 10 with junk.
+    if (Number(distinct?.total ?? 0) >= EVENT_TARGET_LIMIT) return false;
+    db.prepare('INSERT INTO events (day,name,target,count) VALUES (?,?,?,1)').run(day, name, clean);
+    return true;
+  });
 }
 /** Maintenance work, not part of every page-view write. */
 export function pruneEvents(now = new Date()): number {

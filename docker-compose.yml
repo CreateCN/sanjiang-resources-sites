@@ -18,6 +18,9 @@ services:
       - "127.0.0.1:4321:4321"
     environment:
       SITE_URL: ${SITE_URL:-http://localhost:4321}
+      # 应用只在本机代理后面暴露：信任代理写入的单值 X-Forwarded-For，按访客限流。
+      # 若把 4321 直接暴露给公网，请改为 0。
+      TRUST_PROXY: ${TRUST_PROXY:-1}
       DATABASE_PATH: /app/data/site.sqlite
       BACKUP_DIR: /app/backups
       BACKUP_KEEP: ${BACKUP_KEEP:-7}
