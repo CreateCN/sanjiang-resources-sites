@@ -1,0 +1,118 @@
+# 功能清单
+
+本文按“已实现 / 未实现”列出三江资源站的功能与边界。README 只保留安装、部署与运维入口；具体行为、限制与实现位置在这里维护。
+
+状态说明：**✅ 已实现** · **◻ 未实现**（含计划、暂缓与明确不做）。
+
+## 公共站
+
+| 状态 | 功能 | 说明 | 位置 |
+|---|---|---|---|
+| ✅ | 资源目录 | 分类书架、搜索、类型筛选、平台筛选，关键词/分类/类型/平台可组合，状态写入网址 | `src/pages/index.astro` |
+| ✅ | 资源详情 | 用途、费用与许可、资格、门槛、限制、平台、三步入门、官方链接、来源核对状态 | `src/components/ResourceDetail.astro` |
+| ✅ | 使用门槛 | 无需申请 / 需学生认证 / 需校园网 / 需申请审核 / 有条件使用 / 门槛待确认；未填写时显示“待确认” | `src/lib/access.ts` |
+| ✅ | 数据时效 | 详情页显示“资料核对于 X 天前”；超期提示“可能已变化，使用前请复核”，不判定失效 | `src/lib/freshness.ts` |
+| ✅ | 使用指南 | `/guides/` 与 `/guides/<slug>/`，Markdown 正文，可关联资源；资源详情反向展示相关指南 | `src/pages/guides/` |
+| ✅ | 场景落地页 | `/scenarios/<分类>/`：场景说明、该分类资源、相关指南、切换场景 | `src/pages/scenarios/[id].astro` |
+| ✅ | 匿名反馈 | 无需登录；蜜罐、限流、同源校验；成功后才显示回执；支持“链接失效 / 版权与下架”等类型 | `src/pages/feedback.astro` |
+| ✅ | 图片版权提示 | 未确认授权的图片标注“网络图片，来源与授权未确认”，提供版权下架入口 | `src/components/ResourceDetail.astro` |
+| ✅ | SEO 与分享 | canonical、Open Graph、Twitter Card、默认分享图、`WebSite`/`BreadcrumbList`/`ItemList` 结构化数据 | `src/layouts/Layout.astro` |
+| ✅ | sitemap / robots | 只列已发布资源与指南；后台与 API 禁止抓取 | `src/pages/sitemap.xml.ts`、`robots.txt.ts` |
+| ✅ | 响应式与无障碍 | 320–1440 无横向溢出、跳转链接、可见焦点、键盘筛选、减少动态效果 | `tests/browser.mjs` |
+| ✅ | 无 JS 可用 | 目录、详情、指南、反馈表单在禁用 JavaScript 时仍可阅读与提交 | `tests/browser.mjs` |
+| ✅ | 匿名聚合指标 | 详情/指南浏览、官方外跳、零结果搜索按天计数，不存 IP/UA；后台管理员看 Top 10 | `src/pages/admin/metrics.astro` |
+| ◻ | 全文搜索 | 当前为客户端子串过滤；资源量变大后计划引入构建时索引或 FTS | — |
+| ◻ | RSS / 邮件订阅 | 更新频率与合规成本未验证，暂缓 | — |
+| ◻ | 多语言 | 受众为中文，不排期 | — |
+| ◻ | 学生账户 / 收藏 / 学习进度 | 认证、隐私与找回成本高，未验证需求 | — |
+| ◻ | 评论 / 评分 / 社区问答 | 需要审核与治理能力，暂缓 | — |
+| ◻ | 移动端性能优化 | 图片仍为原图，无 `srcset`/WebP；公开页仍 `no-store`，未做缓存 | — |
+
+## 内容与编辑
+
+| 状态 | 功能 | 说明 | 位置 |
+|---|---|---|---|
+| ✅ | Markdown 字段 | 简介/许可/资格/限制/步骤按内联 Markdown；新增 `details` 长文字段按完整 Markdown | `src/lib/markdown.ts` |
+| ✅ | Markdown 安全 | 禁用原始 HTML；拒绝 `javascript:`/`data:` 链接；外链加 `target`/`rel` | 同上 |
+| ✅ | 指南编辑 | 标题、摘要、正文、关联资源；草稿/发布/撤回 | `src/pages/admin/guides/` |
+| ✅ | 草稿与发布快照 | 公开站只读已发布快照；编辑者保存只改草稿，管理员发布后生效 | `src/server/store.ts` |
+| ✅ | 版本历史 | 保存/发布/撤回/恢复均留快照，保留最近 50 条；逐字段对比；恢复只改草稿 | `src/components/RevisionHistory.astro` |
+| ✅ | 草稿整页预览 | 登录后按真实前台样式预览，`noindex`、不写快照、不计浏览 | `src/pages/admin/preview/` |
+| ✅ | 回收站 | 软删除；前台/sitemap 立即消失；恢复为草稿；彻底删除清历史 | `src/pages/admin/trash.astro` |
+| ✅ | 导入导出 | 导出 JSON（草稿/发布快照/分类/设置）；导入预检后只写草稿，缺失分类自动创建 | `src/lib/importer.ts` |
+| ✅ | 首页编排 | 精选资源与场景文案存 `settings` 表，管理员可改，保存即时生效 | `src/pages/admin/settings.astro` |
+| ✅ | 分类管理 | 稳定 ID；被草稿或发布快照引用时禁止删除 | `src/pages/admin/categories.astro` |
+| ✅ | 图片授权状态 | 资源记录 `imageRights` 与 `imageCredit`，未确认时前台提示 | `src/lib/resource-schema.ts` |
+| ◻ | 内容冲刺 | 目前 12 条资源、0 篇指南；计划先补 5 篇任务指南与 10 条资源（非代码功能） | — |
+| ◻ | 图片上传 / 媒体库 | 目前只能引用 `public/images/` 现有文件；无上传、裁剪与许可登记流程 | — |
+| ◻ | 定时发布 | 只有手动发布；无计划发布时间 | — |
+
+## 后台治理
+
+| 状态 | 功能 | 说明 | 位置 |
+|---|---|---|---|
+| ✅ | 分级权限 | 管理员：发布/撤回/删除/分类/人员/设置/导入；编辑者：草稿、反馈、复核、链接检查 | `src/server/store.ts` |
+| ✅ | 公告板 | 站内待办：新反馈、处理中、到期复核；不发邮件、不接 webhook | `src/pages/admin/notices.astro` |
+| ✅ | 反馈关联修订 | 处理反馈时可选该资源的一次快照，服务端校验归属 | `src/pages/admin/reports.astro` |
+| ✅ | 复核队列与批量复核 | 按类型到期（180/90 天）；勾选多条批量标记已核对/待核对 | `src/pages/admin/reviews.astro` |
+| ✅ | 操作审计 | 内容、分类、人员、反馈、设置、导入等变更与审计同事务 | `src/pages/admin/audit.astro` |
+| ✅ | 数据概览 | 近 30 天浏览/外跳/指南/零结果 Top 10 | `src/pages/admin/metrics.astro` |
+| ✅ | 链接检查 | 手动按钮 + `npm run links:check`；只记录，不下架；403/429 需人工确认 | `src/server/linkcheck.ts` |
+| ◻ | 外部通知 | 邮件、企业微信/飞书 webhook 未实现；当前仅在后台公告板提示 | — |
+| ◻ | 多角色审批流 | 仅管理员/编辑者两角色；无逐级审核 | — |
+| ◻ | 邮件找回密码 | 忘记密码只能在服务器上再建管理员 | — |
+| ◻ | 双因素认证 | 未实现 | — |
+| ◻ | 公开投稿后台 | 推荐类内容走匿名反馈，人工整理；无投稿工作流 | — |
+
+## 运维与质量
+
+| 状态 | 功能 | 说明 | 位置 |
+|---|---|---|---|
+| ✅ | 数据库迁移 | `schema_migrations` + 顺序迁移；旧库自动补齐列 | `src/server/migrations.ts` |
+| ✅ | 备份脚本 | `VACUUM INTO` + 完整性校验 + 权限 0600 + 保留份数 | `scripts/backup-db.mjs` |
+| ✅ | 恢复流程 | README 记录：停服→校验→替换→启动→冒烟 | `README.md` |
+| ✅ | 健康检查 | `/api/health/` 查 `SELECT 1`，返回状态、DB、迁移版本、运行时长 | `src/server/http.ts` |
+| ✅ | 结构化日志 | 每请求一行 JSON（request id、方法、路径、状态、耗时），不记查询串/IP/UA | `src/server/log.ts` |
+| ✅ | CI | Node 24：check → test → build → 生产服务器冒烟 | `.github/workflows/ci.yml` |
+| ✅ | 测试覆盖 | Node 50 项、后台端到端 19 项、浏览器 7 项；浏览器测试依赖本机 Chrome | `tests/` |
+| ◻ | 定时链接检查 / 定时备份 | 脚本已就绪，但未内置调度；需外部 cron 或 DSH 自动化 | — |
+| ◻ | 监控与告警 | 无 uptime 监控、错误聚合或告警通道 | — |
+| ◻ | 日志轮转与集中收集 | 日志写 stdout，轮转交给 Docker/宿主 | — |
+| ◻ | 缓存 / CDN | 公开页仍 `Cache-Control: no-store`；未做 ETag、短缓存或内容失效 | — |
+| ◻ | 严格 CSP | 当前无第三方脚本，未配置完整内容安全策略 | — |
+| ◻ | 多机 / 高可用 | 单机 SQLite + 单容器；无读写分离或多节点方案 | — |
+
+## 安全与隐私
+
+已实现：
+
+- scrypt 密码哈希；会话令牌只存哈希、8 小时有效；`HttpOnly` + `SameSite=Strict`，HTTPS 下加 `Secure`。
+- 写操作逐次校验角色、CSRF 与会话令牌、同源 Origin。
+- 限流按访客分层（需 `TRUST_PROXY=1` 且代理覆盖写入单值 `X-Forwarded-For`）：登录失败 10 次/账号/15 分钟、30 次/客户端/15 分钟；反馈 5 次/客户端/小时；指标 600 次/客户端/小时。成功登录不消耗额度，`Retry-After` 按真实剩余时间返回。
+- 指标只接受已发布资源/指南作为目标，每事件每日最多 200 个不同目标；未知目标静默丢弃。
+- 链接检查：协议 http/https、端口 80/443、解析结果判私网、连接固定到已校验 IP、逐跳重校验、10 秒超时、每操作者 30 次/10 分钟。
+- 响应头：CSP（Report-Only）、HSTS（HTTPS）、Permissions-Policy、COOP、`nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy`。详见 [安全设计与实现规范](SECURITY-SPEC.md)。
+- 无 JavaScript 时后台表单仍可用；失败保留未存草稿。
+- 学生反馈匿名、仅维护者可见；聚合指标不含 IP/UA/账户；搜索词截断并 90 天清理。
+- 页面统一 `nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy`、`no-store`；后台 `noindex`。
+
+未实现或已知限制：
+
+- 无完整 CSP；无 2FA。
+- 审计日志可被拥有数据库文件的人直接修改，单机 SQLite 不提供防篡改。
+- 备份未加密；文件含密码哈希与反馈正文，必须放在仓库外。
+- 链接检查不解包重定向内容，仅校验 URL 与状态码；403/429 不代表资源不可用。
+- 图片版权采用“标注 + 通知下架”，不等于取得授权。
+
+## 明确不做
+
+以下功能在当前阶段不做，重新评估需要触发条件：
+
+- AI 问答 / 智能推荐：无评测集与人工兜底，风险大于收益。
+- 学生账户、收藏、学习进度：未验证复访需求，认证与隐私成本高。
+- 评论、评分、公开投稿：需要持续审核与治理能力。
+- 自动下架链接：检查结果可能误报，必须由人确认。
+- 多机部署：当前维护者与流量不需要。
+- 图片转存 / 代理下载：版权与流量责任不划算。
+
+重新评估的常见触发条件：资源 >50 条再考虑全文搜索；指南 >5 篇再做目录与代码高亮；推荐类反馈持续 >10 条/周再考虑投稿工作流；出现多编辑者审批需求再引入多角色。

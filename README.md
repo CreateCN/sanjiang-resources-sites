@@ -1,220 +1,169 @@
 # 三江资源
 
-面向三江学院学生的非官方开源工具与免费学习资源目录。当前版本是**数据库驱动的服务端网站**：公开页面无需登录，后台支持管理员与内容编辑者分级协作、草稿/发布分离、站内反馈与操作审计。不代表学校采购、合作或授权，也不托管第三方软件与课程文件。
+[![CI](https://github.com/CreateCN/sanjiang-resources-sites/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/CreateCN/sanjiang-resources-sites/actions/workflows/ci.yml)
 
-## 技术结构
+面向三江学院学生的非官方开源工具与免费学习资源目录。公开站无需登录；后台支持管理员/编辑者分级协作、草稿与发布分离、版本历史、站内反馈与审计。
 
-- Astro 5 服务端渲染（`@astrojs/node` standalone）+ Node 24
-- SQLite（Node 内置 `node:sqlite`）持久化内容、指南、版本历史、账户、会话、反馈、审计与限流
-- `markdown-it` 渲染资源字段与指南正文；禁用原始 HTML，危险协议链接被拒绝
-- 公开站只读取**已发布**快照；编辑者保存只更新草稿，管理员发布后才对公众生效
-- 内容分两类：**资源**（目录条目）与**指南**（长文教程，可关联多个资源）
-- 每次保存、发布、撤回都会留下不可变快照，可在后台查看字段改动并恢复历史版本
-- 前端样式：纸白 + 校园绿的门户风格，首页、详情、说明、反馈与 404 统一使用一套样式
+> 本项目不代表三江学院采购、合作或授权，也不托管第三方软件与课程文件。资源条件以提供方最新说明为准。
 
-## 本地开发
+## 文档
 
-运行环境：Node.js 22.12+（推荐 24），npm。
+| 文档 | 内容 |
+|---|---|
+| [功能清单](docs/FEATURES.md) | 已实现 / 未实现功能、明确不做与重新评估条件 |
+| [图片与版权记录](public/images/CREDITS.md) | 每张截图的来源、许可与下架处理 |
+| [运维手册](docs/operations.md) | 图片构建、Docker Compose 定时任务与时间配置 |
+| [Docker 生产部署](docs/deploy-docker.md) | Compose 拓扑、端口与源 IP、反向代理容器、备份升级与排查 |
+| [非 Docker 部署](docs/deploy-local.md) | systemd + Nginx 的宿主机安装、定时任务与备份恢复 |
+| [边缘防护（CDN/CC/DDoS）](docs/edge-cdn-hardening.md) | 源站隐身、真实 IP、边缘限流、DCDN/WAF 升级与应急预案 |
+| [安全设计与实现规范](docs/SECURITY-SPEC.md) | 身份/限流/输入输出/SSRF/响应头/验收清单等强制约束 |
+| [安全评估档案](reports/security/README.md) | 历次安全评估报告、根因分析与证据索引 |
+| [Agent 约定](docs/agents/domain.md) | 仓库的 issue tracker、标签与领域文档约定 |
+
+## 快速开始
+
+运行环境：Node.js 22.12+（推荐 24）、npm。
 
 ```bash
 npm ci
-npm run dev
+npm run dev          # http://localhost:4321
 ```
 
-默认地址：http://localhost:4321 。首次访问任意页面会创建 `./data/site.sqlite` 并导入种子资源（12 条），**不会创建任何默认账户**。
-
-创建首个管理员（密码至少 12 字符，交互输入不回显）：
+首次访问会创建 `./data/site.sqlite` 并导入 12 条种子资源，**不会创建任何默认账户**。创建首个管理员（密码至少 12 字符）：
 
 ```bash
 npm run db:admin
-# 或
-ADMIN_USERNAME=你的用户名 ADMIN_PASSWORD='足够长的密码' node scripts/create-admin.mjs
+# 或非交互
+ADMIN_USERNAME=你的用户名 ADMIN_PASSWORD='至少12位密码' node scripts/create-admin.mjs
 ```
 
-管理员登录 `/admin/login/`。之后可在“人员与权限”里创建编辑者账户。
+登录 `/admin/login/` 后，可在“人员与权限”创建编辑者账户。
+
+### Docker（推荐）
 
 ```bash
-npm run check        # Astro / TypeScript 检查
-npm test             # 内容结构与种子数据校验
-npm run test:server  # 后端 31 项：权限、CSRF、冲突、反馈、审计等（使用临时数据库）
-npm run build        # 类型检查并构建 dist/
-npm start            # 生产模式启动 dist/server/entry.mjs
-npm run test:browser # 只读页面/交互测试，需先运行 dev 或 start
-npm run test:admin   # 后台端到端测试：自动起临时数据库与端口（19 项）
-```
-
-浏览器测试使用本机 `/usr/bin/google-chrome`，可通过 `CHROME_PATH` 覆盖；`test:browser` 只做只读检查（`TEST_BASE_URL` 可指向其它实例）。
-
-## Docker 部署
-
-```bash
-cp .env.example .env    # 修改 SITE_URL 为真实 HTTPS 地址
+cp .env.example .env                     # 至少把 SITE_URL 改成真实地址
 docker compose up -d --build
-docker compose exec app node scripts/create-admin.mjs   # 首次创建管理员
+docker compose exec app node scripts/create-admin.mjs
 ```
 
-- 端口默认只绑定 `127.0.0.1:4321`，对外发布请在前面放 HTTPS 反向代理（Nginx/Caddy）。
-- 数据保存在命名卷 `site-data`（容器内 `/app/data/site.sqlite`）。**必须备份该卷**；`docker compose down -v` 会删除全部数据。
-- `SITE_URL` 必须与浏览器地址完全一致（协议+域名+端口），用于校验管理/反馈表单的 Origin；以 `https://` 开头时会话 Cookie 自动加 `Secure`。反向代理必须终止 HTTPS。`http://localhost` 上调试时不会加 `Secure`，因此本地试用也能登录。
-- 反向代理**不要透传客户端的 `X-Forwarded-For`**：当前限流在检测到该头时使用共享保守桶，透传会误伤全体用户；同时 Astro 适配器会信任该头。若将来需要真实客户端 IP，必须先引入可信代理方案再调整。
-- 后台没有邮件找回密码功能。忘记密码时，在服务器终端再创建一位管理员，或直接管理数据库（谨慎）。
+完整步骤（端口/网络坑、反向代理容器、备份恢复、升级回滚、故障排查）见 [Docker 生产部署](docs/deploy-docker.md)。
 
-## Markdown 与指南
+### 非 Docker（宿主机）
 
-- 资源字段：`summary`、`license`、`eligibility`、`caveat`、`steps` 按内联 Markdown 渲染；新增可选 `details` 字段（上限 2 万字）按完整 Markdown 渲染，出现在详情页“详细说明”。
-- 指南：`/guides/` 与 `/guides/<slug>/`，正文为完整 Markdown，可勾选关联资源；资源详情页会反向展示相关指南。
-- 渲染统一走 `src/lib/markdown.ts`：`html: false` 转义原始 HTML；`javascript:/vbscript:/data:` 链接被拒绝；`http(s)` 外链自动加 `target="_blank"` 与 `rel="noopener noreferrer"`。
-- 后台编辑页提供“预览”，调用 `POST /api/preview/`（需登录与 CSRF），与正式渲染使用同一函数，避免预览和发布不一致。
-- 支持的语法：标题、列表、引用、链接、粗体/斜体、行内代码、代码块、表格、分隔线；不支持原始 HTML、iframe、脚本。
-- 指南发布同样走草稿/快照：编辑者保存只更新草稿，管理员发布后才公开，撤回立即从 `/guides/` 消失。
+没有 Docker 时用 systemd + Nginx 直接跑生产构建，步骤与安全配置见 [非 Docker 部署](docs/deploy-local.md)。
 
-## 内容版本管理
+## 配置
 
-- 资源与指南的每次**保存草稿、发布、撤回**都会写入一条版本快照（`revisions` 表），记录内容、操作者、动作、版本号与时间；每个实体保留最近 50 条。
-- 后台编辑页底部有“版本历史”：列出时间、操作者、动作、版本号；展开可看到**与当前草稿逐字段对比**（当时 vs 现在）。
-- “恢复此版本为草稿”只覆盖草稿，不会改动已发布内容；恢复本身也会记录一条 `restore` 快照，公开页面需要管理员再点发布才会更新。
-- 恢复同样受版本号保护：他人先保存后，旧页面恢复会返回 409，避免覆盖。
-- 版本历史与审计日志职责不同：版本历史保存内容快照，审计日志记录操作事件；两者都写在同一事务内。
-- 该功能上线前已经存在的内容没有历史快照，下一次保存后开始记录。
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `SITE_URL` | `http://localhost:4321` | 站点绝对地址；决定 canonical、分享链接、Origin 校验与 Cookie `Secure` |
+| `TRUST_PROXY` | `0`（compose 中为 `1`） | 是否信任代理写入的单值 `X-Forwarded-For`；关闭时按站点共享限流 |
+| `DATABASE_PATH` | `./data/site.sqlite` | SQLite 文件；容器内为 `/app/data/site.sqlite` |
+| `BACKUP_DIR` | `./backups` | 备份目录；容器内挂载到宿主机 |
+| `BACKUP_KEEP` | `7` | 保留备份份数 |
+| `BACKUP_HOST_DIR` | `./backups` | Compose 中宿主机备份目录 |
+| `HOST` / `PORT` | `0.0.0.0` / `4321` | 监听地址与端口 |
 
-## 首页编排与场景页
+环境变量示例见 [.env.example](.env.example)。
 
-- 首页精选资源与五张场景文案不再写死在代码里，改为 `settings` 表存储；后台“首页编排”（管理员）可改精选、任务文案、补充说明与字标，保存后立即生效。
-- 新增场景落地页 `/scenarios/<分类>/`：场景说明、该分类全部已发布资源、相关指南与“换个场景”，带 canonical/OG/结构化数据并进入 sitemap。
-- 首页场景卡片现在直接跳转到落地页，侧边书架仍用于站内筛选。
+## 常用命令
 
-## 导入导出与批量复核
+| 命令 | 用途 |
+|---|---|
+| `npm run dev` | 本地开发 |
+| `npm run build` | 类型检查并构建 `dist/` |
+| `npm start` | 生产模式启动 `dist/server/entry.mjs` |
+| `npm run check` | Astro / TypeScript 检查 |
+| `npm test` | 内容、后端、Markdown、链接检查、备份等 50 项 |
+| `npm run test:admin` | 后台端到端 19 项（自动临时数据库与端口） |
+| `npm run test:browser` | 前台只读交互 7 项（需先启动 dev，且本机有 Chrome） |
+| `npm run db:admin` | 创建管理员 |
+| `npm run db:backup` | 一致性备份 |
+| `npm run links:check` | 批量检查已发布资源链接（手动/定时均可） |
 
-- 导出：`/api/export/`（仅管理员登录）返回 JSON，包含草稿、发布快照、分类、设置与版本号；文件不会写入仓库。
-- 导入（仅管理员）：后台“导入导出”页粘贴 JSON → 先预检（新增/更新/无变化/无效条目）→ 确认后导入。导入**只写草稿**，发布仍需人工确认；缺失分类自动创建；回收站中的条目会先恢复再导入。
-- 批量复核：复核队列支持勾选多条 + 核对日期，一次标记“已核对”或“待核对”；每条都会写入版本历史与审计，不直接改公开快照。
-- 服务端校验复用同一套 Zod schema；导入预检与正式导入共用解析逻辑。
+浏览器测试默认使用 `/usr/bin/google-chrome`，可通过 `CHROME_PATH`、`TEST_BASE_URL` 覆盖。CI 在 Node 24 上执行 check → test → build 与生产服务器冒烟，不运行浏览器测试。
 
-## 数据库迁移、CI 与日志
+## 部署要点
 
-- `schema_migrations` 记录已应用迁移；迁移定义在 `src/server/migrations.ts`（`001-base-schema`、`002-soft-delete-and-report-revision`）。启动时按顺序执行未应用项，旧数据库会安全补齐列。
-- CI：`.github/workflows/ci.yml` 在 Node 24 上执行 `check → test → build`，再启动生产服务器做 health、首页与 sitemap 冒烟；浏览器测试需要本机 Chrome，未放进 CI。
-- `/api/health/` 返回 `{status, db, schema, uptime}`，可判断数据库是否可用与迁移版本；不泄露账户或内容。
-- 每个请求输出一行 JSON 日志（时间、request id、方法、路径、状态、耗时），**不记录查询串、IP、UA**；响应头带 `X-Request-Id`，便于和日志对照。
+- 端口默认只绑定 `127.0.0.1:4321`，对外必须放在 HTTPS 反向代理（Nginx/Caddy）后面。
+- 上公网前先做**源站隐身**：Nginx 只允许 CDN 回源段与运维 IP，直连 `return 444`；否则源站 IP 一旦泄露，CDN 层防护可被完全绕过。见 [边缘防护](docs/edge-cdn-hardening.md)。
+- 有 CDN 时必须 `set_real_ip_from` + `real_ip_header` 还原访客 IP，否则 `limit_req` 与应用按访客限流都会退化成"全站一个桶"。
+- 边缘层再加 `limit_req`/`limit_conn` 抗 CC（应用层限流负责业务语义，两层不冲突）。
+- 数据在命名卷 `site-data`，备份写到宿主机目录；`docker compose down -v` 会删除全部数据。
+- `SITE_URL` 必须与浏览器地址一致（协议 + 域名 + 端口）；HTTPS 地址会自动给会话 Cookie 加 `Secure`。
+- 反向代理必须**覆盖写入**客户端地址，而不是透传客户端的值：
 
-## 使用门槛与平台筛选
+  ```nginx
+  proxy_set_header X-Forwarded-For $remote_addr;   # 覆盖，保证只有一个值
+  proxy_set_header X-Real-IP       $remote_addr;
+  proxy_set_header X-Forwarded-Proto https;
+  ```
 
-- 资源新增结构化 `access` 枚举：无需申请、需学生认证、需校园网、需申请审核、有条件使用、门槛待确认；未知一律显示“门槛待确认”，不猜。
-- 首页列表显示门槛标签，并可按平台筛选（Windows / macOS / Linux / 网页 / iOS / Android）；筛选与关键词、分类、类型可组合，状态写入网址。
-- 详情页“使用条件”第一项就是使用门槛，长文本的资格说明保留在下方。
-
-## 草稿预览与回收站
-
-- 编辑页提供“预览整页草稿”：`/admin/preview/resources/<id>/`、`/admin/preview/guides/<slug>/`，要求登录、`noindex`、顶部提示“未发布”，不会写入发布快照，也不会触发详情浏览统计。
-- 删除改为软删除：资源/指南进入回收站，前台、sitemap、搜索立即不可见，公开快照被清空；恢复后回到**草稿**状态，需要重新发布。
-- 回收站仅管理员可见；恢复与彻底删除都走确认与审计。彻底删除会清除该内容的版本历史与链接检查记录，无法撤销。
-
-## 反馈闭环：公告与修订关联
-
-- 后台“公告”是站内待办板，不发邮件、不接外部通知：汇总新反馈、处理中数量与到期复核，顶部导航显示待办数。
-- 反馈处理时可选“关联修订”，把这次处理对应到该资源的一次保存/发布快照；服务端校验修订必须属于该反馈的资源，避免错链。
-- 反馈正文仍只留在后台；公告板只显示摘要，避免把学生内容同步到第三方。
-
-## 链接健康检查
-
-- 手动：资源列表与编辑页都可“检查链接”，记录状态、HTTP 状态码、最终地址与时间；403/401/429 记为“需人工确认”，不当作失效，也**绝不自动下架**。
-- 批量/定时：`npm run links:check`（可用 `--limit`、`--delay` 控制），适合放进 cron 或 DSH 自动化；只检查已发布资源。
-- SSRF 防护：只允许 http/https，拒绝带账号信息、localhost、`.internal`、私网/回环/链路本地/云元数据地址；重定向最多 3 跳且每一跳重新校验；超时 10 秒。
-- 检查结果只是提示：发布状态、核验状态与版本快照都不会被自动修改。
-
-## 复核与时效
-
-- 已核对资源按类型到期：开源工具 / 免费课程 / 公共资源 180 天，学生权益 90 天；资料待核对条目立即进入队列。
-- 后台“复核队列”按逾期优先排序，显示到期天数与前台公开版本状态；核对后仍走“保存草稿 → 发布”，没有绕过发布快照的快捷通道。
-- 详情页显示“资料核对于 X 天前”，超期显示“可能已变化，使用前请复核”，不说“已失效”；旁边提供“报告链接打不开”，预填反馈类型，仍匿名提交。
-- 到期计算实现见 `src/lib/freshness.ts`，周期常量集中在 `REVIEW_DAYS`。
+  同时设置 `TRUST_PROXY=1`（compose 默认开启）。应用只接受"单个合法 IP"作为限流身份；缺失、畸形或含多个地址的转发头一律退化为站点级熔断桶，不会被当作访客身份。若不设置 `TRUST_PROXY`，应用会忽略转发头，此时所有访客共享同一个来源桶（只适合内网试运行）。详见 [安全设计与实现规范](docs/SECURITY-SPEC.md)。
+- 忘记管理员密码没有邮件找回：在服务器上再创建一位管理员，或谨慎地直接操作数据库。
 
 ## 备份与恢复
 
-数据库是单文件 SQLite，必须做一致性备份并定期演练恢复。
-
 ```bash
-npm run db:backup                     # 默认 ./data/site.sqlite → ./backups
-BACKUP_KEEP=14 npm run db:backup      # 保留份数，默认 7
-docker compose exec app node scripts/backup-db.mjs   # 容器内执行（挂载到宿主机 ./backups）
+npm run db:backup                                    # 本地
+docker compose exec app node scripts/backup-db.mjs   # 容器
 ```
 
-- 脚本用 `VACUUM INTO` 生成独立快照，随后执行 `PRAGMA integrity_check` 并输出资源/指南/账户/反馈/版本计数；备份文件权限 0600。
-- 备份包含密码哈希、反馈正文与版本历史：不要提交到仓库，放在仓库外或加密卷；`backups/` 已在 `.gitignore` 中。
-- 恢复流程：停应用 → 校验备份 `PRAGMA integrity_check` → 用备份文件替换 `DATABASE_PATH` → 启动 → 访问 `/api/health/` 与首页、后台登录做冒烟检查。建议每季度演练一次，记录 RPO/RTO。
-- 健康检查 `GET /api/health/` 会执行 `SELECT 1`：数据库不可用时返回 503 与 `{"status":"error","db":"error"}`，Docker `HEALTHCHECK` 依赖该结果。
+备份使用 `VACUUM INTO`，随后执行 `PRAGMA integrity_check` 并输出资源/指南/账户/反馈/版本计数，文件权限 `0600`。
 
-## 匿名统计
+恢复流程：停应用 → 校验备份完整性 → 用备份替换 `DATABASE_PATH` → 启动 → 访问 `/api/health/`、首页与后台登录做冒烟检查。建议每季度演练一次。
 
-- 只记录按天聚合的计数：资源详情浏览、指南阅读、官方外跳点击、搜索无结果词；不保存 IP、UA、账户或会话。
-- 详情/指南浏览在服务端渲染时计数（跳过爬虫与无 UA 请求）；外跳由浏览器 `sendBeacon` 上报；零结果在浏览器端去抖后上报。
-- 事件接口 `POST /api/event/` 只接受白名单事件名、同源请求、JSON、最大 2KB，并按来源限流；计数保留 90 天。
-- 后台“数据概览”（仅管理员）展示近 30 天总量与 Top 10；口径是“聚合趋势”，同一访客刷新会重复计数，禁用 JS 的外跳不计。
-- 隐私说明已同步到 `/about/`，记录搜索词前请确认这一取舍仍被接受。
+备份含密码哈希、反馈正文与版本历史，**不要提交到仓库**；`backups/` 已忽略。
 
-## SEO 与分享
-
-- 所有公开页输出 canonical、Open Graph、Twitter Card 与默认分享图 `/og-default.png`；资源/指南页带 `BreadcrumbList`，首页带 `WebSite` 与 `ItemList` 结构化数据。
-- `/sitemap.xml` 只包含静态页与**已发布**资源/指南；草稿、后台与 API 不进入；`/robots.txt` 禁止抓取 `/admin/` 与 `/api/`。
-- 分享图使用项目自己的截图与文字，不引用许可未确认的第三方图片；`SITE_URL` 决定 canonical 与分享链接的绝对地址。
-
-## 后台权限
+## 权限与安全
 
 | 能力 | 管理员 | 内容编辑者 |
 |---|---|---|
-| 编辑/新增资源草稿 | ✓ | ✓ |
-| 发布、撤回、删除资源 | ✓ | — |
-| 管理分类 | ✓ | — |
-| 创建/停用账户、重置密码、改角色 | ✓ | — |
-| 处理学生反馈 | ✓ | ✓ |
-| 查看操作记录 | ✓ | — |
+| 草稿编辑、整页预览、链接检查、反馈与复核 | ✓ | ✓ |
+| 发布 / 撤回 / 收进回收站 | ✓ | — |
+| 分类、人员、首页编排、导入导出、回收站恢复 | ✓ | — |
+| 数据概览、操作记录 | ✓ | — |
 
-- 编辑者保存不会影响已公开版本；管理员发布时把草稿写入发布快照，撤回后前台立即消失。
-- 每个资源有版本号，多人同时编辑时旧版本保存会返回 409，不会静默覆盖他人修改。
-- 停用账户、重置密码或改变角色会立即撤销该账户已有会话。
-- 系统始终保留至少一名有效管理员，不能停用或降级最后一位。
-- 资源、分类、人员、反馈的状态变更与审计记录在同一事务内写入。
+- 密码 scrypt 哈希；会话令牌仅存哈希、8 小时有效，`HttpOnly` + `SameSite=Strict`。
+- 写操作逐次校验角色、CSRF、同源 Origin；登录与反馈限流；审计与变更同事务。
+- 健康检查 `/api/health/` 会查询数据库，返回 `{status, db, schema, uptime}`。
+- 请求日志为 JSON 行，不记录查询串、IP、UA。
 
-## 安全边界
-
-- 密码使用 scrypt 随机盐哈希；会话令牌随机生成、仅存哈希、8 小时有效，Cookie 为 `HttpOnly` + `SameSite=Strict`；`SITE_URL` 为 HTTPS 时加 `Secure`。
-- 所有写操作要求登录、逐操作校验角色、校验 CSRF 与会话令牌、校验同源 Origin；HTTPS 由反向代理提供。
-- 登录与反馈有持久化限流；浏览器无 JS 时后台表单仍可用（成功返回 303，失败返回可读页面并保留未存草稿）。
-- 学生反馈匿名提交并只对授权维护者可见，不提供公开列表；不要求学号、邮箱或账号凭据。
-- 页面统一设置 `nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy` 与 `Cache-Control: no-store`；后台额外 `noindex`。未配置完整 CSP，引入第三方脚本前需要补上。
-- 审计日志没有删除入口，但拥有数据库文件的人可以直接修改；单机 SQLite 不提供防篡改保证。
-
-## 内容维护
-
-种子数据在 `src/data/resources.ts`，**只在数据库首次初始化时导入**。此后内容以数据库为准，通过后台维护；直接修改种子文件不会更新已有站点。
-
-- `verified`：只表示已核对官方公开页面资料，必须有 `checkedAt`。
-- `review`：尚未完整核对，`checkedAt` 为 `null`。
-- 两者都不表示校园网络实测、学生身份验证成功、学校已购买或永久可用。
-
-首发 12 条中有 10 条官方资料已核对、2 条待复核（Inkscape、智慧高教）。没有自动外链健康检查或复核提醒，维护者需定期人工复核。
-
-## 图片与版权
-
-- 资源图片记录 `imageRights`（`confirmed` / `unconfirmed`）与 `imageCredit`；未确认的图片在前台标注“网络图片，来源与授权未确认；如有侵权请联系管理员处理”。
-- 后台资源编辑页可设置授权状态与署名；确认授权时填写作来源者与许可。
-- 反馈类型新增“版权与下架”，从图片旁或说明页可直接进入，预填资源与类型；处理流程见 `/about/#credits` 与 `public/images/CREDITS.md`。
-- 未确认图片不会因为标注而自动合法；收到有效通知后应移除或替换，保留官方链接即可。
-
-## 前端设计
-
-全站采用方案 A「校园资源门户」：纸白 `#f7f9f5` + 校园绿 `#245c42`，左侧分类书架、醒目搜索、场景入口与资源表列（用途 / 费用与条件 / 资料状态）。详情页为正文 + 右侧条件摘要；后台沿用同一套绿色语义色。样式集中在 `src/styles/site.css`，后台为 `src/styles/admin.css`。
-
-页面结构：`/`（搜索、场景、目录、精选、真实界面）、`/resources/<id>/`、`/about/`、`/feedback/`、`/admin/`。无 JavaScript 时仍可浏览全部资源与详情。
+更细的边界、未实现项与已知限制见 [功能清单](docs/FEATURES.md)。
 
 ## 上线前核对
 
-- 首次创建管理员并立即创建至少一位编辑者；确认备份策略与恢复演练。
-- 配置真实 HTTPS 域名与 `SITE_URL`，确认反向代理不暴露源站端口。
-- 图片版权按“标注 + 通知下架”处理：Zotero、OBS、VLC 截图标记为“网络图片，来源与授权未确认”，详情页与首页给出提示，反馈页提供“版权与下架”入口；收到有效通知后移除或替换，并更新 `public/images/CREDITS.md`。LibreOffice、GIMP 截图保留作者、来源与 CC 许可。该处理降低风险，但不等于取得授权。
-- 用真实设备检查登录、草稿、发布、撤回、反馈与移动端关键任务。
-- 前端已不加载外部字体；若未来加入第三方脚本，需要补充 CSP 并重新核对隐私说明。
+- 创建管理员与至少一位编辑者；配置真实 HTTPS 域名与 `SITE_URL`。
+- 完成一次备份恢复演练，确认备份卷在仓库之外。
+- 检查图片版权状态：未确认授权的截图已标注并提供下架入口，收到通知后移除或替换。
+- 用真实设备检查登录、草稿、发布、撤回、反馈与手机端关键任务。
+- 浏览器测试与真实设备可用性检查不能互相替代。
 
-## 刻意不做
+## 项目结构
 
-学生账户、个人收藏、评论评分、公开投稿、AI 问答、文件上传、多角色审批流、自动外链监测与邮件找回密码不在当前范围。后台首版面向少量维护者，不据此提前拆分服务或引入多机数据库。Markdown 不开放原始 HTML，嵌入视频/iframe 需要单独的标签与属性白名单方案。
+```text
+src/
+├── components/        资源详情、指南正文、版本历史
+├── layouts/           公开站与后台布局
+├── lib/               数据读取、Markdown、时效、导入、字段校验
+├── pages/             公开页、后台页、API、sitemap/robots
+├── server/            SQLite、认证、权限、设置、链接检查、日志、迁移
+└── styles/            公开站与后台样式
+scripts/               建管理员、备份、批量链接检查
+tests/                 Node、后台端到端、浏览器测试
+docs/                  功能清单与 Agent 约定
+```
+
+## 内容维护
+
+种子数据在 `src/data/resources.ts`，**只在数据库首次初始化时导入**；此后内容以数据库为准，通过后台维护。直接修改种子文件不会更新已有站点。
+
+未发布的内容不会进入前台、sitemap 或统计；删除是软删除，可恢复为草稿后重新发布。
+
+## 已知限制
+
+- 单机 SQLite + 单容器，无多机或高可用。
+- 无邮件服务：无密码找回、无邮件/webhook 通知；后台以公告板提示待办。
+- 链接检查是提示而非判决，不会自动下架。
+- 图片上传、全文搜索、多语言、学生账户、评论、AI 问答、定时发布均未实现，详见 [功能清单](docs/FEATURES.md)。
