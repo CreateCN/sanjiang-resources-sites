@@ -10,3 +10,13 @@ test-results/
 /data/
 backups/
 public/images/optimized/
+
+# 安全评估：只入库报告、脚本与校验和；证据、日志、代理配置留在本地
+/reports/security/**/evidence/
+/reports/security/**/evidence-bf/
+/reports/security/**/*.log
+/reports/security/**/*.log.gz
+/reports/security/**/*.conf
+/reports/security/**/*.txt
+/reports/security/**/*.ndjson
+/reports/security/**/*.json
