@@ -1,6 +1,6 @@
 ---
 import Layout from '../layouts/Layout.astro';
-import { getPublishedResources } from '../lib/catalog';
+import { getPublishedResources, repository } from '../lib/catalog';
 const resources = getPublishedResources();
 ---
 <Layout title="收录与核验说明">
@@ -20,6 +20,7 @@ const resources = getPublishedResources();
       })}</ul>
       <div class="notice"><strong>版权与下架流程</strong><p>如果你是图片权利人，或发现图片使用超出许可范围，请通过 <a href="/feedback/?kind=%E7%89%88%E6%9D%83%E4%B8%8E%E4%B8%8B%E6%9E%B6">反馈页的“版权与下架”</a> 提交，说明图片页面、权利依据与可选的替换素材。核实后我们会移除图片或替换为许可明确的素材，并在素材记录中留下处理说明；资源条目本身会保留官方链接，不影响学生查看。</p><p>不要求提供真实姓名与联系方式；如需回复，可自行留下可用渠道，但请勿发送身份证件、学生证或账户凭据。</p></div>
       <p>“网络图片”不构成自动获得再分发许可，也不代表权利已授权。若后续取得许可，我们会在素材记录中更新授权状态；若无法取得，则移除图片，仅保留官方页面链接。</p></section>
+    <section class="prose-section" id="license"><h2>开源协议与项目地址</h2><p>本站是开源项目，源代码、样式与构建脚本以 <a href={`${repository}/blob/master/LICENSE`} target="_blank" rel="noopener noreferrer">MIT 协议</a> 发布，仓库地址：<a href={repository} target="_blank" rel="noopener noreferrer">{repository.replace('https://', '')}</a>。欢迎通过 issue 指出信息错误，或提交改进；维护者会按可用时间处理，不承诺响应时限。</p><p>MIT 只覆盖代码本身。资源条目里的第三方项目名称、商标、官方文案与界面截图，权利仍归各提供方；站内收录的软件、课程与服务也不因本站开源而改变其授权条件。</p><p>如果你要自建一份同样的目录站，保留版权声明与许可文本即可；但请替换站点名称、免责说明和资源来源，不要让人误以为由本项目或三江学院背书。</p></section>
     <a class="portal-button" href="/#catalog">回到资源目录</a>
   </article>
 </Layout>

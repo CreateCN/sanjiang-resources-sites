@@ -1374,3 +1374,8 @@ a:hover {
 .update-meta span{background:var(--portal-soft);padding:2px 8px;color:var(--portal-green)}
 .update-list-page{margin-top:26px}
 .checkbox-line{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:500}
+
+/* 页脚版权与许可证：单独一行，避免和既有说明挤在同一排 */
+.portal-footer-legal{flex-basis:100%;margin-top:14px;padding-top:14px;border-top:1px solid #d3ddd0;line-height:1.9}
+.portal-footer-legal a{text-decoration:underline;text-underline-offset:3px;color:var(--portal-green)}
+.portal-footer-legal a:hover{color:var(--portal-green-dark)}

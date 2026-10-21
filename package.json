@@ -2,6 +2,11 @@
   "name": "sanjiang-resources",
   "version": "0.2.0",
   "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CreateCN/sanjiang-resources-sites.git"
+  },
   "type": "module",
   "engines": {
     "node": ">=22.12.0"

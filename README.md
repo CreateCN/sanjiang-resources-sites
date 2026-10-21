@@ -75,9 +75,9 @@ docker compose exec app node scripts/create-admin.mjs
 | `npm run build` | 类型检查并构建 `dist/` |
 | `npm start` | 生产模式启动 `dist/server/entry.mjs` |
 | `npm run check` | Astro / TypeScript 检查 |
-| `npm test` | 内容、后端、Markdown、链接检查、备份等 50 项 |
-| `npm run test:admin` | 后台端到端 19 项（自动临时数据库与端口） |
-| `npm run test:browser` | 前台只读交互 7 项（需先启动 dev，且本机有 Chrome） |
+| `npm test` | 内容、后端、Markdown、链接检查、备份等 110 项 |
+| `npm run test:admin` | 后台端到端 28 项（自动临时数据库与端口） |
+| `npm run test:browser` | 前台只读交互 9 项（需先启动 dev，且本机有 Chrome） |
 | `npm run db:admin` | 创建管理员 |
 | `npm run db:backup` | 一致性备份 |
 | `npm run links:check` | 批量检查已发布资源链接（手动/定时均可） |
@@ -167,3 +167,11 @@ docs/                  功能清单与 Agent 约定
 - 无邮件服务：无密码找回、无邮件/webhook 通知；后台以公告板提示待办。
 - 链接检查是提示而非判决，不会自动下架。
 - 图片上传、全文搜索、多语言、学生账户、评论、AI 问答、定时发布均未实现，详见 [功能清单](docs/FEATURES.md)。
+
+## 开源协议
+
+代码（`src/`、`scripts/`、`tests/`、构建配置）以 [MIT 协议](LICENSE) 发布，版权归三江资源项目贡献者。项目地址：<https://github.com/CreateCN/sanjiang-resources-sites>。
+
+MIT 只覆盖代码。资源条目中的第三方项目名称、商标、官方文案与界面截图，权利归各提供方；站内收录的软件、课程与服务也不因本项目开源而改变其授权条件。图片的来源、许可与下架记录见 [public/images/CREDITS.md](public/images/CREDITS.md)。
+
+自建部署请保留版权声明与许可文本，并替换站点名称、免责说明与资源来源，避免让人误以为由本项目或三江学院背书。

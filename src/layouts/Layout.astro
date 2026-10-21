@@ -1,8 +1,11 @@
 ---
 import '../styles/site.css';
 import CommitVersion from '../components/CommitVersion.astro';
+import { repository } from '../lib/catalog';
 interface Props { title: string; description?: string; type?: 'website' | 'article'; jsonLd?: Record<string, unknown>[]; noindex?: boolean; }
 const { title, description = '为三江学院同学整理的开源工具、开放课程与学生资源。先了解条件，再放心开始。', type = 'website', jsonLd = [], noindex = false } = Astro.props;
+const year = new Date().getFullYear();
+const licenseUrl = `${repository}/blob/master/LICENSE`;
 const path = Astro.url.pathname;
 const origin = (process.env.SITE_URL ?? Astro.url.origin).replace(/\/$/, '');
 const canonical = `${origin}${path}`;
@@ -56,12 +59,13 @@ const safeJson = (value: unknown) => JSON.stringify(value).replaceAll('<', '\\u0
       <div class="portal-container">
         <div class="portal-footer-main">
           <div><strong>三江资源</strong><p>让好工具走进学习日常。</p></div>
-          <nav aria-label="页脚导航"><a href="/guides/">使用指南</a><a href="/about/">收录说明</a><a href="/feedback/">反馈与推荐</a><a href="/admin/">管理入口</a></nav>
+          <nav aria-label="页脚导航"><a href="/guides/">使用指南</a><a href="/updates/">处理记录</a><a href="/about/">收录说明</a><a href="/feedback/">反馈与推荐</a><a href="/admin/">管理入口</a></nav>
         </div>
         <div class="portal-footer-note">
           <p>面向三江学院学生的非官方整理项目，不代表学校或资源方授权。</p>
           <p>资源条件以提供方最新说明为准；核验状态不等于校内实测。</p>
           <p><CommitVersion /></p>
+          <p class="portal-footer-legal">© {year} 三江资源项目贡献者 · 代码以 <a href={licenseUrl} target="_blank" rel="noopener noreferrer">MIT 协议</a> 开源 · <a href={repository} target="_blank" rel="noopener noreferrer">项目地址</a> · 资源说明与截图版权归原提供方</p>
         </div>
       </div>
     </footer>
