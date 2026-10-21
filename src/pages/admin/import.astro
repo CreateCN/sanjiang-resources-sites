@@ -1,34 +1,58 @@
 ---
 import AdminLayout from '../../layouts/AdminLayout.astro';
 import { getSession } from '../../server/auth';
+import { findImportRun } from '../../server/store';
 const session = getSession(Astro.request);
 if (!session) return Astro.redirect('/admin/login/');
 if (session.user.role !== 'admin') return Astro.redirect('/admin/');
 const imported = Astro.url.searchParams.get('resources');
 const guides = Astro.url.searchParams.get('guides');
 const categories = Astro.url.searchParams.get('categories');
+const restored = Astro.url.searchParams.get('restored');
+const settingsRestored = Astro.url.searchParams.get('settings');
 const errors = Astro.url.searchParams.get('errors');
+const runParam = Number(Astro.url.searchParams.get('run') ?? '');
+const run = Number.isSafeInteger(runParam) && runParam > 0 ? findImportRun(runParam) : undefined;
+const runErrors = (() => {
+  const summary = run?.summary as { errors?: { id: string; error: string }[] } | null | undefined;
+  return Array.isArray(summary?.errors) ? summary.errors : [];
+})();
 ---
 <AdminLayout title="导入导出" session={session}>
-  <div class="notice"><strong>导入只恢复草稿，不会改公开版本。</strong><p>导出包含草稿、发布快照、分类与设置；导入会校验每一条资源/指南，缺失分类自动创建。发布仍需在编辑页逐条确认。导出文件含草稿，请妥善保管。</p></div>
-  {imported !== null && <div class="notice" role="status"><strong>导入完成</strong><p>资源 {imported} 条，指南 {guides} 篇，新建分类 {categories} 个，失败 {errors} 条。</p></div>}
+  <div class="notice"><strong>导入只恢复草稿，不会改公开版本。</strong><p>导出包含草稿、发布快照、分类与首页设置；导入会校验每一条资源/指南，缺失分类自动创建。首页设置只有在勾选后才会恢复。发布仍需在编辑页逐条确认。导出的 JSON 可直接导回（自动识别导出结构）；导出中含有的回收站条目，导入后会恢复为草稿。导出文件含草稿，请妥善保管。</p></div>
+  {imported !== null && <div class="notice" role="status"><strong>导入完成</strong><p>资源 {imported} 条，指南 {guides} 篇，新建分类 {categories} 个，恢复回收站条目 {restored ?? 0} 条，首页设置{settingsRestored === '1' ? '已恢复' : '未恢复'}，失败 {errors} 条。</p></div>}
+  {runErrors.length > 0 && <section class="panel" role="status"><h2>这次导入的失败条目</h2><p class="muted">共 {runErrors.length} 条；修正后重新预检即可再次导入。结果保留最近 20 次。</p><ul>{runErrors.map((item) => <li><strong>{item.id}</strong>：{item.error}</li>)}</ul></section>}
   <section class="panel"><h2>导出</h2><p>下载 JSON 备份，可用于迁移或批量编辑前的留档。</p><div class="actions"><a class="button" href="/api/export/">下载内容 JSON</a><span class="muted">仅管理员；文件不进仓库。</span></div></section>
   <form class="panel" action="/api/manage/" method="post" data-admin-form id="import-form">
     <input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="import-apply"/>
-    <h2>导入</h2><p>粘贴导出的 JSON（或同结构文件）。先预检，确认新增/更新/无效条目后再应用。</p>
+    <!-- 预检计划：冻结各条目在预检时的版本号与内容摘要，防止覆盖别人在预检后保存的修改。 -->
+    <input type="hidden" name="plan" id="import-plan" value=""/>
+    <h2>导入</h2><p>粘贴导出的 JSON（或同结构文件）。必须先预检：预检会记录每个条目当时的版本，若期间有人保存过，导入会整体取消并要求重新预检。</p>
     <div class="field"><label for="payload">JSON 内容</label><textarea id="payload" name="payload" required rows="12" style="min-height:260px;font-family:monospace;font-size:13px" placeholder='{"schemaVersion":1,"resources":[],"guides":[]}'></textarea></div>
-    <div class="actions"><button type="button" class="secondary" id="preview-import">预检</button><button type="submit">确认导入草稿</button></div>
+    <label class="checkbox" id="restore-settings-row" hidden><input type="checkbox" name="restoreSettings" value="1" checked/> 同时恢复文件中的首页精选与场景文案</label>
+    <div class="actions"><button type="button" class="secondary" id="preview-import">预检</button><button type="submit" id="apply-import">确认导入草稿</button></div>
     <p role="status" aria-live="polite"></p>
   </form>
   <section class="panel" id="preview-result" hidden><h2>预检结果</h2><div id="preview-body"></div></section>
 </AdminLayout>
 <script>
   const button = document.querySelector<HTMLButtonElement>('#preview-import');
+  const applyButton = document.querySelector<HTMLButtonElement>('#apply-import');
   const payload = document.querySelector<HTMLTextAreaElement>('#payload');
+  const planField = document.querySelector<HTMLInputElement>('#import-plan');
+  const settingsRow = document.querySelector<HTMLElement>('#restore-settings-row');
   const panel = document.querySelector<HTMLElement>('#preview-result');
   const body = document.querySelector<HTMLElement>('#preview-body');
   const form = document.querySelector<HTMLFormElement>('#import-form');
   const status = form?.querySelector<HTMLElement>('[role=status]');
+  const setStatus = (text: string) => { if (status) status.textContent = text; };
+  // 内容一改，之前的预检计划就作废：宁愿要求重新预检，也不让未经确认的内容被导入。
+  payload?.addEventListener('input', () => {
+    if (planField?.value) { planField.value = ''; setStatus('内容已修改，请重新预检。'); }
+  });
+  applyButton?.addEventListener('click', (event) => {
+    if (!planField?.value) { event.preventDefault(); setStatus('请先点“预检”，确认结果后再导入。'); }
+  });
   button?.addEventListener('click', async () => {
     const csrf = form?.querySelector<HTMLInputElement>('input[name=csrf]')?.value ?? '';
     const data = new FormData();
@@ -38,11 +62,67 @@ const errors = Astro.url.searchParams.get('errors');
       const response = await fetch('/api/import/preview/', { method: 'POST', body: data, headers: { Accept: 'application/json' } });
       const result = await response.json();
       if (!response.ok) throw new Error(typeof result.error === 'string' ? result.error : '预检失败');
-      const lines = (title: string, part: { create: string[]; update: string[]; same: string[]; invalid: { id: string; error: string }[] }) => `<h3>${title}</h3><p>新增 ${part.create.length} · 更新 ${part.update.length} · 无变化 ${part.same.length} · 无效 ${part.invalid.length}</p>${part.invalid.length ? `<ul>${part.invalid.map((item) => `<li><strong>${item.id}</strong>：${item.error}</li>`).join('')}</ul>` : ''}`;
-      if (body) body.innerHTML = `<p>新建分类：${result.categories.create.length}</p>${lines('资源', result.resources)}${lines('指南', result.guides)}`;
+      if (!result || !result.resources || !result.guides || !result.categories || !result.plan) throw new Error('预检返回格式异常');
+
+      // 注意：条目 ID 与错误信息来自粘贴的 JSON，必须用文本节点渲染。
+      // 早期实现把它们拼进 innerHTML，管理员只要点"预检"就会被执行脚本。
+      type Entry = { id: string; error: string };
+      type Part = { create: string[]; update: string[]; same: string[]; invalid: Entry[] };
+      const heading = (text: string) => { const node = document.createElement('h3'); node.textContent = text; return node; };
+      const paragraph = (text: string) => { const node = document.createElement('p'); node.textContent = text; return node; };
+      const renderPart = (title: string, part: Part): DocumentFragment => {
+        const fragment = document.createDocumentFragment();
+        fragment.append(
+          heading(title),
+          paragraph(`新增 ${part.create.length} · 更新 ${part.update.length} · 无变化 ${part.same.length} · 无效 ${part.invalid.length}`),
+        );
+        if (part.invalid.length > 0) {
+          const list = document.createElement('ul');
+          for (const item of part.invalid) {
+            const row = document.createElement('li');
+            const label = document.createElement('strong');
+            label.textContent = item.id;
+            row.append(label, document.createTextNode(`：${item.error}`));
+            list.append(row);
+          }
+          fragment.append(list);
+        }
+        return fragment;
+      };
+      const settingsPart = (): DocumentFragment => {
+        const fragment = document.createDocumentFragment();
+        fragment.append(heading('首页设置'));
+        const value = result.settings as { featuredResourceId: string; scenarios: number; changed: boolean; missingCategories?: string[] } | null;
+        const missing = Array.isArray(value?.missingCategories) ? value.missingCategories : [];
+        fragment.append(paragraph(!value
+          ? '文件不含首页设置，导入不会改动首页精选与场景文案。'
+          : `文件含首页设置：精选 ${value.featuredResourceId || '（空）'}，场景文案 ${value.scenarios} 条。${missing.length ? `其中 ${missing.length} 条对应分类已删除（${missing.join('、')}），恢复时会跳过。` : ''}${value.changed ? '勾选下面的选项后会在导入结束时恢复。' : '与当前设置相同，无需恢复。'}`));
+        return fragment;
+      };
+      if (body) {
+        body.replaceChildren(
+          paragraph(`新建分类：${result.categories.create.length}${result.categories.invalid.length ? ` · 无效分类：${result.categories.invalid.length}` : ''}`),
+          ...(result.categories.invalid.length ? [(() => {
+            const list = document.createElement('ul');
+            for (const item of result.categories.invalid as Entry[]) {
+              const row = document.createElement('li');
+              const label = document.createElement('strong');
+              label.textContent = item.id;
+              row.append(label, document.createTextNode(`：${item.error}`));
+              list.append(row);
+            }
+            return list;
+          })()] : []),
+          renderPart('资源', result.resources),
+          renderPart('指南', result.guides),
+          settingsPart(),
+        );
+      }
+      if (planField) planField.value = JSON.stringify(result.plan);
+      if (settingsRow) settingsRow.hidden = !result.settings;
       if (panel) panel.hidden = false;
-      if (status) status.textContent = '预检完成，确认后再点“确认导入草稿”。';
-    } catch (error) { if (status) status.textContent = error instanceof Error ? error.message : '预检失败'; }
+      setStatus('预检完成，确认后再点“确认导入草稿”。');
+    } catch (error) { setStatus(error instanceof Error ? error.message : '预检失败'); }
     finally { button.disabled = false; }
   });
 </script>

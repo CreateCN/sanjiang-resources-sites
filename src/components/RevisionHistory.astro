@@ -8,11 +8,27 @@ interface Props {
   revisions: Revision[];
   version: number;
   csrf: string;
+  /** 资源用：现有分类，用于给"原分类已删除"的历史版本选择替代分类。 */
+  categories?: { id: string; name: string }[];
+  /** 指南用：现存资源 ID（含回收站），用于标出历史版本里已经失效的关联。 */
+  resourceIds?: string[];
 }
-const { kind, entityId, current, revisions, version, csrf } = Astro.props;
+const { kind, entityId, current, revisions, version, csrf, categories = [], resourceIds = [] } = Astro.props;
 const actionLabels = ACTION_LABELS;
 const fieldParam = kind === 'resource' ? 'id' : 'slug';
 const restoreAction = kind === 'resource' ? 'restore-resource' : 'restore-guide';
+const knownCategories = new Set(categories.map((category) => category.id));
+// 历史版本里的分类可能已经从分类表删除：直接恢复会撞外键，所以先让维护者挑一个替代分类。
+const revisionCategory = (revision: Revision): string => {
+  const data = revision.data as { category?: unknown } | null;
+  return typeof data?.category === 'string' ? data.category : '';
+};
+const knownResources = new Set(resourceIds);
+// 指南历史版本可能引用已被彻底删除的资源；直接恢复会写入悬空关联。
+const revisionResources = (revision: Revision): string[] => {
+  const data = revision.data as { resources?: unknown } | null;
+  return Array.isArray(data?.resources) ? data.resources.filter((id): id is string => typeof id === 'string') : [];
+};
 ---
 <section class="panel" id="history">
   <h2>版本历史</h2>
@@ -22,6 +38,8 @@ const restoreAction = kind === 'resource' ? 'restore-resource' : 'restore-guide'
     ? <p class="empty">还没有版本记录；下次保存后开始记录。</p>
     : <div class="table-wrap"><table><thead><tr><th>时间</th><th>操作者</th><th>动作</th><th>版本</th><th>改动与恢复</th></tr></thead><tbody>{revisions.map((revision) => {
       const changes = diffFields(kind, current, revision.data);
+      const missingCategory = kind === 'resource' && revisionCategory(revision) !== '' && !knownCategories.has(revisionCategory(revision));
+      const missingResources = kind === 'guide' ? revisionResources(revision).filter((id) => !knownResources.has(id)) : [];
       return <tr>
         <td>{formatRevisionTime(revision.createdAt)}</td>
         <td>{revision.actor}</td>
@@ -39,6 +57,8 @@ const restoreAction = kind === 'resource' ? 'restore-resource' : 'restore-guide'
               <input type="hidden" name={fieldParam} value={entityId}/>
               <input type="hidden" name="revision" value={revision.id}/>
               <input type="hidden" name="version" value={version}/>
+              {missingCategory && <div class="field"><label for={`restore-category-${revision.id}`}>恢复时使用的分类</label><select id={`restore-category-${revision.id}`} name="category" required>{categories.map((category) => <option value={category.id}>{category.name}</option>)}</select><small>该版本使用的分类 {revisionCategory(revision)} 已被删除，恢复前必须先选定一个现有分类。</small></div>}
+              {missingResources.length > 0 && <div class="field"><p class="error">该版本关联的资源已不存在：{missingResources.join('、')}</p><label class="checkbox"><input type="checkbox" name="dropMissing" value="1"/> 恢复时移除这些失效关联</label><small>不勾选则不会恢复，避免把悬空 ID 写回草稿。</small></div>}
               <button type="submit" class="secondary">恢复此版本为草稿</button>
               <p role="status" aria-live="polite"></p>
             </form>

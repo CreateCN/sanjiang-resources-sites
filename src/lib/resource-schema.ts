@@ -1,8 +1,9 @@
 import { z } from 'zod';
+import { MAX_IDENTIFIER_LENGTH } from './identifiers.ts';
 const text = z.string().trim().min(1).max(4000);
 const httpsUrl = z.string().url().refine((value) => new URL(value).protocol === 'https:', '请使用 HTTPS 官方链接');
 export const ResourceSchema = z.object({
-  id: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(100),
+  id: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(MAX_IDENTIFIER_LENGTH),
   title: text.max(150), summary: text.max(800),
   category: z.string().regex(/^[a-z0-9-]+$/).max(80),
   kind: z.enum(['开源工具', '免费课程', '学生权益', '公共资源']),

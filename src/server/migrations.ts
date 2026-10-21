@@ -72,4 +72,46 @@ export const migrations: Migration[] = [
       }
     },
   },
+  {
+    id: '003-link-check-target',
+    up: (db) => {
+      for (const [column, type] of [['url', 'TEXT'], ['version', 'INTEGER']] as const) {
+        if (!hasColumn(db, 'link_checks', column)) db.exec(`ALTER TABLE link_checks ADD COLUMN ${column} ${type}`);
+      }
+    },
+  },
+  {
+    // 手动检查针对草稿，定时脚本针对公开快照；两种目标的过期条件不同，必须分开记录。
+    id: '004-link-check-scope',
+    up: (db) => {
+      if (!hasColumn(db, 'link_checks', 'scope')) db.exec("ALTER TABLE link_checks ADD COLUMN scope TEXT NOT NULL DEFAULT 'draft'");
+    },
+  },
+  {
+    // uid：实体的不可复用身份（删除后同名重建也不会相同），供导入预检绑定。
+    // reports.version：反馈处理需要并发保护。
+    // import_runs：导入结果明细在重定向后仍需可查。
+    id: '005-entity-uid-report-version-import-runs',
+    up: (db) => {
+      for (const table of ['resources', 'guides'] as const) {
+        if (!hasColumn(db, table, 'uid')) db.exec(`ALTER TABLE ${table} ADD COLUMN uid TEXT`);
+        db.exec(`UPDATE ${table} SET uid = lower(hex(randomblob(8))) WHERE uid IS NULL OR uid = ''`);
+      }
+      if (!hasColumn(db, 'reports', 'version')) db.exec('ALTER TABLE reports ADD COLUMN version INTEGER NOT NULL DEFAULT 1');
+      db.exec(`CREATE TABLE IF NOT EXISTS import_runs (
+        id INTEGER PRIMARY KEY, actor TEXT NOT NULL, created_at TEXT NOT NULL, summary TEXT NOT NULL
+      )`);
+    },
+  },
+  {
+    // 版本号只增不减：purge 时留下墓碑，同名重建的条目从"最后版本 + 1"继续编号，
+    // 这样任何只带 version 的旧表单都不可能匹配到新对象上。
+    id: '006-entity-version-tombstones',
+    up: (db) => {
+      db.exec(`CREATE TABLE IF NOT EXISTS entity_versions (
+        entity_kind TEXT NOT NULL, entity_id TEXT NOT NULL, version INTEGER NOT NULL,
+        PRIMARY KEY (entity_kind, entity_id)
+      )`);
+    },
+  },
 ];

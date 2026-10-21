@@ -196,7 +196,7 @@ test('anonymous feedback is persisted, handled by maintainers, and receipt expos
   assert.match(response.headers.get('location'), /^\/feedback\/\?sent=[A-Za-z0-9_-]{43}$/);
   const report = store.listReports()[0];
   assert.equal(report.resourceId, 'zotero'); assert.equal(report.status, 'new');
-  assert.equal((await manage(session(editor), 'update-report', { id: String(report.id), status: 'resolved', note: '已处理' })).status, 303);
+  assert.equal((await manage(session(editor), 'update-report', { id: String(report.id), status: 'resolved', note: '已处理', version: String(report.version) })).status, 303);
   assert.equal(store.listReports()[0].note, '已处理');
   assert.equal((await http.reportsPost(context('/api/reports/', { kind: 'general', title: '一般反馈', body: '另一个长度足够的一般反馈说明' }, { address: 'general-ip' }))).status, 303);
   assert.equal(store.listReports()[0].resourceId, null);
@@ -280,7 +280,7 @@ test('form input limits, JSON errors, configured Origin, and health expose minim
   const healthBody = await health.json();
   assert.equal(healthBody.status, 'ok');
   assert.equal(healthBody.db, 'ok');
-  assert.match(String(healthBody.schema), /^00[12]/);
+  assert.match(String(healthBody.schema), /^00\d/);
   assert.equal(typeof healthBody.uptime, 'number');
   assert.equal(health.headers.get('cache-control'), 'no-store');
 });
@@ -436,7 +436,7 @@ test('feedback can link to a revision of its own resource only', () => {
   assert.ok(revision);
   store.createReport({ resourceId: 'zotero', kind: '信息有误', title: '反馈标题', body: '这是至少十个字符的反馈内容。' });
   const report = store.listReports()[0];
-  store.updateReport(editor, report?.id ?? 0, 'resolved', '已按修订处理', revision?.id ?? 0);
+  store.updateReport(editor, report?.id ?? 0, 'resolved', '已按修订处理', revision?.id ?? 0, report?.version ?? null);
   const linked = store.listReports()[0];
   assert.equal(linked?.revisionId, revision?.id);
   assert.equal(linked?.status, 'resolved');
@@ -444,11 +444,12 @@ test('feedback can link to a revision of its own resource only', () => {
   const python = store.findManagedResource('python');
   store.saveResource(admin, { ...python.draft, title: '别的资源' }, python.version);
   const foreign = store.listRevisions('resource', 'python')[0];
-  assert.throws(() => store.updateReport(editor, report?.id ?? 0, 'resolved', '错链', foreign?.id ?? 0), /不属于/);
+  const linkedVersion = store.listReports()[0].version;
+  assert.throws(() => store.updateReport(editor, report?.id ?? 0, 'resolved', '错链', foreign?.id ?? 0, linkedVersion), /不属于/);
 
   store.createReport({ kind: '其他建议', title: '无资源反馈', body: '这是一条没有关联资源的反馈内容。' });
   const general = store.listReports()[0];
-  assert.throws(() => store.updateReport(editor, general?.id ?? 0, 'resolved', 'x', revision?.id ?? 0), /没有关联资源/);
+  assert.throws(() => store.updateReport(editor, general?.id ?? 0, 'resolved', 'x', revision?.id ?? 0, general?.version ?? null), /没有关联资源/);
 });
 
 test('notice board summarises new feedback and overdue resources', () => {
@@ -492,17 +493,32 @@ test('home settings are admin-only, validated and merged with defaults', () => {
 });
 
 test('batch review updates drafts and history for editors', () => {
-  const result = store.bulkReviewResources(editor, ['inkscape', 'smart-education'], 'verified', '2026-10-20');
+  const seen = (id) => ({ id, version: store.findManagedResource(id).version });
+  const result = store.bulkReviewResources(editor, [seen('inkscape'), seen('smart-education')], 'verified', '2026-10-20');
   assert.equal(result.updated, 2);
   const inkscape = store.findManagedResource('inkscape');
   assert.equal(inkscape?.draft.status, 'verified');
   assert.equal(inkscape?.draft.checkedAt, '2026-10-20');
   assert.equal(store.listRevisions('resource', 'inkscape')[0]?.action, 'save');
   assert.equal(store.getPublishedResources().find((item) => item.id === 'inkscape')?.status, 'review', '批量复核不改公开快照');
-  store.bulkReviewResources(editor, ['inkscape'], 'review', null);
+  store.bulkReviewResources(editor, [seen('inkscape')], 'review', null);
   assert.equal(store.findManagedResource('inkscape')?.draft.checkedAt, null);
   assert.throws(() => store.bulkReviewResources(editor, [], 'verified', '2026-10-20'), /选择/);
-  assert.throws(() => store.bulkReviewResources(editor, ['inkscape'], 'verified', 'not-a-date'), /日期/);
+  assert.throws(() => store.bulkReviewResources(editor, [seen('inkscape')], 'verified', 'not-a-date'), /日期/);
+  assert.throws(() => store.bulkReviewResources(editor, [{ id: 'inkscape' }], 'verified', '2026-10-20'), /版本号/);
+});
+
+test('batch review never approves content changed after the page was rendered', () => {
+  const before = store.findManagedResource('inkscape');
+  const seenVersion = before.version;
+  // 编辑者在管理员打开队列之后改了链接并保存
+  store.saveResource(editor, { ...before.draft, url: 'https://example.org/changed' }, before.version);
+  const result = store.bulkReviewResources(admin, [{ id: 'inkscape', version: seenVersion }], 'verified', '2026-10-20');
+  assert.equal(result.updated, 0);
+  assert.deepEqual(result.changed, ['inkscape']);
+  const after = store.findManagedResource('inkscape');
+  assert.equal(after.draft.status, 'review', '没看过的新内容不能被标成已核对');
+  assert.equal(after.draft.url, 'https://example.org/changed');
 });
 
 test('import preview and apply restore drafts, categories and guides', () => {
@@ -521,8 +537,10 @@ test('import preview and apply restore drafts, categories and guides', () => {
   const invalid = importer.previewImport({ resources: [{ id: 'Bad Slug' }] });
   assert.equal(invalid.resources.invalid.length, 1);
 
-  assert.throws(() => importer.applyImport(editor, payload), /管理员/);
-  const applied = importer.applyImport(admin, payload);
+  assert.throws(() => importer.applyImport(editor, payload, preview.plan), /管理员/);
+  // 没有预检计划就不允许应用：等于跳过"确认后才写库"这一步。
+  assert.throws(() => importer.applyImport(admin, payload), /预检/);
+  const applied = importer.applyImport(admin, payload, preview.plan);
   assert.equal(applied.resources, 1);
   assert.equal(applied.guides, 1);
   assert.equal(applied.categoriesCreated, 1);
@@ -629,4 +647,395 @@ test('metrics accept only published targets and cap distinct targets per day', a
   assert.equal(countEvents(), before + 1);
   for (let index = 0; index < 200; index++) assert.equal(store.recordEvent('search_miss', `budget-${index}`), true);
   assert.equal(store.recordEvent('search_miss', 'budget-overflow'), false, '超过每日目标预算后新目标被丢弃');
+});
+
+test('exported JSON imports back without loss (export → preview → apply)', async () => {
+  const importer = await import('../src/lib/importer.ts');
+  const exported = importer.exportPayload();
+  const preview = importer.previewImport(exported);
+  assert.equal(preview.resources.invalid.length, 0, '导出的资源条目必须能通过导入预检');
+  assert.equal(preview.guides.invalid.length, 0, '导出的指南条目必须能通过导入预检');
+  const applied = importer.applyImport(admin, exported, preview.plan, { restoreSettings: true });
+  assert.equal(applied.errors.length, 0);
+  assert.equal(applied.resources, store.listManagedResources().length, '资源数量应与导出时一致');
+  assert.ok(applied.resources > 0);
+});
+
+test('import payload larger than the form limit still applies through the manage endpoint', async () => {
+  const resources = [];
+  // details 上限 20000 字符：用 8 条 × 约 16 KB，使整个 payload 稳定超过 96 KiB 且每条都合法
+  for (let index = 0; index < 8; index++) {
+    resources.push({ ...draft(`bulk-${index}`), title: `批量资源 ${index}`, details: 'x'.repeat(16000) });
+  }
+  const payload = JSON.stringify({ schemaVersion: 1, resources });
+  assert.ok(payload.length > 96 * 1024, '样本必须超过普通表单上限');
+  assert.ok(payload.length < 3 * 1024 * 1024);
+
+  const logged = session(admin);
+  // 预检接口与应用入口共用 previewImport，这里直接用同一个函数拿到计划（页面模块只能由 Astro 加载）。
+  const { plan } = importer.previewImport(JSON.parse(payload));
+  const imported = await manage(logged, 'import-apply', { payload, plan: JSON.stringify(plan) });
+  assert.equal(imported.status, 303, '导入不应被 96 KiB 的表单上限拦住');
+  assert.ok(store.findManagedResource('bulk-0'));
+
+  const tooBigForSave = await manage(session(admin), 'save-resource', {
+    resource: JSON.stringify({ ...draft('oversized-save'), caveat: 'x'.repeat(100 * 1024) }),
+  });
+  assert.equal(tooBigForSave.status, 413, '非导入动作仍受普通表单上限约束');
+});
+
+test('reserved identifier new cannot be used for resources or guides', () => {
+  assert.throws(() => store.saveResource(editor, draft('new'), null), /保留/);
+  assert.throws(() => store.saveGuide(editor, { slug: 'new', title: '新', summary: '', body: '正文', resources: [] }, null), /保留/);
+  assert.throws(() => store.saveResource(editor, draft('NEW'), null), /校验失败/, '大写形式先被 schema 拒绝');
+});
+
+test('linked revision outside the recent window is still findable', async () => {
+  const importer = await import('../src/lib/importer.ts');
+  const input = { slug: 'rev-window', title: '窗口测试', summary: '', body: '正文', resources: [] };
+  let version = store.saveGuide(editor, input, null).version;
+  for (let index = 0; index < 24; index++) {
+    version = store.saveGuide(editor, { ...input, title: `窗口测试 ${index}` }, version).version;
+  }
+  const revisions = store.listRevisions('guide', 'rev-window', 20);
+  assert.equal(revisions.length, 20);
+  const oldest = store.listRevisions('guide', 'rev-window', 100).at(-1);
+  assert.ok(oldest);
+  assert.equal(revisions.some((revision) => revision.id === oldest.id), false, '最早的修订应已滑出最近 20 条');
+  assert.equal(store.findRevisionById('guide', 'rev-window', oldest.id)?.id, oldest.id, '按 ID 仍能补载');
+  assert.equal(store.findRevisionById('guide', 'other-guide', oldest.id), undefined);
+  assert.ok(importer);
+});
+
+test('link checks record what they checked and go stale after the draft changes', () => {
+  const resource = store.saveResource(editor, draft('check-target'), null);
+  const check = store.saveLinkCheck('check-target', { status: 'ok', statusCode: 200, finalUrl: 'https://example.com/', message: '链接可访问' }, { url: resource.draft.url, version: resource.version, scope: 'draft' });
+  assert.equal(check.url, resource.draft.url);
+  assert.equal(check.version, resource.version);
+  assert.equal(check.scope, 'draft');
+  assert.equal(store.linkCheckStaleReason(check, resource), null);
+
+  const edited = store.saveResource(editor, { ...resource.draft, url: 'https://example.org/' }, resource.version);
+  assert.match(store.linkCheckStaleReason(check, edited) ?? '', /草稿链接已修改/, '链接变更后旧结果必须标记为过期');
+  const stored = store.listLinkChecks().find((row) => row.resourceId === 'check-target');
+  assert.equal(stored?.url, resource.draft.url, '旧结果保留当时检查的目标，便于追溯');
+});
+
+test('import preview flags reserved identifiers instead of failing later', async () => {
+  const importer = await import('../src/lib/importer.ts');
+  const preview = importer.previewImport({ schemaVersion: 1, resources: [{ ...draft('new') }] });
+  assert.equal(preview.resources.invalid.length, 1);
+  assert.match(preview.resources.invalid[0].error, /保留/);
+});
+
+test('import plan is bound to the versions seen at preview time', () => {
+  const statement = { ...store.findManagedResource('zotero').draft, id: 'concurrent-tool', title: '预检时的标题' };
+  const payload = { schemaVersion: 1, resources: [statement] };
+  const plan = importer.previewImport(payload).plan;
+  assert.deepEqual(plan.resources, { 'concurrent-tool': null });
+
+  // 另一位编辑者在预检之后创建并保存了这个条目（此前不存在，所以版本为 1）。
+  store.saveResource(editor, { ...statement, title: '另一位编辑者的标题' }, null);
+  assert.equal(store.findManagedResource('concurrent-tool')?.draft.title, '另一位编辑者的标题');
+  assert.throws(() => importer.applyImport(admin, payload, plan), /预检后/, '预检计划必须拦住覆盖他人修改');
+  assert.equal(store.findManagedResource('concurrent-tool')?.draft.title, '另一位编辑者的标题', '导入不能覆盖预检后保存的内容');
+
+  // 重新预检后可以正常导入。
+  const fresh = importer.previewImport(payload).plan;
+  assert.equal(importer.applyImport(admin, payload, fresh).resources, 1);
+  assert.equal(store.findManagedResource('concurrent-tool')?.draft.title, '预检时的标题');
+});
+
+test('import rejects content that changed after preview, and a missing plan', () => {
+  const base = store.findManagedResource('zotero').draft;
+  const first = { schemaVersion: 1, resources: [{ ...base, id: 'digest-tool', title: '第一份内容' }] };
+  const plan = importer.previewImport(first).plan;
+  const second = { schemaVersion: 1, resources: [{ ...base, id: 'digest-tool', title: '没预检的第二份内容' }] };
+  assert.throws(() => importer.applyImport(admin, second, plan), /不一致/);
+  assert.equal(store.findManagedResource('digest-tool'), undefined, '内容与计划不一致时不能写库');
+  assert.throws(() => importer.applyImport(admin, first, null), /预检/);
+});
+
+test('a failed import entry leaves no partial state, including its audit row', () => {
+  const created = store.saveResource(admin, { ...store.findManagedResource('zotero').draft, id: 'trash-target', title: '回收站导入' }, null);
+  store.changePublication(admin, 'trash-target', created.version, 'delete-resource');
+  const trashed = store.findManagedResource('trash-target');
+  assert.ok(trashed?.deletedAt);
+
+  const payload = { schemaVersion: 1, resources: [{ ...trashed.draft, title: '导入标题' }] };
+  const plan = importer.previewImport(payload).plan;
+  // 让条目审计写入失败：条目、版本历史与审计必须一起回滚，而不是"内容已提交、审计缺失"。
+  database().exec("CREATE TRIGGER fail_import_audit BEFORE INSERT ON audit WHEN NEW.action='import-resource' BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END");
+  try {
+    const result = importer.applyImport(admin, payload, plan);
+    assert.equal(result.errors.length, 1);
+    assert.match(result.errors[0].error, /audit/);
+  } finally { database().exec('DROP TRIGGER fail_import_audit'); }
+
+  const after = store.findManagedResource('trash-target');
+  assert.ok(after?.deletedAt, '保存失败时不能把资源留在"已离开回收站"的半截状态');
+  assert.equal(after?.version, trashed.version, '回滚后版本号也不能前进');
+  assert.equal(after?.draft.title, '回收站导入');
+  assert.equal(store.listRevisions('resource', 'trash-target').filter((revision) => revision.action === 'save' && revision.version > trashed.version).length, 0);
+});
+
+test('import cannot create the virtual category all', () => {
+  const payload = { schemaVersion: 1, categories: [{ id: 'all', name: '隐藏分类' }], resources: [] };
+  const preview = importer.previewImport(payload);
+  assert.equal(preview.categories.create.length, 0);
+  assert.equal(preview.categories.invalid.length, 1);
+  assert.match(preview.categories.invalid[0].error, /保留/);
+  const result = importer.applyImport(admin, payload, preview.plan);
+  assert.equal(result.categoriesCreated, 0);
+  assert.equal(result.errors.length, 1);
+  assert.equal(store.listCategories().some((category) => category.id === 'all'), false);
+});
+
+test('exported home settings only come back when the import asks for them', () => {
+  const exported = importer.exportPayload();
+  assert.ok(exported.settings);
+  settings.saveSettings(admin, { featuredResourceId: 'inkscape', scenarios: {} });
+  const payload = { schemaVersion: 1, settings: exported.settings };
+  const preview = importer.previewImport(payload);
+  assert.equal(preview.settings?.featuredResourceId, exported.settings.featuredResourceId);
+  assert.equal(preview.settings?.changed, true);
+
+  const skipped = importer.applyImport(admin, payload, preview.plan);
+  assert.equal(skipped.settings, false);
+  assert.equal(settings.getSettings().featuredResourceId, 'inkscape', '未勾选时不能改动首页编排');
+
+  const restored = importer.applyImport(admin, payload, preview.plan, { restoreSettings: true });
+  assert.equal(restored.settings, true);
+  assert.equal(settings.getSettings().featuredResourceId, exported.settings.featuredResourceId);
+});
+
+test('long identifiers are counted separately and accepted by the event API', async () => {
+  const post = (body) => http.eventPost({ request: new Request('http://localhost/api/event/', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: 'http://localhost' }, body: JSON.stringify(body) }), clientAddress: '198.51.100.22' });
+  const prefix = 'x'.repeat(60);
+  const first = `${prefix}-aaaaaaa`;
+  const second = `${prefix}-bbbbbbb`;
+  assert.equal(store.recordEvent('resource_view', first), true);
+  assert.equal(store.recordEvent('resource_view', second), true);
+  const rows = database().prepare("SELECT target,count FROM events WHERE name='resource_view'").all();
+  assert.equal(rows.length, 2, '前 60 字符相同的不同 ID 不能合并计数');
+  assert.ok(rows.every((row) => row.count === 1));
+
+  const longId = `y${'z'.repeat(80)}`;
+  assert.equal(longId.length, 81);
+  const saved = store.saveResource(admin, { ...store.findManagedResource('zotero').draft, id: longId }, null);
+  store.changePublication(admin, longId, saved.version, 'publish');
+  assert.equal((await post({ name: 'resource_view', target: longId })).status, 200, '合法的 81 字符 ID 必须能上报');
+  assert.equal((await post({ name: 'resource_view', target: 'z'.repeat(101) })).status, 400);
+});
+
+test('scheduled public-snapshot checks stay valid until the public snapshot changes', () => {
+  const published = store.getPublishedResources().find((item) => item.id === 'zotero');
+  assert.ok(published);
+  const managed = store.findManagedResource('zotero');
+  const check = store.saveLinkCheck('zotero', { status: 'ok', statusCode: 200, finalUrl: null, message: '链接可访问' }, { url: published.url, version: managed.version, scope: 'published' });
+  assert.equal(store.linkCheckStaleReason(check, managed), null, '公开快照未变时定时检查结果不应立即过期');
+
+  const saved = store.saveResource(admin, { ...managed.draft, title: '只改标题' }, managed.version);
+  assert.equal(store.linkCheckStaleReason(check, saved), null, '只改草稿不影响公开快照的检查结论');
+
+  const moved = store.saveResource(admin, { ...saved.draft, url: 'https://example.org/moved' }, saved.version);
+  store.changePublication(admin, 'zotero', moved.version, 'publish');
+  const republished = store.findManagedResource('zotero');
+  assert.match(store.linkCheckStaleReason(check, republished) ?? '', /链接已更换/);
+});
+
+test('guide keeps a trashed linked resource but refuses new trash links', () => {
+  store.saveResource(admin, { ...store.findManagedResource('zotero').draft, id: 'keep-link' }, null);
+  const guide = { slug: 'keep-guide', title: '关联保留', summary: '', body: '正文', resources: ['keep-link'] };
+  let version = store.saveGuide(editor, guide, null).version;
+  store.changePublication(admin, 'keep-link', store.findManagedResource('keep-link').version, 'delete-resource');
+
+  // 编辑页仍会提交这条关联（回收站里的勾选框还在），只改标题时关联必须保留。
+  version = store.saveGuide(editor, { ...guide, title: '只改标题' }, version).version;
+  assert.deepEqual(store.findManagedGuide('keep-guide')?.draft.resources, ['keep-link']);
+
+  const other = store.saveResource(admin, { ...store.findManagedResource('zotero').draft, id: 'other-trash' }, null);
+  store.changePublication(admin, 'other-trash', other.version, 'delete-resource');
+  assert.throws(() => store.saveGuide(editor, { ...guide, resources: ['keep-link', 'other-trash'] }, version), /回收站/);
+
+  // 显式取消勾选就是解除关联，这是允许的。
+  store.saveGuide(editor, { ...guide, resources: [] }, version);
+  assert.deepEqual(store.findManagedGuide('keep-guide')?.draft.resources, []);
+});
+
+test('restoring a revision whose category was deleted asks for a replacement category', () => {
+  store.saveCategory(admin, 'old-category', '旧分类');
+  const base = { ...store.findManagedResource('zotero').draft, id: 'historic-cat', category: 'old-category' };
+  const first = store.saveResource(admin, base, null);
+  const second = store.saveResource(admin, { ...base, category: 'writing' }, first.version);
+  store.deleteCategory(admin, 'old-category');
+  const revision = store.listRevisions('resource', 'historic-cat', 100).at(-1);
+  assert.ok(revision);
+
+  assert.throws(() => store.restoreResourceRevision(admin, 'historic-cat', revision.id, second.version), /分类/, '缺分类不能变成通用 500');
+  const restored = store.restoreResourceRevision(admin, 'historic-cat', revision.id, second.version, 'writing');
+  assert.equal(restored.draft.category, 'writing');
+  assert.equal(store.findManagedResource('historic-cat')?.version, second.version + 1);
+});
+
+test('feedback handling is version bound so an old form cannot revert a resolution', () => {
+  store.createReport({ kind: 'general', title: '并发处理', body: '这是长度足够的反馈内容说明，用于并发测试。' });
+  const report = store.listReports()[0];
+  store.updateReport(editor, report.id, 'resolved', '编辑者备注：已完成核验', null, report.version);
+  assert.throws(() => store.updateReport(admin, report.id, 'processing', '旧表单备注', null, report.version), /已被其他维护者处理/, '旧表单必须被拒绝');
+
+  const after = store.listReports()[0];
+  assert.equal(after.status, 'resolved');
+  assert.equal(after.note, '编辑者备注：已完成核验', '被覆盖的备注不能靠审计找回，所以必须拒绝写入');
+  store.updateReport(admin, report.id, 'processing', '管理员看过最新状态后的备注', null, after.version);
+  assert.equal(store.listReports()[0].note, '管理员看过最新状态后的备注');
+});
+
+test('guide restore refuses dangling resource links unless the operator drops them', () => {
+  store.saveResource(admin, { ...store.findManagedResource('zotero').draft, id: 'restore-res', title: '待删资源' }, null);
+  const first = store.saveGuide(editor, { slug: 'restore-guide', title: 'v1', summary: '', body: '正文', resources: ['restore-res'] }, null);
+  const cleared = store.saveGuide(editor, { slug: 'restore-guide', title: 'v2', summary: '', body: '正文', resources: [] }, first.version);
+  const v1 = store.listRevisions('guide', 'restore-guide', 100).at(-1);
+  assert.deepEqual(v1.data.resources, ['restore-res']);
+
+  // 资源进回收站：与普通保存同一规则，不能借历史恢复新增回收站关联
+  store.changePublication(admin, 'restore-res', store.findManagedResource('restore-res').version, 'delete-resource');
+  assert.throws(() => store.restoreGuideRevision(editor, 'restore-guide', v1.id, cleared.version), /回收站/);
+
+  store.purgeTrashResource(admin, 'restore-res');
+  assert.throws(() => store.restoreGuideRevision(editor, 'restore-guide', v1.id, cleared.version), /已不存在/);
+  const restored = store.restoreGuideRevision(editor, 'restore-guide', v1.id, cleared.version, true);
+  assert.deepEqual(restored.draft.resources, [], '显式同意后才移除失效关联');
+  assert.equal(store.findManagedGuide('restore-guide').draft.title, 'v1');
+});
+
+test('import plan detects a deleted-and-recreated entity with the same id', () => {
+  const base = store.findManagedResource('zotero').draft;
+  const original = store.saveResource(admin, { ...base, id: 'recreate-me', title: '原始标题' }, null);
+  const payload = { schemaVersion: 1, resources: [{ ...base, id: 'recreate-me', title: '导入文件里的标题' }] };
+  const plan = importer.previewImport(payload).plan;
+
+  store.changePublication(admin, 'recreate-me', original.version, 'delete-resource');
+  store.purgeTrashResource(admin, 'recreate-me');
+  const rebuilt = store.saveResource(editor, { ...base, id: 'recreate-me', title: '重建的新对象' }, null);
+  assert.ok(rebuilt.version > original.version, '版本号永不复用：同名重建会接着墓碑继续编号');
+
+  assert.throws(() => importer.applyImport(admin, payload, plan), /删除并重建/);
+  assert.equal(store.findManagedResource('recreate-me').draft.title, '重建的新对象', '不能把旧文件写进新对象');
+});
+
+test('import freezes the current home settings too', () => {
+  const exported = importer.exportPayload();
+  const payload = { schemaVersion: 1, settings: exported.settings };
+  const plan = importer.previewImport(payload).plan;
+  settings.saveSettings(admin, { featuredResourceId: 'inkscape', scenarios: {} });
+  assert.throws(() => importer.applyImport(admin, payload, plan, { restoreSettings: true }), /首页设置在预检后被修改/);
+  assert.equal(settings.getSettings().featuredResourceId, 'inkscape', '预检后别人的编排不能被旧文件覆盖');
+
+  const fresh = importer.previewImport(payload).plan;
+  assert.equal(importer.applyImport(admin, payload, fresh, { restoreSettings: true }).settings, true);
+});
+
+test('exported settings drop scenarios for categories that no longer exist', () => {
+  // 把 writing 下的资源（草稿与公开快照）全部移到 design，然后删除该分类
+  for (const item of store.listManagedResources().filter((entry) => entry.draft.category === 'writing' || entry.published?.category === 'writing')) {
+    const draft = { ...item.draft, category: 'design' };
+    const saved = store.saveResource(admin, draft, item.version);
+    if (saved.published) store.changePublication(admin, item.id, saved.version, 'publish');
+  }
+  store.deleteCategory(admin, 'writing');
+  const exported = importer.exportPayload();
+  assert.equal('writing' in exported.settings.scenarios, false, '导出不能带上已删除分类的默认文案');
+
+  // 手工构造的旧文件仍含死分类：恢复设置要报出来，而不是整体失败
+  const payload = { schemaVersion: 1, settings: { featuredResourceId: 'gimp', scenarios: { writing: { task: '写报告', detail: '', glyph: '文' } } } };
+  const preview = importer.previewImport(payload);
+  assert.deepEqual(preview.settings?.missingCategories, ['writing'], '预检就要报出失效的场景分类');
+  const result = importer.applyImport(admin, payload, preview.plan, { restoreSettings: true });
+  assert.equal(result.settings, true);
+  assert.ok(result.errors.some((entry) => /writing/.test(entry.error)), '失效场景文案必须显式告知');
+  assert.equal(settings.getSettings().featuredResourceId, 'gimp');
+});
+
+test('import failure details survive the redirect through the run record', async () => {
+  const payload = JSON.stringify({ schemaVersion: 1, categories: [{ id: 'all', name: '保留分类' }], resources: [] });
+  const parsed = JSON.parse(payload);
+  const plan = importer.previewImport(parsed).plan;
+  const response = await manage(session(admin), 'import-apply', { payload, plan: JSON.stringify(plan) });
+  assert.equal(response.status, 303);
+  const location = response.headers.get('location') ?? '';
+  const runId = Number(new URL(location, 'http://localhost').searchParams.get('run'));
+  assert.ok(runId > 0, location);
+  const run = store.findImportRun(runId);
+  assert.ok(run, '导入结果必须可回查');
+  const errors = run.summary.errors;
+  assert.equal(errors.length, 1);
+  assert.equal(errors[0].id, 'all');
+  assert.match(errors[0].error, /保留/);
+});
+
+test('a stale page cannot save or publish a recreated entity', () => {
+  const base = seedResource('stale-target');
+  const first = store.saveResource(admin, base, null);
+  store.changePublication(admin, 'stale-target', first.version, 'delete-resource');
+  store.purgeTrashResource(admin, 'stale-target');
+  const rebuilt = store.saveResource(editor, { ...base, title: '重建的新草稿' }, null);
+  assert.ok(rebuilt.version > first.version, '同名重建的版本号接着墓碑继续，不复用旧值');
+
+  assert.throws(() => store.saveResource(admin, { ...base, title: '旧页面提交的内容' }, first.version), /重新加载/);
+  assert.throws(() => store.changePublication(admin, 'stale-target', first.version, 'publish'), /重新加载/);
+  const after = store.findManagedResource('stale-target');
+  assert.equal(after.draft.title, '重建的新草稿');
+  assert.equal(after.published, null, '旧页面不能发布没看过的新对象');
+
+  // 指南同样适用
+  const guide = { slug: 'stale-guide', title: '旧标题', summary: '', body: '正文', resources: [] };
+  const guideFirst = store.saveGuide(editor, guide, null);
+  store.changeGuidePublication(admin, 'stale-guide', guideFirst.version, 'delete-guide');
+  store.purgeTrashGuide(admin, 'stale-guide');
+  const guideRebuilt = store.saveGuide(editor, { ...guide, title: '重建的指南' }, null);
+  assert.ok(guideRebuilt.version > guideFirst.version);
+  assert.throws(() => store.saveGuide(editor, { ...guide, title: '旧页面正文' }, guideFirst.version), /重新加载/);
+  assert.throws(() => store.changeGuidePublication(admin, 'stale-guide', guideFirst.version, 'publish-guide'), /重新加载/);
+  assert.equal(store.findManagedGuide('stale-guide').draft.title, '重建的指南');
+});
+
+test('import applies valid entries even when a sibling entry is semantically invalid', () => {
+  const base = store.findManagedResource('zotero').draft;
+  const payload = {
+    schemaVersion: 1,
+    resources: [
+      { ...base, id: 'valid-entry', title: '合法条目' },
+      { ...base, id: 'bad-category-entry', category: 'missing-category' },
+    ],
+    guides: [
+      { slug: 'guide-ok', title: '正常指南', summary: '', body: '正文', resources: ['zotero'] },
+      { slug: 'guide-bad', title: '坏关联', summary: '', body: '正文', resources: ['no-such-resource'] },
+    ],
+  };
+  const preview = importer.previewImport(payload);
+  assert.deepEqual(preview.resources.create, ['valid-entry']);
+  assert.equal(preview.resources.invalid.length, 1);
+  assert.equal(preview.guides.invalid.length, 1);
+
+  const result = importer.applyImport(admin, payload, preview.plan);
+  assert.equal(result.resources, 1, '合法条目不能被无效条目拖住');
+  assert.equal(result.guides, 1);
+  assert.equal(result.errors.length, 2);
+  assert.match(result.errors.map((entry) => entry.error).join(' '), /预检已判定该条目无效/);
+  assert.equal(store.findManagedResource('valid-entry').draft.title, '合法条目');
+  assert.equal(store.findManagedGuide('guide-ok').draft.title, '正常指南');
+  assert.equal(store.findManagedResource('bad-category-entry'), undefined);
+  assert.equal(store.findManagedGuide('guide-bad'), undefined);
+});
+
+test('importing only categories still leaves an audit entry', () => {
+  const before = store.listAudit().length;
+  const payload = { schemaVersion: 1, categories: [{ id: 'imported-only', name: '仅导入分类' }] };
+  const result = importer.applyImport(admin, payload, importer.previewImport(payload).plan);
+  assert.equal(result.categoriesCreated, 1);
+  assert.equal(result.errors.length, 0);
+  assert.equal(store.listAudit().length, before + 1, '分类导入也必须留审计');
+  assert.equal(store.listAudit()[0].action, 'save-category');
+  assert.equal(store.listAudit()[0].target, 'imported-only');
 });

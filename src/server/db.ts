@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import { randomBytes } from 'node:crypto';
 import { mkdirSync, chmodSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { categories, resources } from '../data/resources.ts';
@@ -33,12 +34,13 @@ export function database(): DatabaseSync {
       if (!db.prepare("SELECT 1 FROM metadata WHERE key = 'seeded'").get()) {
         const categoryInsert = db.prepare('INSERT INTO categories (id,name) VALUES (?,?)');
         for (const category of categories) if (category.id !== 'all') categoryInsert.run(category.id, category.name);
-        const insert = db.prepare('INSERT INTO resources (id,draft,published,draft_category,published_category,version,updated_at) VALUES (?,?,?,?,?,1,?)');
+        // 种子条目标记为已发布快照；uid 是导入预检用的不可复用身份，必须与手工创建的一致可读。
+        const insert = db.prepare('INSERT INTO resources (id,uid,draft,published,draft_category,published_category,version,updated_at) VALUES (?,?,?,?,?,?,1,?)');
         const now = new Date().toISOString();
         for (const seed of resources) {
           const resource = ResourceSchema.parse(seed);
           const json = JSON.stringify(resource);
-          insert.run(resource.id, json, json, resource.category, resource.category, now);
+          insert.run(resource.id, randomBytes(8).toString('hex'), json, json, resource.category, resource.category, now);
         }
         db.prepare("INSERT INTO metadata (key,value) VALUES ('seeded','1')").run();
       }

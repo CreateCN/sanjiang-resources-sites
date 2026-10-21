@@ -1,23 +1,39 @@
+import { randomBytes } from 'node:crypto';
 import { ResourceSchema, type Resource } from '../lib/resource-schema.ts';
 import { GuideSchema, type Guide } from '../lib/guide-schema.ts';
 import { database, transaction } from './db.ts';
 import { audit, fail, hashPassword } from './security.ts';
 import { requestMemo } from './request-cache.ts';
+import { isReservedIdentifier, MAX_IDENTIFIER_LENGTH, RESERVED_IDENTIFIER_MESSAGE } from '../lib/identifiers.ts';
 export type { Resource } from '../lib/resource-schema.ts';
 export type { Guide } from '../lib/guide-schema.ts';
 export type Role = 'admin' | 'editor';
 export interface User { id: number; username: string; role: Role; active: boolean }
-export interface ManagedResource { id: string; draft: Resource; published: Resource | null; version: number; updatedAt: string; deletedAt: string | null }
+/** uid 是实体的不可复用身份：即使同 ID 被删除后重建，uid 也不会相同。 */
+export interface ManagedResource { id: string; uid: string; draft: Resource; published: Resource | null; version: number; updatedAt: string; deletedAt: string | null }
 export type RevisionKind = 'resource' | 'guide';
 export type RevisionAction = 'save' | 'publish' | 'unpublish' | 'restore';
 export interface Revision { id: number; kind: RevisionKind; entityId: string; version: number; data: unknown; actor: string; action: RevisionAction; createdAt: string }
-export interface ManagedGuide { slug: string; draft: Guide; published: Guide | null; version: number; updatedAt: string; deletedAt: string | null }
-export interface Report { id: number; resourceId: string | null; revisionId: number | null; kind: string; title: string; body: string; status: 'new' | 'processing' | 'resolved'; note: string; createdAt: string }
+export interface ManagedGuide { slug: string; uid: string; draft: Guide; published: Guide | null; version: number; updatedAt: string; deletedAt: string | null }
+export interface Report { id: number; resourceId: string | null; revisionId: number | null; kind: string; title: string; body: string; status: 'new' | 'processing' | 'resolved'; note: string; version: number; createdAt: string }
 export interface AuditEntry { id: number; actor: string; action: string; target: string; createdAt: string }
 type Row = Record<string, unknown>;
 function user(row: Row): User { return { id: Number(row.id), username: String(row.username), role: row.role as Role, active: Boolean(row.active) }; }
+function newUid(): string { return randomBytes(8).toString('hex'); }
+/**
+ * 新条目的起始版本号：同名条目被彻底删除过就接着墓碑继续编号。
+ * 版本号永不复用，是"旧页面不能操作新对象"的最后一道保证（uid 只用于给出更明确的冲突文案）。
+ */
+function startVersion(db: ReturnType<typeof database>, kind: RevisionKind, id: string): number {
+  const row = db.prepare('SELECT version FROM entity_versions WHERE entity_kind=? AND entity_id=?').get(kind, id);
+  return row ? Number(row.version) + 1 : 1;
+}
+function writeVersionTombstone(db: ReturnType<typeof database>, kind: RevisionKind, id: string, version: number): void {
+  db.prepare(`INSERT INTO entity_versions (entity_kind,entity_id,version) VALUES (?,?,?)
+    ON CONFLICT(entity_kind,entity_id) DO UPDATE SET version=excluded.version`).run(kind, id, version);
+}
 function managed(row: Row): ManagedResource {
-  return { id: String(row.id), draft: JSON.parse(String(row.draft)), published: row.published ? JSON.parse(String(row.published)) : null, version: Number(row.version), updatedAt: String(row.updated_at), deletedAt: row.deleted_at ? String(row.deleted_at) : null };
+  return { id: String(row.id), uid: row.uid === null || row.uid === undefined ? '' : String(row.uid), draft: JSON.parse(String(row.draft)), published: row.published ? JSON.parse(String(row.published)) : null, version: Number(row.version), updatedAt: String(row.updated_at), deletedAt: row.deleted_at ? String(row.deleted_at) : null };
 }
 export function getPublishedResources(): Resource[] {
   return requestMemo('published-resources', () => database().prepare('SELECT published FROM resources WHERE published IS NOT NULL AND deleted_at IS NULL ORDER BY rowid').all().map((row) => JSON.parse(String(row.published))));
@@ -31,6 +47,10 @@ export function findPublishedResource(id: string): Resource | undefined {
 export function listCategories(): { id: string; name: string }[] {
   return requestMemo('categories', () => database().prepare('SELECT id,name FROM categories ORDER BY rowid').all().map((row) => ({ id: String(row.id), name: String(row.name) })));
 }
+/** 所有存在的资源 ID（含回收站），供"历史版本关联是否已失效"这类依赖检查使用。 */
+export function listAllResourceIds(): string[] {
+  return database().prepare('SELECT id FROM resources').all().map((row) => String(row.id));
+}
 export function listManagedResources(): ManagedResource[] { return database().prepare('SELECT * FROM resources WHERE deleted_at IS NULL ORDER BY updated_at DESC,id').all().map(managed); }
 export function listDeletedResources(): ManagedResource[] { return database().prepare('SELECT * FROM resources WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC').all().map(managed); }
 export function findManagedResource(id: string): ManagedResource | undefined {
@@ -38,7 +58,7 @@ export function findManagedResource(id: string): ManagedResource | undefined {
 }
 export function listUsers(): User[] { return database().prepare('SELECT id,username,role,active FROM users ORDER BY id').all().map(user); }
 export function listReports(): Report[] {
-  return database().prepare('SELECT * FROM reports ORDER BY id DESC').all().map((r) => ({ id: Number(r.id), resourceId: r.resource_id === null ? null : String(r.resource_id), revisionId: r.revision_id === null || r.revision_id === undefined ? null : Number(r.revision_id), kind: String(r.kind), title: String(r.title), body: String(r.body), status: r.status as Report['status'], note: String(r.note), createdAt: String(r.created_at) }));
+  return database().prepare('SELECT * FROM reports ORDER BY id DESC').all().map((r) => ({ id: Number(r.id), resourceId: r.resource_id === null ? null : String(r.resource_id), revisionId: r.revision_id === null || r.revision_id === undefined ? null : Number(r.revision_id), kind: String(r.kind), title: String(r.title), body: String(r.body), status: r.status as Report['status'], note: String(r.note), version: Number(r.version ?? 1), createdAt: String(r.created_at) }));
 }
 export function listAudit(): AuditEntry[] {
   return database().prepare('SELECT * FROM audit ORDER BY id DESC LIMIT 1000').all().map((r) => ({ id: Number(r.id), actor: String(r.actor), action: String(r.action), target: String(r.target), createdAt: String(r.created_at) }));
@@ -68,6 +88,8 @@ export function saveResource(actor: User, input: unknown, version: number | null
   const parsed = ResourceSchema.safeParse(input);
   if (!parsed.success) fail(400, `资源校验失败：${parsed.error.issues.map((i) => `${i.path.join('.')} ${i.message}`).join('；')}`);
   const resource = parsed.data;
+  // /admin/resources/new/ 是"新建"路由，条目一旦取该 ID 就再也打不开编辑页。
+  if (isReservedIdentifier(resource.id)) fail(400, RESERVED_IDENTIFIER_MESSAGE);
   return transaction((db) => {
     const current = actorUser(actor);
     categoryExists(resource.category);
@@ -79,11 +101,45 @@ export function saveResource(actor: User, input: unknown, version: number | null
       db.prepare('UPDATE resources SET draft=?,draft_category=?,version=version+1,updated_at=? WHERE id=?').run(JSON.stringify(resource), resource.category, now, resource.id);
     } else {
       if (version !== null) fail(409, '资源已被删除，不能用旧版本重新创建');
-      db.prepare('INSERT INTO resources (id,draft,draft_category,version,updated_at) VALUES (?,?,?,1,?)').run(resource.id, JSON.stringify(resource), resource.category, now);
+      const startAt = startVersion(db, 'resource', resource.id);
+      db.prepare('INSERT INTO resources (id,uid,draft,draft_category,version,updated_at) VALUES (?,?,?,?,?,?)').run(resource.id, newUid(), JSON.stringify(resource), resource.category, startAt, now);
     }
     const saved = findManagedResource(resource.id)!;
     recordRevision(db, 'resource', resource.id, saved.version, resource, current.username, 'save');
     audit(current.username, 'save-resource', resource.id);
+    return saved;
+  });
+}
+/** 导入预检冻结的实体身份：版本防"被修改"，uid 防"删除后同名重建"。 */
+export interface EntityIdentity { version: number; uid: string }
+/**
+ * 导入单条资源。恢复（若在回收站）与写入草稿必须在同一个事务里完成：
+ * 过去两步分开提交，保存失败（例如分类不存在）会留下"已离开回收站"的半截状态。
+ * 审计也写在同一事务内：审计失败时条目必须一起回滚，不能出现"内容已提交、审计缺失"。
+ */
+export function importResource(actor: User, input: unknown, expected: EntityIdentity | null): ManagedResource {
+  const parsed = ResourceSchema.safeParse(input);
+  if (!parsed.success) fail(400, `资源校验失败：${parsed.error.issues.map((i) => `${i.path.join('.')} ${i.message}`).join('；')}`);
+  const resource = parsed.data;
+  if (isReservedIdentifier(resource.id)) fail(400, RESERVED_IDENTIFIER_MESSAGE);
+  return transaction((db) => {
+    const current = actorUser(actor);
+    categoryExists(resource.category);
+    const previous = findManagedResource(resource.id);
+    const now = new Date().toISOString();
+    if (!previous) {
+      if (expected !== null) fail(409, `资源 ${resource.id} 在预检后已被删除；请重新预检后再导入`);
+      const version = startVersion(db, 'resource', resource.id);
+      db.prepare('INSERT INTO resources (id,uid,draft,draft_category,version,updated_at) VALUES (?,?,?,?,?,?)').run(resource.id, newUid(), JSON.stringify(resource), resource.category, version, now);
+    } else {
+      if (expected === null || previous.uid !== expected.uid) fail(409, `资源 ${resource.id} 在预检后已被删除并重建；不能把文件内容写入新条目，请重新预检`);
+      if (previous.version !== expected.version) fail(409, `资源 ${resource.id} 已在预检后被修改（预检 v${expected.version}，当前 v${previous.version}）；请重新预检后再导入`);
+      if (previous.deletedAt) db.prepare('UPDATE resources SET deleted_at=NULL,version=version+1,updated_at=? WHERE id=?').run(now, resource.id);
+      db.prepare('UPDATE resources SET draft=?,draft_category=?,version=version+1,updated_at=? WHERE id=?').run(JSON.stringify(resource), resource.category, now, resource.id);
+    }
+    const saved = findManagedResource(resource.id)!;
+    recordRevision(db, 'resource', resource.id, saved.version, resource, current.username, 'save');
+    audit(current.username, 'import-resource', resource.id);
     return saved;
   });
 }
@@ -108,6 +164,16 @@ export function saveCategory(actor: User, id: string, name: string): void {
     const current = actorUser(actor, true);
     db.prepare('INSERT INTO categories (id,name) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name').run(id, name.trim());
     audit(current.username, 'save-category', id);
+  });
+}
+/** 导入创建分类：与分类管理共用同一套授权与同事务审计（只导入分类时也要留痕）。 */
+export function createCategoryFromImport(actor: User, id: string, name: string): boolean {
+  return transaction((db) => {
+    const current = actorUser(actor, true);
+    if (db.prepare('SELECT 1 FROM categories WHERE id=?').get(id)) return false;
+    db.prepare('INSERT INTO categories (id,name) VALUES (?,?)').run(id, name.trim());
+    audit(current.username, 'save-category', id);
+    return true;
   });
 }
 export function deleteCategory(actor: User, id: string): void {
@@ -175,24 +241,30 @@ export function createReport(input: { resourceId?: string; kind: string; title: 
     db.prepare('INSERT INTO reports (resource_id,kind,title,body,created_at) VALUES (?,?,?,?,?)').run(resourceId, kind, title, body, new Date().toISOString());
   });
 }
-export function updateReport(actor: User, id: number, status: string, note: string, revisionId: number | null = null): void {
+/**
+ * 反馈处理必须带版本号：多维护者同时处理时，旧表单不能把"已解决 + 备注"改回"处理中"，
+ * 也不能静默覆盖别人的内部备注（审计不保存被覆盖的正文，无法靠审计找回）。
+ */
+export function updateReport(actor: User, id: number, status: string, note: string, revisionId: number | null = null, version: number | null = null): void {
   if (!['new', 'processing', 'resolved'].includes(status) || note.length > 4000) fail(400, '无效反馈状态或备注过长');
   transaction((db) => {
     const current = actorUser(actor);
-    const report = db.prepare('SELECT resource_id FROM reports WHERE id=?').get(id);
+    const expected = requiredVersion(version);
+    const report = db.prepare('SELECT resource_id,version FROM reports WHERE id=?').get(id);
     if (!report) fail(404, '反馈不存在');
+    if (Number(report.version) !== expected) fail(409, '这条反馈已被其他维护者处理；请重新加载后再提交，避免覆盖对方的备注');
     if (revisionId !== null) {
       if (!report.resource_id) fail(400, '这条反馈没有关联资源，不能关联修订');
       const revision = db.prepare('SELECT 1 FROM revisions WHERE id=? AND entity_kind=? AND entity_id=?').get(revisionId, 'resource', String(report.resource_id));
       if (!revision) fail(400, '所选修订不属于这条反馈关联的资源');
     }
-    db.prepare('UPDATE reports SET status=?,note=?,revision_id=? WHERE id=?').run(status, note.trim(), revisionId, id);
+    db.prepare('UPDATE reports SET status=?,note=?,revision_id=?,version=version+1 WHERE id=?').run(status, note.trim(), revisionId, id);
     audit(current.username, 'update-report', String(id));
   });
 }
 
 function managedGuide(row: Row): ManagedGuide {
-  return { slug: String(row.slug), draft: JSON.parse(String(row.draft)), published: row.published ? JSON.parse(String(row.published)) : null, version: Number(row.version), updatedAt: String(row.updated_at), deletedAt: row.deleted_at ? String(row.deleted_at) : null };
+  return { slug: String(row.slug), uid: row.uid === null || row.uid === undefined ? '' : String(row.uid), draft: JSON.parse(String(row.draft)), published: row.published ? JSON.parse(String(row.published)) : null, version: Number(row.version), updatedAt: String(row.updated_at), deletedAt: row.deleted_at ? String(row.deleted_at) : null };
 }
 export function getPublishedGuides(): Guide[] {
   return requestMemo('published-guides', () => database().prepare('SELECT published FROM guides WHERE published IS NOT NULL AND deleted_at IS NULL ORDER BY rowid').all().map((row) => JSON.parse(String(row.published))));
@@ -220,14 +292,29 @@ function guideVersion(slug: string, version: number | null): ManagedGuide {
   if (item.version !== expected) fail(409, '该指南已被其他维护者修改；请保留当前内容，重新加载后合并');
   return item;
 }
+/**
+ * 关联资源的写入规则：不存在的资源直接拒绝；已在回收站的资源只允许保留原有关系。
+ * 编辑页会为"回收站中但已关联"的资源渲染勾选框，因此保存时这条关系还在；
+ * 反过来，用表单或接口新拉一个回收站资源进指南必须被拒绝。
+ */
+export function checkGuideResources(db: ReturnType<typeof database>, ids: string[], previous: ManagedGuide | undefined): void {
+  const existing = new Set(previous?.draft.resources ?? []);
+  for (const id of ids) {
+    const row = db.prepare('SELECT deleted_at FROM resources WHERE id=?').get(id);
+    if (!row) fail(400, `关联资源不存在：${id}`);
+    const deleted = row.deleted_at !== null && row.deleted_at !== undefined;
+    if (deleted && !existing.has(id)) fail(400, `关联资源在回收站中：${id}；请先恢复该资源再建立关联`);
+  }
+}
 export function saveGuide(actor: User, input: unknown, version: number | null): ManagedGuide {
   const parsed = GuideSchema.safeParse(input);
   if (!parsed.success) fail(400, `指南校验失败：${parsed.error.issues.map((issue) => `${issue.path.join('.')} ${issue.message}`).join('；')}`);
   const guide = parsed.data;
+  if (isReservedIdentifier(guide.slug)) fail(400, RESERVED_IDENTIFIER_MESSAGE);
   return transaction((db) => {
     const current = actorUser(actor);
-    for (const id of guide.resources) if (!db.prepare('SELECT 1 FROM resources WHERE id=?').get(id)) fail(400, `关联资源不存在：${id}`);
     const previous = findManagedGuide(guide.slug);
+    checkGuideResources(db, guide.resources, previous);
     if (previous?.deletedAt) fail(409, '该指南在回收站中，请先恢复后再编辑');
     const now = new Date().toISOString();
     if (previous) {
@@ -235,11 +322,39 @@ export function saveGuide(actor: User, input: unknown, version: number | null): 
       db.prepare('UPDATE guides SET draft=?,version=version+1,updated_at=? WHERE slug=?').run(JSON.stringify(guide), now, guide.slug);
     } else {
       if (version !== null) fail(409, '指南已被删除，不能用旧版本重新创建');
-      db.prepare('INSERT INTO guides (slug,draft,version,updated_at) VALUES (?,?,1,?)').run(guide.slug, JSON.stringify(guide), now);
+      const startAt = startVersion(db, 'guide', guide.slug);
+      db.prepare('INSERT INTO guides (slug,uid,draft,version,updated_at) VALUES (?,?,?,?,?)').run(guide.slug, newUid(), JSON.stringify(guide), startAt, now);
     }
     const saved = findManagedGuide(guide.slug)!;
     recordRevision(db, 'guide', guide.slug, saved.version, guide, current.username, 'save');
     audit(current.username, 'save-guide', guide.slug);
+    return saved;
+  });
+}
+/** 导入单篇指南：恢复、写入、版本记录与审计同事务；关联资源也在这里统一校验。 */
+export function importGuide(actor: User, input: unknown, expected: EntityIdentity | null): ManagedGuide {
+  const parsed = GuideSchema.safeParse(input);
+  if (!parsed.success) fail(400, `指南校验失败：${parsed.error.issues.map((issue) => `${issue.path.join('.')} ${issue.message}`).join('；')}`);
+  const guide = parsed.data;
+  if (isReservedIdentifier(guide.slug)) fail(400, RESERVED_IDENTIFIER_MESSAGE);
+  return transaction((db) => {
+    const current = actorUser(actor);
+    const previous = findManagedGuide(guide.slug);
+    checkGuideResources(db, guide.resources, previous);
+    const now = new Date().toISOString();
+    if (!previous) {
+      if (expected !== null) fail(409, `指南 ${guide.slug} 在预检后已被删除；请重新预检后再导入`);
+      const version = startVersion(db, 'guide', guide.slug);
+      db.prepare('INSERT INTO guides (slug,uid,draft,version,updated_at) VALUES (?,?,?,?,?)').run(guide.slug, newUid(), JSON.stringify(guide), version, now);
+    } else {
+      if (expected === null || previous.uid !== expected.uid) fail(409, `指南 ${guide.slug} 在预检后已被删除并重建；不能把文件内容写入新条目，请重新预检`);
+      if (previous.version !== expected.version) fail(409, `指南 ${guide.slug} 已在预检后被修改（预检 v${expected.version}，当前 v${previous.version}）；请重新预检后再导入`);
+      if (previous.deletedAt) db.prepare('UPDATE guides SET deleted_at=NULL,version=version+1,updated_at=? WHERE slug=?').run(now, guide.slug);
+      db.prepare('UPDATE guides SET draft=?,version=version+1,updated_at=? WHERE slug=?').run(JSON.stringify(guide), now, guide.slug);
+    }
+    const saved = findManagedGuide(guide.slug)!;
+    recordRevision(db, 'guide', guide.slug, saved.version, guide, current.username, 'save');
+    audit(current.username, 'import-guide', guide.slug);
     return saved;
   });
 }
@@ -277,8 +392,23 @@ function findRevision(kind: RevisionKind, entityId: string, revisionId: number):
   if (!row) fail(404, '版本记录不存在');
   return { id: Number(row.id), kind: row.entity_kind as RevisionKind, entityId: String(row.entity_id), version: Number(row.version), data: JSON.parse(String(row.data)), actor: String(row.actor), action: row.action as RevisionAction, createdAt: String(row.created_at) };
 }
-/** Restore an old snapshot as the new draft. Publishing stays a separate admin action. */
-export function restoreResourceRevision(actor: User, id: string, revisionId: number, version: number | null): ManagedResource {
+/** Safe lookup used by the reports page so a linked revision outside the recent window is not lost. */
+export function findRevisionById(kind: RevisionKind, entityId: string, revisionId: number): Revision | undefined {
+  const row = database().prepare('SELECT * FROM revisions WHERE id=? AND entity_kind=? AND entity_id=?').get(revisionId, kind, entityId);
+  if (!row) return undefined;
+  return {
+    id: Number(row.id), kind: row.entity_kind as RevisionKind, entityId: String(row.entity_id),
+    version: Number(row.version), data: JSON.parse(String(row.data)), actor: String(row.actor),
+    action: row.action as RevisionAction, createdAt: String(row.created_at),
+  };
+}
+
+/**
+ * Restore an old snapshot as the new draft. Publishing stays a separate admin action.
+ * `category` lets the caller substitute a category when the historical one has been deleted:
+ * 直接写回已删除的分类会触发外键约束，过去表现为通用 500。
+ */
+export function restoreResourceRevision(actor: User, id: string, revisionId: number, version: number | null, category: string | null = null): ManagedResource {
   return transaction((db) => {
     const current = actorUser(actor);
     const item = findManagedResource(id);
@@ -289,15 +419,30 @@ export function restoreResourceRevision(actor: User, id: string, revisionId: num
     const parsed = ResourceSchema.safeParse(revision.data);
     if (!parsed.success) fail(400, '该历史版本无法恢复：数据结构不完整');
     const resource = { ...parsed.data, id: item.id };
+    const fallback = category?.trim() || null;
+    if (fallback !== null && !db.prepare('SELECT 1 FROM categories WHERE id=?').get(fallback)) fail(400, '所选分类不存在');
+    const target = fallback ?? resource.category;
+    if (!db.prepare('SELECT 1 FROM categories WHERE id=?').get(target)) {
+      fail(409, `该历史版本使用的分类 ${resource.category} 已删除；请为该版本选择一个现有分类后再恢复，或先恢复该分类`);
+    }
+    resource.category = target;
     db.prepare('UPDATE resources SET draft=?,draft_category=?,version=version+1,updated_at=? WHERE id=?')
       .run(JSON.stringify(resource), resource.category, new Date().toISOString(), id);
     const saved = findManagedResource(id)!;
     recordRevision(db, 'resource', id, saved.version, resource, current.username, 'restore');
-    audit(current.username, 'restore-resource', id);
+    audit(current.username, 'restore-resource', fallback ? `${id} (分类改为 ${fallback})` : id);
     return saved;
   });
 }
-export function restoreGuideRevision(actor: User, slug: string, revisionId: number, version: number | null): ManagedGuide {
+/** 历史版本里引用了、但资源表里已经不存在的 ID。 */
+export function missingGuideResources(ids: string[]): string[] {
+  return ids.filter((id) => !database().prepare('SELECT 1 FROM resources WHERE id=?').get(id));
+}
+/**
+ * 恢复指南历史版本。关联资源的处理与普通保存保持一致：
+ * 已不存在的资源默认拒绝恢复（返回可操作的 409），只有调用方显式同意移除时才过滤掉。
+ */
+export function restoreGuideRevision(actor: User, slug: string, revisionId: number, version: number | null, dropMissing = false): ManagedGuide {
   const revision = findRevision('guide', slug, revisionId);
   return transaction((db) => {
     const current = actorUser(actor);
@@ -308,11 +453,17 @@ export function restoreGuideRevision(actor: User, slug: string, revisionId: numb
     const parsed = GuideSchema.safeParse(revision.data);
     if (!parsed.success) fail(400, '该历史版本无法恢复：数据结构不完整');
     const guide = { ...parsed.data, slug: item.slug };
+    const missing = guide.resources.filter((id) => !db.prepare('SELECT 1 FROM resources WHERE id=?').get(id));
+    if (missing.length > 0 && !dropMissing) {
+      fail(409, `该历史版本关联的资源已不存在：${missing.slice(0, 6).join('、')}${missing.length > 6 ? ` 等 ${missing.length} 个` : ''}；请勾选“恢复时移除失效关联”，或先恢复这些资源`);
+    }
+    if (missing.length > 0) guide.resources = guide.resources.filter((id) => !missing.includes(id));
+    checkGuideResources(db, guide.resources, item);
     db.prepare('UPDATE guides SET draft=?,version=version+1,updated_at=? WHERE slug=?')
       .run(JSON.stringify(guide), new Date().toISOString(), slug);
     const saved = findManagedGuide(slug)!;
     recordRevision(db, 'guide', slug, saved.version, guide, current.username, 'restore');
-    audit(current.username, 'restore-guide', slug);
+    audit(current.username, 'restore-guide', missing.length > 0 ? `${slug} (移除失效关联 ${missing.join(',')})` : slug);
     return saved;
   });
 }
@@ -331,10 +482,19 @@ export function isMetricTargetAllowed(name: MetricName, target: string): boolean
   return Boolean(database().prepare('SELECT 1 FROM resources WHERE id=? AND published IS NOT NULL AND deleted_at IS NULL').get(target));
 }
 
+/**
+ * 只有自由文本（零结果搜索）才归一化并截断：它是用户输入的句子，长度不可控。
+ * 实体 ID / slug 必须原样保留，否则前 60 字符相同的两个 ID 会被合并计数。
+ */
+function eventTarget(name: MetricName, target: string): string {
+  const cleaned = target.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (name === 'search_miss') return cleaned.slice(0, 60);
+  return cleaned.length > MAX_IDENTIFIER_LENGTH ? '' : cleaned;
+}
 /** Privacy-safe counter: only a day, an allow-listed event name and a normalised target. */
 export function recordEvent(name: MetricName, target: string): boolean {
   if (!METRIC_NAMES.includes(name)) return false;
-  const clean = target.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
+  const clean = eventTarget(name, target);
   if (!clean) return false;
   const now = new Date();
   const day = utcDay(now);
@@ -390,6 +550,7 @@ export function purgeTrashResource(actor: User, id: string): void {
     deletedResource(id);
     db.prepare('DELETE FROM revisions WHERE entity_kind=? AND entity_id=?').run('resource', id);
     db.prepare('DELETE FROM link_checks WHERE resource_id=?').run(id);
+    writeVersionTombstone(db, 'resource', id, deletedResource(id).version);
     db.prepare('DELETE FROM resources WHERE id=?').run(id);
     audit(current.username, 'purge-resource', id);
   });
@@ -412,47 +573,107 @@ export function purgeTrashGuide(actor: User, slug: string): void {
     const current = actorUser(actor, true);
     deletedGuide(slug);
     db.prepare('DELETE FROM revisions WHERE entity_kind=? AND entity_id=?').run('guide', slug);
+    writeVersionTombstone(db, 'guide', slug, deletedGuide(slug).version);
     db.prepare('DELETE FROM guides WHERE slug=?').run(slug);
     audit(current.username, 'purge-guide', slug);
   });
 }
-export interface LinkCheck { resourceId: string; status: 'ok' | 'warn' | 'broken' | 'error'; statusCode: number | null; finalUrl: string | null; message: string; checkedAt: string }
-export function saveLinkCheck(resourceId: string, result: { status: LinkCheck['status']; statusCode: number | null; finalUrl: string | null; message: string }): LinkCheck {
+/** 手动检查针对草稿，定时脚本针对公开快照；两种目标的当前值不同，过期条件也不同。 */
+export type LinkCheckScope = 'draft' | 'published';
+export interface LinkCheck {
+  resourceId: string; status: 'ok' | 'warn' | 'broken' | 'error'; statusCode: number | null;
+  finalUrl: string | null; message: string; checkedAt: string;
+  /** 被检查的 URL、检查时的行版本与检查对象；旧记录可能为 null。 */
+  url: string | null; version: number | null; scope: LinkCheckScope;
+}
+export function saveLinkCheck(
+  resourceId: string,
+  result: { status: LinkCheck['status']; statusCode: number | null; finalUrl: string | null; message: string },
+  target: { url: string; version: number; scope: LinkCheckScope },
+): LinkCheck {
   const checkedAt = new Date().toISOString();
-  database().prepare(`INSERT INTO link_checks (resource_id,status,status_code,final_url,message,checked_at) VALUES (?,?,?,?,?,?)
-    ON CONFLICT(resource_id) DO UPDATE SET status=excluded.status,status_code=excluded.status_code,final_url=excluded.final_url,message=excluded.message,checked_at=excluded.checked_at`)
-    .run(resourceId, result.status, result.statusCode, result.finalUrl, result.message, checkedAt);
-  return { resourceId, ...result, checkedAt };
+  database().prepare(`INSERT INTO link_checks (resource_id,status,status_code,final_url,message,checked_at,url,version,scope) VALUES (?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(resource_id) DO UPDATE SET status=excluded.status,status_code=excluded.status_code,final_url=excluded.final_url,message=excluded.message,checked_at=excluded.checked_at,url=excluded.url,version=excluded.version,scope=excluded.scope`)
+    .run(resourceId, result.status, result.statusCode, result.finalUrl, result.message, checkedAt, target.url, target.version, target.scope);
+  return { resourceId, ...result, checkedAt, url: target.url, version: target.version, scope: target.scope };
 }
 export function listLinkChecks(): LinkCheck[] {
   return database().prepare('SELECT * FROM link_checks ORDER BY checked_at DESC').all().map((row) => ({
     resourceId: String(row.resource_id), status: row.status as LinkCheck['status'], statusCode: row.status_code === null ? null : Number(row.status_code),
     finalUrl: row.final_url === null ? null : String(row.final_url), message: String(row.message), checkedAt: String(row.checked_at),
+    url: row.url === null || row.url === undefined ? null : String(row.url),
+    version: row.version === null || row.version === undefined ? null : Number(row.version),
+    scope: row.scope === 'published' ? 'published' : 'draft',
   }));
+}
+/**
+ * 检查结果只在其检查对象仍是当前内容时有效。
+ * - 草稿检查：链接或草稿版本变了就过期。
+ * - 公开快照检查：只认公开快照本身；公开版本撤回、或重新发布的链接不同都算过期，
+ *   保存草稿（版本号变化但快照没变）不算过期——那正是"草稿改了但还没发布"的正常状态。
+ */
+export function linkCheckStaleReason(check: LinkCheck, resource: { draft: { url: string }; published: { url: string } | null; version: number }): string | null {
+  if (check.url === null) return '旧记录没有保存检查目标，请重新检查';
+  if (check.scope === 'published') {
+    if (!resource.published) return '公开版本已撤回，这条结果不再代表前台内容';
+    if (check.url !== resource.published.url) return '公开版本的链接已更换，请重新检查';
+    return null;
+  }
+  if (check.url !== resource.draft.url) return '草稿链接已修改，请重新检查';
+  if (check.version !== resource.version) return '检查后草稿又保存过，请重新检查';
+  return null;
+}
+
+export interface ImportRun { id: number; actor: string; createdAt: string; summary: unknown }
+const IMPORT_RUN_KEEP = 20;
+/** 导入失败明细需要在重定向后仍然可读，因此落库而不是只放在 URL 参数里。 */
+export function saveImportRun(actor: User, summary: unknown): number {
+  return transaction((db) => {
+    const created = db.prepare('INSERT INTO import_runs (actor,created_at,summary) VALUES (?,?,?)').run(actor.username, new Date().toISOString(), JSON.stringify(summary));
+    db.prepare('DELETE FROM import_runs WHERE id NOT IN (SELECT id FROM import_runs ORDER BY id DESC LIMIT ?)').run(IMPORT_RUN_KEEP);
+    return Number(created.lastInsertRowid);
+  });
+}
+export function findImportRun(id: number): ImportRun | undefined {
+  if (!Number.isSafeInteger(id) || id < 1) return undefined;
+  const row = database().prepare('SELECT * FROM import_runs WHERE id=?').get(id);
+  if (!row) return undefined;
+  let summary: unknown = null;
+  try { summary = JSON.parse(String(row.summary)); } catch { summary = null; }
+  return { id: Number(row.id), actor: String(row.actor), createdAt: String(row.created_at), summary };
 }
 
 export function schemaVersion(): string | null {
   const row = database().prepare('SELECT id FROM schema_migrations ORDER BY id DESC LIMIT 1').get();
   return row ? String(row.id) : null;
 }
-export function bulkReviewResources(actor: User, ids: string[], status: 'verified' | 'review', date: string | null): { updated: number; skipped: string[] } {
-  if (!Array.isArray(ids) || ids.length === 0 || ids.length > 200) fail(400, '请选择 1–200 条资源');
+/**
+ * 批量复核必须绑定页面上看到的那一版：管理员打开队列后若条目被人改过，
+ * 对旧内容的"已核对"不能顺延到新 URL 上，只能跳过并提示重新打开。
+ */
+export function bulkReviewResources(actor: User, items: { id: string; version: number }[], status: 'verified' | 'review', date: string | null): { updated: number; skipped: string[]; changed: string[] } {
+  if (!Array.isArray(items) || items.length === 0 || items.length > 200) fail(400, '请选择 1–200 条资源');
+  for (const item of items) {
+    if (!item || typeof item.id !== 'string' || !Number.isSafeInteger(item.version) || item.version < 1) fail(400, '复核请求缺少页面版本号，请重新加载队列');
+  }
   const checkedAt = status === 'verified' ? (date ?? new Date().toISOString().slice(0, 10)) : null;
   if (status === 'verified' && (!checkedAt || !/^\d{4}-\d{2}-\d{2}$/.test(checkedAt) || Number.isNaN(Date.parse(checkedAt)))) fail(400, '核对日期无效');
   return transaction((db) => {
     const current = actorUser(actor);
     const skipped: string[] = [];
+    const changed: string[] = [];
     let updated = 0;
-    for (const id of ids) {
+    for (const { id, version } of items) {
       const item = findManagedResource(id);
       if (!item || item.deletedAt) { skipped.push(id); continue; }
+      if (item.version !== version) { changed.push(id); continue; }
       const draft = { ...item.draft, status, checkedAt };
       db.prepare('UPDATE resources SET draft=?,version=version+1,updated_at=? WHERE id=?').run(JSON.stringify(draft), new Date().toISOString(), id);
       const saved = findManagedResource(id)!;
       recordRevision(db, 'resource', id, saved.version, draft, current.username, 'save');
       updated += 1;
     }
-    audit(current.username, 'bulk-review', `${updated} resources`);
-    return { updated, skipped };
+    audit(current.username, 'bulk-review', `${updated} resources${changed.length ? `, ${changed.length} skipped (changed)` : ''}`);
+    return { updated, skipped, changed };
   });
 }

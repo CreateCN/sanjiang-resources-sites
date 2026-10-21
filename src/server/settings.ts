@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { database, transaction } from './db.ts';
 import type { User } from './store.ts';
@@ -30,6 +31,22 @@ export function getSettings(): SiteSettings {
     if (!parsed.success) return defaultSettings();
     return { featuredResourceId: parsed.data.featuredResourceId, scenarios: { ...DEFAULT_SCENARIOS, ...parsed.data.scenarios } };
   } catch { return defaultSettings(); }
+}
+/**
+ * 导出/迁移用设置：默认场景文案只保留仍然存在的分类。
+ * getSettings() 会无条件合并 DEFAULT_SCENARIOS，直接导出会把已删除分类的文案带回来，
+ * 导回时 saveSettings 会因"分类不存在"整体失败。
+ */
+export function exportSettings(): SiteSettings {
+  const settings = getSettings();
+  const existing = new Set(database().prepare('SELECT id FROM categories').all().map((row) => String(row.id)));
+  const scenarios: Record<string, ScenarioCopy> = {};
+  for (const [id, copy] of Object.entries(settings.scenarios)) if (existing.has(id)) scenarios[id] = copy;
+  return { featuredResourceId: settings.featuredResourceId, scenarios };
+}
+/** 当前设置的摘要，供导入预检冻结；应用时用它判断设置是否在预检后被改过。 */
+export function settingsFingerprint(): string {
+  return createHash('sha256').update(JSON.stringify(getSettings())).digest('hex');
 }
 export function saveSettings(actor: User, input: unknown): SiteSettings {
   const parsed = SettingsSchema.safeParse(input);

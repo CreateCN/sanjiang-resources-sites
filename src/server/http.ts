@@ -3,9 +3,10 @@ import { login, logout, requireCsrf, sessionCookie } from './auth.ts';
 import { changeGuidePublication, changePublication, createReport, createUser, deleteCategory, findManagedResource, isMetricTargetAllowed, pingDatabase, purgeTrashGuide, purgeTrashResource, recordEvent, restoreGuideRevision, restoreResourceRevision, restoreTrashGuide, restoreTrashResource, saveCategory, saveGuide, saveLinkCheck, saveResource, updateReport, updateUser } from './store.ts';
 import { checkResourceLink } from './linkcheck.ts';
 import { saveSettings } from './settings.ts';
-import { bulkReviewResources, schemaVersion } from './store.ts';
+import { bulkReviewResources, saveImportRun, schemaVersion } from './store.ts';
 import { applyImport } from '../lib/importer.ts';
 import { renderInlineMarkdown, renderMarkdown } from '../lib/markdown.ts';
+import { MAX_IDENTIFIER_LENGTH } from '../lib/identifiers.ts';
 
 type Context = { request: Request; clientAddress?: string };
 const privateHeaders = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin' };
@@ -35,10 +36,16 @@ function versionNumber(form: FormData): number | null {
   if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value))) fail(400, '无效版本号');
   return Number(value);
 }
-async function readForm(request: Request): Promise<FormData> {
+/** 普通表单上限；导入另有大上限，见 MANAGE_MAX_BYTES。 */
+export const FORM_MAX_BYTES = 96 * 1024;
+/** 导入 JSON 上限，与导出规模匹配（500 条资源 / 200 篇指南）。 */
+export const IMPORT_MAX_BYTES = 3 * 1024 * 1024;
+/** /api/manage/ 的硬上限：导入需要更大空间，其余动作在处理时回落到 FORM_MAX_BYTES。 */
+export const MANAGE_MAX_BYTES = IMPORT_MAX_BYTES + 64 * 1024;
+
+export async function readForm(request: Request, limit = FORM_MAX_BYTES): Promise<{ form: FormData; bytes: number }> {
   const type = request.headers.get('content-type') || '';
   if (!type.startsWith('application/x-www-form-urlencoded') && !type.startsWith('multipart/form-data')) fail(415, '请通过表单提交');
-  const limit = 96 * 1024;
   const length = Number(request.headers.get('content-length'));
   if (Number.isFinite(length) && length > limit) fail(413, '提交内容过大');
   const reader = request.body?.getReader();
@@ -55,7 +62,7 @@ async function readForm(request: Request): Promise<FormData> {
   } finally { reader.releaseLock(); }
   const bytes = new Uint8Array(total); let offset = 0;
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
-  try { return await new Response(bytes, { headers: { 'Content-Type': type } }).formData(); }
+  try { return { form: await new Response(bytes, { headers: { 'Content-Type': type } }).formData(), bytes: total }; }
   catch { return fail(400, '无法解析表单内容'); }
 }
 function escape(value: string): string { return value.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!); }
@@ -89,8 +96,10 @@ export async function managePost(context: Context): Promise<Response> {
   const request = context.request; let draft: string | undefined;
   try {
     requireOrigin(request);
-    const form = await readForm(request);
+    const { form, bytes } = await readForm(request, MANAGE_MAX_BYTES);
     const action = text(form, 'action');
+    // 导入允许更大的请求体；其余动作仍受普通表单上限约束，避免放宽整体 DoS 面。
+    if (action !== 'import-apply' && bytes > FORM_MAX_BYTES) fail(413, '提交内容过大');
     // Preserve the submitted draft even if the session expired while editing.
     // It is never evaluated and is always HTML-escaped on the error page.
     if (action === 'save-resource') draft = text(form, 'resource');
@@ -119,7 +128,7 @@ export async function managePost(context: Context): Promise<Response> {
       case 'update-report': {
         const rawRevision = text(form, 'revisionId');
         const revisionId = rawRevision ? numberField(form, 'revisionId') : null;
-        updateReport(session.user, idNumber(form), text(form, 'status'), text(form, 'note'), revisionId);
+        updateReport(session.user, idNumber(form), text(form, 'status'), text(form, 'note'), revisionId, versionNumber(form));
         return redirect('/admin/reports/');
       }
       case 'check-link': {
@@ -130,7 +139,7 @@ export async function managePost(context: Context): Promise<Response> {
         const resource = findManagedResource(id);
         if (!resource || resource.deletedAt) fail(404, '资源不存在');
         const result = await checkResourceLink(resource.draft.url);
-        saveLinkCheck(id, result);
+        saveLinkCheck(id, result, { url: resource.draft.url, version: resource.version, scope: 'draft' });
         return redirect(`/admin/resources/${encodeURIComponent(id)}/?checked=${result.status}`);
       }
       case 'save-settings': {
@@ -147,18 +156,36 @@ export async function managePost(context: Context): Promise<Response> {
       }
       case 'bulk-review': {
         const ids = form.getAll('ids').filter((value): value is string => typeof value === 'string');
+        // 页面为每条资源提交它被渲染时的版本；复核只能作用在维护者真正看到的那一版上。
+        const seen = new Map<string, number>();
+        for (const value of form.getAll('review-version')) {
+          if (typeof value !== 'string') continue;
+          const [id, rawVersion] = value.split(':');
+          if (!id || !rawVersion || !/^[1-9]\d*$/.test(rawVersion)) fail(400, '复核版本号无效，请重新加载队列');
+          seen.set(id, Number(rawVersion));
+        }
+        const items = ids.map((id) => {
+          const version = seen.get(id);
+          if (version === undefined) fail(400, '复核请求缺少页面版本号，请重新加载队列');
+          return { id, version };
+        });
         const status = text(form, 'status');
         if (status !== 'verified' && status !== 'review') fail(400, '无效复核状态');
-        bulkReviewResources(session.user, ids, status, status === 'verified' ? (text(form, 'date') || null) : null);
-        return redirect('/admin/reviews/');
+        const outcome = bulkReviewResources(session.user, items, status, status === 'verified' ? (text(form, 'date') || null) : null);
+        return redirect(`/admin/reviews/?updated=${outcome.updated}&skipped=${outcome.skipped.length}&changed=${outcome.changed.length}`);
       }
       case 'import-apply': {
         const raw = text(form, 'payload');
-        if (raw.length > 3 * 1024 * 1024) fail(413, '导入文件过大');
+        if (new TextEncoder().encode(raw).length > IMPORT_MAX_BYTES) fail(413, '导入文件过大');
         let payload: unknown;
         try { payload = JSON.parse(raw); } catch { fail(400, 'JSON 解析失败'); }
-        const result = applyImport(session.user, payload);
-        return redirect(`/admin/import/?resources=${result.resources}&guides=${result.guides}&categories=${result.categoriesCreated}&errors=${result.errors.length}`);
+        // 预检计划冻结了各条目的版本号与内容摘要；没有它就等于跳过预检。
+        let plan: unknown;
+        try { plan = JSON.parse(text(form, 'plan') || 'null'); } catch { fail(400, '预检计划格式不正确，请重新预检'); }
+        const result = applyImport(session.user, payload, plan, { restoreSettings: text(form, 'restoreSettings') === '1' });
+        // 失败明细落库：重定向只能带数量，维护者需要「哪一条、为什么」才能修正。
+        const runId = result.errors.length > 0 ? saveImportRun(session.user, result) : null;
+        return redirect(`/admin/import/?resources=${result.resources}&guides=${result.guides}&categories=${result.categoriesCreated}&restored=${result.restored}&settings=${result.settings ? 1 : 0}&errors=${result.errors.length}${runId ? `&run=${runId}` : ''}`);
       }
       case 'restore-trash-resource': restoreTrashResource(session.user, text(form, 'id')); return redirect('/admin/trash/');
       case 'purge-resource': purgeTrashResource(session.user, text(form, 'id')); return redirect('/admin/trash/');
@@ -177,12 +204,14 @@ export async function managePost(context: Context): Promise<Response> {
       }
       case 'restore-resource': {
         const id = text(form, 'id');
-        restoreResourceRevision(session.user, id, numberField(form, 'revision'), versionNumber(form));
+        // 历史版本使用的分类可能已被删除；页面会给出替代分类，避免直接落成外键错误（500）。
+        restoreResourceRevision(session.user, id, numberField(form, 'revision'), versionNumber(form), text(form, 'category') || null);
         return redirect(`/admin/resources/${encodeURIComponent(id)}/`);
       }
       case 'restore-guide': {
         const slug = text(form, 'slug');
-        restoreGuideRevision(session.user, slug, numberField(form, 'revision'), versionNumber(form));
+        // 历史版本可能引用已被彻底删除的资源；只有维护者显式勾选才过滤掉这些关联。
+        restoreGuideRevision(session.user, slug, numberField(form, 'revision'), versionNumber(form), text(form, 'dropMissing') === '1');
         return redirect(`/admin/guides/${encodeURIComponent(slug)}/`);
       }
       case 'publish-guide': case 'unpublish-guide': case 'delete-guide': {
@@ -203,7 +232,7 @@ function secureCookie(request: Request): boolean {
 export async function loginPost(context: Context): Promise<Response> {
   try {
     requireOrigin(context.request);
-    const form = await readForm(context.request);
+    const { form } = await readForm(context.request);
     const token = login(text(form, 'username'), text(form, 'password'), identity(context));
     return redirect('/admin/', sessionCookie(token, false, secureCookie(context.request)));
   } catch (error) { return errorResponse(context.request, error); }
@@ -211,7 +240,7 @@ export async function loginPost(context: Context): Promise<Response> {
 export async function logoutPost(context: Context): Promise<Response> {
   try {
     requireOrigin(context.request);
-    const form = await readForm(context.request);
+    const { form } = await readForm(context.request);
     requireCsrf(context.request, text(form, 'csrf'));
     logout(context.request);
     return redirect('/admin/login/', sessionCookie('', true, secureCookie(context.request)));
@@ -224,7 +253,7 @@ export async function reportsPost(context: Context): Promise<Response> {
     // circuit breaker only trips under a distributed flood.
     rateLimit('reports-client', identity(context), 5, 60 * 60 * 1000);
     rateLimit('reports-site', 'site', 500, 60 * 60 * 1000);
-    const form = await readForm(context.request);
+    const { form } = await readForm(context.request);
     // Return the same opaque receipt for honeypots without storing the submission.
     if (!text(form, 'website').trim()) createReport({ resourceId: text(form, 'resourceId'), kind: text(form, 'kind'), title: text(form, 'title'), body: text(form, 'body') });
     return redirect(`/feedback/?sent=${randomToken()}`);
@@ -233,7 +262,7 @@ export async function reportsPost(context: Context): Promise<Response> {
 export async function previewPost(context: Context): Promise<Response> {
   try {
     requireOrigin(context.request);
-    const form = await readForm(context.request);
+    const { form } = await readForm(context.request);
     requireCsrf(context.request, text(form, 'csrf'));
     const html = text(form, 'mode') === 'inline' ? renderInlineMarkdown(text(form, 'text')) : renderMarkdown(text(form, 'text'));
     return new Response(JSON.stringify({ html }), { headers: { ...privateHeaders, 'Content-Type': 'application/json; charset=utf-8' } });
@@ -269,7 +298,8 @@ export async function eventPost(context: Context): Promise<Response> {
     if (typeof payload !== 'object' || payload === null) fail(400, '请求格式不正确');
     const { name, target } = payload as { name?: unknown; target?: unknown };
     if (typeof name !== 'string' || !METRIC_NAMES.includes(name as typeof METRIC_NAMES[number])) fail(400, '未知事件');
-    if (typeof target !== 'string' || target.length > 80) fail(400, '事件目标无效');
+    // 与资源 ID / 指南 slug 的 schema 共用同一上限，否则合法的长 ID 会被拒绝上报。
+    if (typeof target !== 'string' || target.length > MAX_IDENTIFIER_LENGTH) fail(400, '事件目标无效');
     rateLimit('event-client', identity(context), 600, 60 * 60 * 1000);
     rateLimit('event-site', 'site', 20000, 60 * 60 * 1000);
     const metric = name as typeof METRIC_NAMES[number];

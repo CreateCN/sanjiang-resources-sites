@@ -1,7 +1,7 @@
 ---
 import AdminLayout from '../../../layouts/AdminLayout.astro';
 import { getSession } from '../../../server/auth';
-import { findManagedResource, listCategories, listLinkChecks, listRevisions } from '../../../server/store';
+import { findManagedResource, linkCheckStaleReason, listCategories, listLinkChecks, listRevisions } from '../../../server/store';
 import { ACCESS_OPTIONS } from '../../../lib/access';
 import { formatRevisionTime } from '../../../lib/revision-fields';
 import DraftRecovery from '../../../components/DraftRecovery.astro';
@@ -13,6 +13,9 @@ const entry = isNew ? undefined : findManagedResource(Astro.params.id ?? '');
 if (!isNew && !entry) return Astro.redirect('/admin/resources/');
 if (entry?.deletedAt) return Astro.redirect('/admin/trash/');
 const linkCheck = entry ? listLinkChecks().find((check) => check.resourceId === entry.id) : undefined;
+// 检查结果绑定的是「当时那个 URL + 那个版本 + 检查对象（草稿/公开快照）」；
+// 目标变了就不再代表当前内容，过期判断与资源列表共用同一个函数。
+const linkCheckReason = linkCheck && entry ? linkCheckStaleReason(linkCheck, entry) : null;
 const checkLabels: Record<string, string> = { ok: '可访问', warn: '需人工确认', broken: '可能失效', error: '检查失败' };
 const categories = listCategories();
 const resource = entry?.draft ?? {id:'',title:'',summary:'',category:categories[0]?.id ?? '',kind:'开源工具',cost:'',platforms:['网页'],tags:[],url:'',sourceUrl:'',license:'',eligibility:'',caveat:'',steps:[''],status:'review',checkedAt:null,imageRights:'unconfirmed'};
@@ -45,8 +48,10 @@ const valueOf = (key: string) => { const value = (resource as unknown as Record<
       <div class="field"><label for="checked-at">核对日期</label><input id="checked-at" data-field="checkedAt" type="date" value={resource.checkedAt ?? ''}/><small>已核对时必填；待核对时留空。</small></div>
     </div><div class="actions"><button type="button" class="secondary" id="details-preview">预览详细说明</button><span class="muted">预览不会保存。</span></div><div id="details-preview-panel" class="panel" style="display:none;background:#f7f9f5"><h3>详细说明预览</h3><div class="markdown-body" id="details-preview-body"></div></div><div class="actions"><button type="submit">保存草稿</button></div><p role="status" aria-live="polite"></p><noscript><p class="error">结构化编辑器需要启用 JavaScript 才能序列化字段，请启用后重新打开此页。未启用时请勿保存。</p></noscript>
   </form>
-  {entry && <section class="panel"><h2>链接检查</h2><p>手动检查只记录结果，不会自动下架或改动发布状态；403/429 视为“需人工确认”，不当作失效。</p>{linkCheck ? <p>上次检查：{formatRevisionTime(linkCheck.checkedAt)} · <strong>{checkLabels[linkCheck.status] ?? linkCheck.status}</strong>{linkCheck.statusCode ? `（HTTP ${linkCheck.statusCode}）` : ''}{linkCheck.finalUrl && linkCheck.finalUrl !== entry.draft.url ? <><br/><span class="muted">最终地址：{linkCheck.finalUrl}</span></> : ''}<br/><span class="muted">{linkCheck.message}</span></p> : <p class="muted">还没有检查记录。</p>}<form action="/api/manage/" method="post" data-admin-form><input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="check-link"/><input type="hidden" name="id" value={entry.id}/><div class="actions"><button type="submit" class="secondary">现在检查链接</button><span class="muted">检查已保存的草稿链接，超时 10 秒。</span></div><p role="status" aria-live="polite"></p></form></section>}
-  {entry && <RevisionHistory kind="resource" entityId={entry.id} current={entry.draft} revisions={listRevisions('resource', entry.id)} version={entry.version} csrf={session.csrfToken} />}
+  {entry && <section class="panel"><h2>链接检查</h2><p>手动检查只记录结果，不会自动下架或改动发布状态；403/429 视为“需人工确认”，不当作失效。手动检查的对象是当前已保存的草稿链接。</p>{linkCheck
+    ? <p>{linkCheckReason && <span class="badge">需重新检查</span>} 上次检查：{formatRevisionTime(linkCheck.checkedAt)} · <strong>{checkLabels[linkCheck.status] ?? linkCheck.status}</strong>{linkCheck.statusCode ? `（HTTP ${linkCheck.statusCode}）` : ''} · 检查对象：{linkCheck.scope === 'published' ? '公开版本' : '草稿'}{linkCheck.url && linkCheck.url !== entry.draft.url ? <><br/><span class="muted">当时检查的链接：{linkCheck.url}</span></> : ''}{linkCheck.finalUrl && linkCheck.finalUrl !== entry.draft.url ? <><br/><span class="muted">最终地址：{linkCheck.finalUrl}</span></> : ''}<br/><span class="muted">{linkCheckReason ?? linkCheck.message}</span></p>
+    : <p class="muted">还没有检查记录。</p>}<form action="/api/manage/" method="post" data-admin-form><input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="check-link"/><input type="hidden" name="id" value={entry.id}/><div class="actions"><button type="submit" class="secondary">现在检查链接</button><span class="muted">检查已保存的草稿链接，超时 10 秒。</span></div><p role="status" aria-live="polite"></p></form></section>}
+  {entry && <RevisionHistory kind="resource" entityId={entry.id} current={entry.draft} revisions={listRevisions('resource', entry.id)} version={entry.version} csrf={session.csrfToken} categories={categories} />}
   {entry && session.user.role === 'admin' && <section class="panel"><h2>发布与下架</h2><p>以下操作只针对已保存的 v{entry.version}。未保存的表单修改不会被发布。</p><div class="actions">{['publish', ...(entry.published ? ['unpublish'] : []), 'delete-resource'].map((action) => <form action="/api/manage/" method="post" data-admin-form data-confirm={action === 'delete-resource' ? '确定把这条资源移入回收站？前台会立即隐藏，可在回收站恢复为草稿。' : action === 'unpublish' ? '确定撤回公开版本？前台将不再展示。' : '确认已经核对来源、费用与资格，并发布当前已保存草稿？'}><input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value={action}/><input type="hidden" name="id" value={entry.id}/><input type="hidden" name="version" value={entry.version}/><button type="submit" class:list={[{danger:action === 'delete-resource',secondary:action === 'unpublish'}]}>{action === 'publish' ? '发布当前草稿' : action === 'unpublish' ? '撤回公开版本' : '移入回收站'}</button></form>)}</div><p id="admin-status" role="status" aria-live="polite"></p></section>}
 </AdminLayout>
 <script>

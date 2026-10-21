@@ -1,7 +1,7 @@
 ---
 import AdminLayout from '../../../layouts/AdminLayout.astro';
 import { getSession } from '../../../server/auth';
-import { findManagedGuide, listManagedResources, listRevisions } from '../../../server/store';
+import { findManagedGuide, findManagedResource, listAllResourceIds, listManagedResources, listRevisions } from '../../../server/store';
 import DraftRecovery from '../../../components/DraftRecovery.astro';
 import RevisionHistory from '../../../components/RevisionHistory.astro';
 const session = getSession(Astro.request);
@@ -12,6 +12,16 @@ if (!isNew && !entry) return Astro.redirect('/admin/guides/');
 if (entry?.deletedAt) return Astro.redirect('/admin/trash/');
 const resources = listManagedResources();
 const guide = entry?.draft ?? { slug: '', title: '', summary: '', body: '', resources: [] as string[] };
+// 已关联但已进回收站的资源必须继续出现在候选里：复选框不可见时，保存会把"看不见"当成"用户取消关联"，
+// 关联被整体清空且恢复资源后也回不来。服务端只允许保留原有关系，不允许新增回收站关联。
+const candidates = [
+  ...resources.map((resource) => ({ id: resource.id, title: resource.draft.title, deleted: false })),
+  ...guide.resources
+    .filter((id) => !resources.some((resource) => resource.id === id))
+    .map((id) => findManagedResource(id))
+    .filter((resource): resource is NonNullable<typeof resource> => Boolean(resource?.deletedAt))
+    .map((resource) => ({ id: resource.id, title: resource.draft.title, deleted: true })),
+];
 ---
 <AdminLayout title={isNew ? '新建指南' : `编辑指南：${guide.title}`} session={session}>
   <div class="section-links"><a href="/admin/guides/">返回指南列表</a>{entry && <a href={`/admin/preview/guides/${entry.slug}/`} target="_blank" rel="noopener noreferrer">预览整页草稿 ↗</a>}{entry?.published && <a href={`/guides/${entry.slug}/`} target="_blank" rel="noopener noreferrer">查看当前公开版本 ↗</a>}</div>
@@ -27,10 +37,10 @@ const guide = entry?.draft ?? { slug: '', title: '', summary: '', body: '', reso
     </div>
     <div class="actions"><button type="button" class="secondary" id="guide-preview">预览正文</button><span class="muted">预览不会保存。</span></div>
     <div id="guide-preview-panel" class="panel" style="display:none;background:#f7f9f5;margin-top:18px"><h3>预览</h3><div class="markdown-body" id="guide-preview-body"></div></div>
-    <fieldset class="panel" style="margin-top:24px;border:0;padding:20px 0 0"><legend><strong>关联资源</strong></legend><p class="muted">勾选指南中提到的资源，保存后会在详情页反向展示相关指南。</p><div class="form-grid">{resources.map((resource) => <label class="checkbox"><input type="checkbox" name="resources" value={resource.id} checked={guide.resources.includes(resource.id)}/>{resource.draft.title}</label>)}</div></fieldset>
+    <fieldset class="panel" style="margin-top:24px;border:0;padding:20px 0 0"><legend><strong>关联资源</strong></legend><p class="muted">勾选指南中提到的资源，保存后会在详情页反向展示相关指南。标记“回收站”的资源是已有关联，在恢复前会一直保留；取消勾选即解除关联。</p><div class="form-grid">{candidates.map((resource) => <label class="checkbox"><input type="checkbox" name="resources" value={resource.id} checked={guide.resources.includes(resource.id)}/>{resource.title}{resource.deleted && <span class="badge">回收站</span>}</label>)}</div></fieldset>
     <div class="actions"><button type="submit">保存草稿</button></div><p role="status" aria-live="polite"></p>
   </form>
-  {entry && <RevisionHistory kind="guide" entityId={entry.slug} current={entry.draft} revisions={listRevisions('guide', entry.slug)} version={entry.version} csrf={session.csrfToken} />}
+  {entry && <RevisionHistory kind="guide" entityId={entry.slug} current={entry.draft} revisions={listRevisions('guide', entry.slug)} version={entry.version} csrf={session.csrfToken} resourceIds={listAllResourceIds()} />}
   {entry && session.user.role === 'admin' && <section class="panel"><h2>发布与下架</h2><p>以下操作针对已保存的 v{entry.version}，未保存的正文不会被发布。</p><div class="actions">{['publish-guide', ...(entry.published ? ['unpublish-guide'] : []), 'delete-guide'].map((action) => <form action="/api/manage/" method="post" data-admin-form data-confirm={action === 'delete-guide' ? '确定把这篇指南移入回收站？前台会立即隐藏，可在回收站恢复为草稿。' : action === 'unpublish-guide' ? '确定撤回公开版本？前台将不再展示。' : '确认正文已检查，并发布当前草稿？'}><input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value={action}/><input type="hidden" name="slug" value={entry.slug}/><input type="hidden" name="version" value={entry.version}/><button type="submit" class:list={[{ danger: action === 'delete-guide', secondary: action === 'unpublish-guide' }]}>{action === 'publish-guide' ? '发布指南' : action === 'unpublish-guide' ? '撤回公开版本' : '移入回收站'}</button></form>)}</div><p id="admin-status" role="status" aria-live="polite"></p></section>}
 </AdminLayout>
 <script>
