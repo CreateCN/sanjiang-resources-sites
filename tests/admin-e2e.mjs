@@ -635,3 +635,93 @@ test('保存期间锁定内容字段，失败后重新启用并保留输入和�
     assert.equal(await page.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith('sanjiang:draft:')).length), 1);
   } finally { await page.close(); }
 });
+
+test('同源 window.open 打开的新标签页拥有独立备份，保存不互相清除', async () => {
+  const context = await browser.newContext();
+  try {
+    const pageA = await context.newPage();
+    pageA.on('dialog', (dialog) => dialog.accept());
+    await login(pageA, 'rootadmin', 'root-password-123');
+    await pageA.goto(`${base}/admin/resources/libreoffice/`);
+    await pageA.locator('[data-field=summary]').fill('A 标签页未保存简介');
+
+    const [pageB] = await Promise.all([
+      context.waitForEvent('page'),
+      pageA.evaluate(() => { window.open(location.href, '_blank'); }),
+    ]);
+    pageB.on('dialog', (dialog) => dialog.accept());
+    await pageB.waitForLoadState('load');
+    await pageB.locator('[data-field=summary]').fill('B 标签页未保存输入');
+    const keysBefore = await pageA.evaluate(() => Object.keys(localStorage).filter((key) => key.includes(':resource:libreoffice')));
+    assert.equal(keysBefore.length, 2, '两个标签页必须各有一份备份（即使 opener 复制了会话存储）');
+
+    await Promise.all([pageB.waitForEvent('framenavigated'), pageB.getByRole('button', { name: '保存草稿', exact: true }).click()]);
+    const keysAfter = await pageA.evaluate(() => Object.keys(localStorage).filter((key) => key.includes(':resource:libreoffice')));
+    assert.equal(keysAfter.length, 1, 'B 保存后不能删掉 A 的备份');
+    const kept = await pageA.evaluate((keys) => keys.map((key) => localStorage.getItem(key) ?? '').join(' '), keysAfter);
+    assert.match(kept, /A 标签页未保存简介/);
+  } finally { await context.close(); }
+});
+
+test('升级前的旧格式备份仍可读取并迁移到会话键', async () => {
+  const context = await browser.newContext();
+  try {
+    const page = await context.newPage();
+    page.on('dialog', (dialog) => dialog.accept());
+    await login(page, 'rootadmin', 'root-password-123');
+    await page.goto(`${base}/admin/resources/inkscape/`);
+    await page.locator('[data-field=title]').fill('旧格式备份里的标题');
+    const legacy = await page.evaluate(() => {
+      const key = Object.keys(localStorage).find((item) => item.includes(':resource:inkscape'));
+      if (!key) return null;
+      const raw = localStorage.getItem(key);
+      const baseKey = key.split(':').slice(0, -1).join(':');
+      localStorage.setItem(baseKey, raw);
+      localStorage.removeItem(key);
+      return baseKey;
+    });
+    assert.ok(legacy, '应先有当前会话的备份用于构造旧键');
+    await page.reload();
+    assert.equal(await page.locator('.draft-restore').isVisible(), true, '旧格式备份不能被忽略');
+    assert.equal(await page.getByRole('button', { name: '恢复本地输入' }).isDisabled(), false);
+    await page.getByRole('button', { name: '恢复本地输入' }).click();
+    assert.equal(await page.locator('[data-field=title]').inputValue(), '旧格式备份里的标题');
+    const state = await page.evaluate((legacyKey) => ({
+      legacyPresent: localStorage.getItem(legacyKey) !== null,
+      sessionKeys: Object.keys(localStorage).filter((key) => key.includes(':resource:inkscape')).length,
+    }), legacy);
+    assert.equal(state.legacyPresent, false, '旧键应被迁移而不是继续残留');
+    assert.ok(state.sessionKeys >= 1);
+  } finally { await context.close(); }
+});
+
+test('最新备份等于服务器内容时不遮挡更早的分歧备份', async () => {
+  const context = await browser.newContext();
+  try {
+    const pageA = await context.newPage();
+    pageA.on('dialog', (dialog) => dialog.accept());
+    await login(pageA, 'rootadmin', 'root-password-123');
+    await pageA.goto(`${base}/admin/resources/gimp/`);
+    await pageA.locator('[data-field=title]').fill('较早的分歧内容');
+
+    const pageB = await context.newPage();
+    await pageB.goto(`${base}/admin/resources/gimp/`);
+    await pageB.locator('[data-field=title]').fill('后来的内容');
+    // 模拟"服务器其实保存成功、但浏览器没收到成功响应"：直接发请求，不触发 draft-saved 清理。
+    await pageB.evaluate(async () => {
+      const form = document.querySelector('[data-resource-editor]');
+      const resource = JSON.parse(form.querySelector('[name=resource]').value);
+      resource.title = '后来的内容';
+      const body = new FormData(form);
+      body.set('resource', JSON.stringify(resource));
+      await fetch('/api/manage/', { method: 'POST', body, headers: { Accept: 'application/json' } });
+    });
+
+    const pageC = await context.newPage();
+    await pageC.goto(`${base}/admin/resources/gimp/`);
+    assert.equal(await pageC.locator('[data-field=title]').inputValue(), '后来的内容');
+    assert.equal(await pageC.locator('.draft-restore').isVisible(), true, '更早的分歧备份必须仍可恢复');
+    await pageC.getByRole('button', { name: '查看待合并内容' }).click();
+    assert.match(await pageC.locator('[data-draft-content]').inputValue(), /较早的分歧内容/);
+  } finally { await context.close(); }
+});
