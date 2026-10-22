@@ -564,10 +564,22 @@ test('指南恢复包含关联资源；本地输入按账户与条目隔离，�
     await page.locator('[data-field=summary]').fill('编辑者隔离测试草稿');
     const accounts = await page.evaluate(() => new Set(Object.keys(localStorage).filter((key) => key.startsWith('sanjiang:draft:')).map((key) => key.split(':')[3])).size);
     assert.equal(accounts, 2);
-    await page.evaluate(() => { for (const key of Object.keys(localStorage)) if (key.startsWith('sanjiang:draft:')) { const value = JSON.parse(localStorage.getItem(key)); value.savedAt = Date.now() - 8 * 86400000; localStorage.setItem(key, JSON.stringify(value)); } });
-    // Closing bypasses beforeunload's final backup, preserving the expiry fixture.
+    // Close the editor before ageing backups: closing a focused field can fire
+    // change and refresh savedAt, even when beforeunload is bypassed.
     await page.close();
     const reopened = await context.newPage();
+    await reopened.goto(`${base}/`);
+    const expiredCount = await reopened.evaluate(() => {
+      const keys = Object.keys(localStorage).filter((key) => key.startsWith('sanjiang:draft:'));
+      const savedAt = Date.now() - 8 * 86400000;
+      for (const key of keys) {
+        const value = JSON.parse(localStorage.getItem(key));
+        value.savedAt = savedAt;
+        localStorage.setItem(key, JSON.stringify(value));
+      }
+      return keys.length;
+    });
+    assert.ok(expiredCount > 0, '应有待验证清理的过期备份');
     await reopened.goto(`${base}/admin/resources/zotero/`);
     assert.equal(await reopened.locator('.draft-restore').isVisible(), false);
     assert.equal(await reopened.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith('sanjiang:draft:')).length), 0);
