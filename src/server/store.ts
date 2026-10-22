@@ -8,7 +8,7 @@ import { isReservedIdentifier, MAX_IDENTIFIER_LENGTH, RESERVED_IDENTIFIER_MESSAG
 export type { Resource } from '../lib/resource-schema.ts';
 export type { Guide } from '../lib/guide-schema.ts';
 export type Role = 'admin' | 'editor';
-export interface User { id: number; username: string; role: Role; active: boolean }
+export interface User { id: number; username: string; role: Role; active: boolean; version: number }
 /** uid 是实体的不可复用身份：即使同 ID 被删除后重建，uid 也不会相同。 */
 /** 停用状态独立于草稿/发布快照：它决定"公开展示与否"，且必须立即生效。 */
 export interface ResourceLifecycle { discontinuedAt: string | null; reason: string; replacedBy: string | null }
@@ -20,7 +20,7 @@ export interface ManagedGuide { slug: string; uid: string; draft: Guide; publish
 export interface Report { id: number; resourceId: string | null; revisionId: number | null; kind: string; title: string; body: string; status: 'new' | 'processing' | 'resolved'; note: string; version: number; createdAt: string; announceTitle: string | null; announceBody: string | null; announcedAt: string | null }
 export interface AuditEntry { id: number; actor: string; action: string; target: string; createdAt: string }
 type Row = Record<string, unknown>;
-function user(row: Row): User { return { id: Number(row.id), username: String(row.username), role: row.role as Role, active: Boolean(row.active) }; }
+function user(row: Row): User { return { id: Number(row.id), username: String(row.username), role: row.role as Role, active: Boolean(row.active), version: Number(row.version ?? 1) }; }
 function newUid(): string { return randomBytes(8).toString('hex'); }
 /**
  * 新条目的起始版本号：同名条目被彻底删除过就接着墓碑继续编号。
@@ -75,7 +75,7 @@ export function listDeletedResources(): ManagedResource[] { return database().pr
 export function findManagedResource(id: string): ManagedResource | undefined {
   const row = database().prepare('SELECT * FROM resources WHERE id=?').get(id); return row ? managed(row) : undefined;
 }
-export function listUsers(): User[] { return database().prepare('SELECT id,username,role,active FROM users ORDER BY id').all().map(user); }
+export function listUsers(): User[] { return database().prepare('SELECT id,username,role,active,version FROM users ORDER BY id').all().map(user); }
 export function listReports(): Report[] {
   return database().prepare('SELECT * FROM reports ORDER BY id DESC').all().map((r) => ({ id: Number(r.id), resourceId: r.resource_id === null ? null : String(r.resource_id), revisionId: r.revision_id === null || r.revision_id === undefined ? null : Number(r.revision_id), kind: String(r.kind), title: String(r.title), body: String(r.body), status: r.status as Report['status'], note: String(r.note), version: Number(r.version ?? 1), createdAt: String(r.created_at), announceTitle: r.announce_title ? String(r.announce_title) : null, announceBody: r.announce_body ? String(r.announce_body) : null, announcedAt: r.announced_at ? String(r.announced_at) : null }));
 }
@@ -83,7 +83,7 @@ export function listAudit(): AuditEntry[] {
   return database().prepare('SELECT * FROM audit ORDER BY id DESC LIMIT 1000').all().map((r) => ({ id: Number(r.id), actor: String(r.actor), action: String(r.action), target: String(r.target), createdAt: String(r.created_at) }));
 }
 function actorUser(actor: User, adminOnly = false): User {
-  const row = database().prepare('SELECT id,username,role,active FROM users WHERE id=?').get(actor.id);
+  const row = database().prepare('SELECT id,username,role,active,version FROM users WHERE id=?').get(actor.id);
   if (!row || !row.active) fail(401, '登录已失效，请重新登录');
   const current = user(row);
   if (adminOnly && current.role !== 'admin') fail(403, '此操作仅限管理员');
@@ -251,7 +251,7 @@ function insertUser(username: string, password: string, role: Role): User {
   const db = database();
   if (db.prepare('SELECT 1 FROM users WHERE username=?').get(username)) fail(409, '用户名已存在');
   const result = db.prepare('INSERT INTO users (username,password_hash,role,active) VALUES (?,?,?,1)').run(username, hashPassword(password), role);
-  return { id: Number(result.lastInsertRowid), username, role, active: true };
+  return { id: Number(result.lastInsertRowid), username, role, active: true, version: 1 };
 }
 /** Explicit operator provisioning only; never called during first database initialization. */
 export function createInitialAdmin(username: string, password: string): User {
@@ -270,16 +270,21 @@ function protectLastAdmin(id: number, role: Role, active: boolean): void {
     if (Number(count.total) <= 1) fail(409, '不能停用、删除或降级最后一位有效管理员');
   }
 }
-export function updateUser(actor: User, id: number, role: string, active: boolean, password = ''): void {
+export function updateUser(actor: User, id: number, version: number | null, role: string, active: boolean, password = ''): void {
   const nextRole = roleValue(role);
   const passwordHash = password ? hashPassword(password) : null;
   transaction((db) => {
     const current = actorUser(actor, true);
+    const expected = requiredVersion(version);
+    const previous = db.prepare('SELECT role,active,version FROM users WHERE id=?').get(id);
+    if (!previous) fail(404, '用户不存在');
+    if (Number(previous.version) !== expected) fail(409, '该账户已被其他维护者修改；请重新加载人员与权限页面后再提交');
     protectLastAdmin(id, nextRole, active);
-    const previous = db.prepare('SELECT role,active FROM users WHERE id=?').get(id)!;
-    db.prepare('UPDATE users SET role=?,active=?,password_hash=COALESCE(?,password_hash) WHERE id=?').run(nextRole, active ? 1 : 0, passwordHash, id);
+    db.prepare('UPDATE users SET role=?,active=?,password_hash=COALESCE(?,password_hash),version=version+1 WHERE id=?')
+      .run(nextRole, active ? 1 : 0, passwordHash, id);
     if (passwordHash || previous.role !== nextRole || Boolean(previous.active) !== active) db.prepare('DELETE FROM sessions WHERE user_id=?').run(id);
-    audit(current.username, 'update-user', String(id));
+    const changes = [`${previous.role}->${nextRole}`, `active ${Number(previous.active)}->${active ? 1 : 0}`, ...(passwordHash ? ['password reset'] : [])];
+    audit(current.username, 'update-user', `${id} (${changes.join(', ')})`);
   });
 }
 export function deleteUser(actor: User, id: number): void {
@@ -340,17 +345,22 @@ export function updateReport(actor: User, id: number, status: string, note: stri
   });
 }
 
-export interface Announcement { id: number; title: string; body: string; publishedAt: string; resourceId: string | null; resourceTitle: string | null; kind: string }
-/** 前台“处理记录”：只暴露维护者写的公告字段，绝不返回反馈正文与内部备注。 */
+export interface Announcement { id: number; title: string; body: string; publishedAt: string; resourceId: string | null; resourceTitle: string | null; resourceRemoved: boolean; kind: string }
+/**
+ * 前台“处理记录”：只暴露维护者写的公告字段，绝不返回反馈正文与内部备注。
+ * 资源链接只在该资源仍有公开快照时输出；撤回/软删除/彻底删除后保留公告正文，
+ * 但不把读者送到 404。停用资源仍有解释页，因此继续可链接。
+ */
 export function listAnnouncements(limit = 20): Announcement[] {
   const rows = database().prepare(`SELECT id,kind,announce_title,announce_body,announced_at,resource_id FROM reports
     WHERE announced_at IS NOT NULL AND announce_title IS NOT NULL ORDER BY announced_at DESC, id DESC LIMIT ?`).all(Math.max(1, Math.min(100, limit)));
   return rows.map((row) => {
-    const resourceId = row.resource_id === null || row.resource_id === undefined ? null : String(row.resource_id);
+    const originalId = row.resource_id === null || row.resource_id === undefined ? null : String(row.resource_id);
+    const resource = originalId ? findPublishedResource(originalId) : undefined;
     return {
       id: Number(row.id), kind: String(row.kind), title: String(row.announce_title), body: String(row.announce_body ?? ''),
-      publishedAt: String(row.announced_at), resourceId,
-      resourceTitle: resourceId ? findPublishedResource(resourceId)?.title ?? null : null,
+      publishedAt: String(row.announced_at), resourceId: resource ? originalId : null,
+      resourceTitle: resource?.title ?? null, resourceRemoved: Boolean(originalId && !resource),
     };
   });
 }
@@ -398,7 +408,7 @@ export function checkGuideResources(db: ReturnType<typeof database>, ids: string
     if (deleted && !existing.has(id)) fail(400, `关联资源在回收站中：${id}；请先恢复该资源再建立关联`);
   }
 }
-export function saveGuide(actor: User, input: unknown, version: number | null): ManagedGuide {
+export function saveGuide(actor: User, input: unknown, version: number | null, dropMissing = false): ManagedGuide {
   const parsed = GuideSchema.safeParse(input);
   if (!parsed.success) fail(400, `指南校验失败：${parsed.error.issues.map((issue) => `${issue.path.join('.')} ${issue.message}`).join('；')}`);
   const guide = parsed.data;
@@ -406,8 +416,17 @@ export function saveGuide(actor: User, input: unknown, version: number | null): 
   return transaction((db) => {
     const current = actorUser(actor);
     const previous = findManagedGuide(guide.slug);
-    checkGuideResources(db, guide.resources, previous);
     if (previous?.deletedAt) fail(409, '该指南在回收站中，请先恢复后再编辑');
+    // 彻底删除过的资源不会出现在编辑页复选框里；如果普通保存直接把它当成“取消勾选”，
+    // 关联就会在维护者不知情时消失。必须由调用方显式同意移除。
+    const missing = previous
+      ? previous.draft.resources.filter((id) => !db.prepare('SELECT 1 FROM resources WHERE id=?').get(id))
+      : [];
+    if (missing.length > 0 && !dropMissing) {
+      fail(409, `当前草稿关联的资源已被彻底删除：${missing.slice(0, 6).join('、')}${missing.length > 6 ? ` 等 ${missing.length} 个` : ''}；请勾选“保存时移除失效关联”后再保存`);
+    }
+    if (missing.length > 0) guide.resources = guide.resources.filter((id) => !missing.includes(id));
+    checkGuideResources(db, guide.resources, previous);
     const now = new Date().toISOString();
     if (previous) {
       guideVersion(guide.slug, version);
@@ -419,7 +438,7 @@ export function saveGuide(actor: User, input: unknown, version: number | null): 
     }
     const saved = findManagedGuide(guide.slug)!;
     recordRevision(db, 'guide', guide.slug, saved.version, guide, current.username, 'save');
-    audit(current.username, 'save-guide', guide.slug);
+    audit(current.username, 'save-guide', missing.length > 0 ? `${guide.slug} (移除失效关联 ${missing.join(',')})` : guide.slug);
     return saved;
   });
 }
@@ -636,13 +655,48 @@ export function restoreTrashResource(actor: User, id: string): void {
     audit(current.username, 'restore-trash', id);
   });
 }
+export interface GuideReference {
+  slug: string;
+  title: string;
+  deleted: boolean;
+  /** 引用出现在当前草稿、公开快照，或两者都有。 */
+  locations: ('draft' | 'published')[];
+}
+/** 指南 JSON 里的资源引用；purge 前用它阻止产生不可恢复的悬空关联。 */
+export function guideReferencesToResource(id: string): GuideReference[] {
+  const rows = database().prepare('SELECT slug,draft,published,deleted_at FROM guides ORDER BY slug').all();
+  const references: GuideReference[] = [];
+  for (const row of rows) {
+    const locations: ('draft' | 'published')[] = [];
+    for (const field of ['draft', 'published'] as const) {
+      if (!row[field]) continue;
+      try {
+        const data = JSON.parse(String(row[field]));
+        if (Array.isArray(data.resources) && data.resources.includes(id)) locations.push(field);
+      } catch { /* a legacy malformed snapshot cannot reference anything reliably */ }
+    }
+    if (locations.length === 0) continue;
+    let title = String(row.slug);
+    try { title = String(JSON.parse(String(row.draft)).title ?? title); } catch { /* keep slug */ }
+    references.push({ slug: String(row.slug), title, deleted: Boolean(row.deleted_at), locations });
+  }
+  return references;
+}
 export function purgeTrashResource(actor: User, id: string): void {
   transaction((db) => {
     const current = actorUser(actor, true);
-    deletedResource(id);
+    const item = deletedResource(id);
+    const references = guideReferencesToResource(id);
+    if (references.length > 0) {
+      const list = references.map((reference) => {
+        const where = reference.locations.map((location) => location === 'draft' ? '草稿' : '公开版本').join('、');
+        return `${reference.title}（/${reference.slug}，${where}${reference.deleted ? '，指南在回收站' : ''}）`;
+      }).join('；');
+      fail(409, `不能彻底删除：该资源仍被这些指南引用：${list}。彻底删除不会自动改写指南内容；请先在指南中移除关联（必要时重新发布），再重试`);
+    }
     db.prepare('DELETE FROM revisions WHERE entity_kind=? AND entity_id=?').run('resource', id);
     db.prepare('DELETE FROM link_checks WHERE resource_id=?').run(id);
-    writeVersionTombstone(db, 'resource', id, deletedResource(id).version);
+    writeVersionTombstone(db, 'resource', id, item.version);
     db.prepare('DELETE FROM resources WHERE id=?').run(id);
     audit(current.username, 'purge-resource', id);
   });

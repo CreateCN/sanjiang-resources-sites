@@ -19,7 +19,7 @@ const jsonLd = [
     {announcements.length === 0
       ? <section class="panel empty"><h2>还没有公开的处理记录</h2><p>反馈仍在后台逐条处理；处理完成后，维护者可以选择把结果写在这里。</p><a class="text-link" href="/feedback/">提交一条反馈</a></section>
       : <ul class="update-list update-list-page">
-          {announcements.map((item) => <li class="update-item"><div class="update-meta"><time datetime={item.publishedAt}>{item.publishedAt.slice(0, 10)}</time><span>{item.kind}</span></div><h2>{item.title}</h2>{item.body && <p>{item.body}</p>}{item.resourceId && <a class="text-link" href={`/resources/${item.resourceId}/`}>{item.resourceTitle ?? '查看相关资源'} <span aria-hidden="true">↗</span></a>}</li>)}
+          {announcements.map((item) => <li class="update-item"><div class="update-meta"><time datetime={item.publishedAt}>{item.publishedAt.slice(0, 10)}</time><span>{item.kind}</span></div><h2>{item.title}</h2>{item.body && <p>{item.body}</p>}{item.resourceId && <a class="text-link" href={`/resources/${item.resourceId}/`}>{item.resourceTitle ?? '查看相关资源'} <span aria-hidden="true">↗</span></a>}{item.resourceRemoved && <span class="muted">相关资源已不再公开展示</span>}</li>)}
         </ul>}
     <div class="guide-actions"><a class="portal-button" href="/feedback/">报告问题或推荐资源</a><a class="text-link" href="/#catalog">回到资源目录</a></div>
   </div>

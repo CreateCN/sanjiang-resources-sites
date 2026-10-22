@@ -285,14 +285,22 @@ cron 等价写法（若不想用 timer）：
 # 手动备份（用登录 shell 加载环境变量，避免 xargs 拆行）
 sudo -u sanjiang bash -lc 'set -a; . /etc/sanjiang/sanjiang.env; set +a; cd /srv/sanjiang && node scripts/backup-db.mjs'
 
-# 恢复：停服 → 校验 → 替换 → 启动 → 冒烟
+# 恢复：先停止应用、定时任务和所有手动脚本，再运行离线恢复工具
 sudo systemctl stop sanjiang
-ls -l /var/backups/sanjiang/
-sudo -u sanjiang sqlite3 /var/backups/sanjiang/site-YYYY-MM-DD.sqlite 'PRAGMA integrity_check;'
-sudo -u sanjiang cp /var/backups/sanjiang/site-YYYY-MM-DD.sqlite /srv/sanjiang/data/site.sqlite
+# 若配置了 backup / links / cleanup 的 timer，也要停止；名字以实际 unit 为准：
+sudo systemctl stop sanjiang-backup.timer sanjiang-links.timer sanjiang-cleanup.timer 2>/dev/null || true
+# 用同一用户运行，工具才能检查该用户启动的进程；可选再用 lsof 人工确认没有残留句柄。
+sudo -u sanjiang lsof /srv/sanjiang/data/site.sqlite* 2>/dev/null || true
+
+sudo -u sanjiang bash -lc 'set -a; . /etc/sanjiang/sanjiang.env; set +a; cd /srv/sanjiang && \
+  node scripts/restore-db.mjs --backup /var/backups/sanjiang/site-YYYY-MM-DD.sqlite --yes'
+
 sudo systemctl start sanjiang
+sudo systemctl start sanjiang-backup.timer sanjiang-links.timer sanjiang-cleanup.timer 2>/dev/null || true
 curl -fsS http://127.0.0.1:4321/api/health/
 ```
+
+工具会先校验备份的完整性、必要表和 schema 兼容性，把当前主库与 `-wal`/`-shm` 保全到 `site.sqlite.restore-*`，再删除旧 sidecar、替换主库并复查完整性与表计数；替换后复查失败会尝试回滚。不要直接 `cp` 覆盖主库。工具只能检测同一 PID 命名空间内的进程，其他机器或共享卷上的使用者必须人工确认已停止。
 
 升级（数据库迁移在启动时自动按序执行，无需手工迁移）：
 

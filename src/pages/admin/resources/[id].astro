@@ -36,7 +36,7 @@ const valueOf = (key: string) => { const value = (resource as unknown as Record<
 ---
 <AdminLayout title={isNew ? '新增资源草稿' : `编辑：${resource.title}`} session={session}>
   <div class="section-links"><a href="/admin/resources/">返回资源列表</a>{entry && <a href={`/admin/preview/resources/${entry.id}/`} target="_blank" rel="noopener noreferrer">预览整页草稿 ↗</a>}{entry?.published && <a href={`/resources/${entry.id}/`} target="_blank" rel="noopener noreferrer">查看当前公开版本 ↗</a>}</div>
-  <div class="notice"><strong>{entry?.published ? '当前资源已公开，本次保存仅更新草稿。' : '草稿尚未公开。'}</strong><p>只有管理员点击“发布当前草稿”，前台才会更新。{entry ? `当前编辑版本 v${entry.version}；其他人保存后，你需要重新载入，不能覆盖新版本。` : '填写完成后先保存草稿，再检查和发布。'}</p></div>
+  <div class="notice"><strong>{entry?.lifecycle.discontinuedAt ? (entry.published ? '当前资源已停用，公开快照仅用于解释页。' : '当前资源已停用，且没有公开快照。') : entry?.published ? '当前资源已公开，本次保存仅更新草稿。' : '草稿尚未公开。'}</strong><p>只有管理员点击“发布当前草稿”，前台才会更新。{entry ? `当前编辑版本 v${entry.version}；其他人保存后，你需要重新载入，不能覆盖新版本。` : '填写完成后先保存草稿，再检查和发布。'}</p></div>
   <DraftRecovery userId={session.user.id} kind="resource" entityId={Astro.params.id ?? 'new'} />
   <form class="panel" action="/api/manage/" method="post" data-admin-form data-resource-editor>
     <input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="save-resource"/><input type="hidden" name="version" value={entry?.version ?? ''}/><input type="hidden" name="resource" value={JSON.stringify(resource)}/>
@@ -62,7 +62,9 @@ const valueOf = (key: string) => { const value = (resource as unknown as Record<
           <p><span class="badge">已停止展示</span> 自 {entry.lifecycle.discontinuedAt.slice(0, 10)} 起不再公开，详情页仍可访问。</p>
           {entry.lifecycle.reason && <p class="muted">停用说明：{entry.lifecycle.reason}</p>}
           {entry.lifecycle.replacedBy && <p>替代资源：<a href={`/admin/resources/${encodeURIComponent(entry.lifecycle.replacedBy)}/`}>{entry.lifecycle.replacedBy}</a></p>}
-          <form action="/api/manage/" method="post" data-admin-form><input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="reactivate-resource"/><input type="hidden" name="id" value={entry.id}/><input type="hidden" name="version" value={entry.version}/><div class="actions"><button type="submit">恢复展示</button><span class="muted">恢复后立即回到公开目录，公开快照保持不变。</span></div><p role="status" aria-live="polite"></p></form>
+          {entry.published
+            ? <form action="/api/manage/" method="post" data-admin-form><input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="reactivate-resource"/><input type="hidden" name="id" value={entry.id}/><input type="hidden" name="version" value={entry.version}/><div class="actions"><button type="submit">恢复展示</button><span class="muted">恢复后立即回到公开目录，公开快照保持不变。</span></div><p role="status" aria-live="polite"></p></form>
+            : <p class="muted">公开版本已撤回，当前没有可恢复的公开快照；解释页也不可访问。请先用上方“发布当前草稿”，再回来使用“恢复展示”。</p>}
         </>
       : entry.published
         ? <form action="/api/manage/" method="post" data-admin-form><input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="discontinue-resource"/><input type="hidden" name="id" value={entry.id}/><input type="hidden" name="version" value={entry.version}/><div class="form-grid"><div class="field"><label for="replaced-by">替代资源（可选）</label><select id="replaced-by" name="replacedBy"><option value="">暂时没有替代资源</option>{alternatives.map((item) => <option value={item.id}>{item.draft.title}</option>)}</select><small>只显示仍在展示的已发布资源。</small></div><div class="field full"><label for="discontinue-reason">停用说明（会显示在详情页）</label><textarea id="discontinue-reason" name="reason" maxlength="300" placeholder="例如：该学生权益已于 2026 年 9 月停止申请，改由 XX 提供。"></textarea></div></div><div class="actions"><button type="submit" class="danger">停止展示（保留解释页）</button></div><p role="status" aria-live="polite"></p></form>

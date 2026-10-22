@@ -134,4 +134,13 @@ export const migrations: Migration[] = [
       db.exec('CREATE INDEX IF NOT EXISTS reports_announced ON reports(announced_at DESC)');
     },
   },
+  {
+    // 人员表单是"整行覆盖"：两个管理员同时打开页面时，后提交的旧状态会悄悄撤销
+    // 停用/降级。版本号让每次提交只作用于页面上看到的那一版；改密与角色变更仍在
+    // 同一事务内撤销该账户的现有会话。
+    id: '008-user-version',
+    up: (db) => {
+      if (!hasColumn(db, 'users', 'version')) db.exec('ALTER TABLE users ADD COLUMN version INTEGER NOT NULL DEFAULT 1');
+    },
+  },
 ];

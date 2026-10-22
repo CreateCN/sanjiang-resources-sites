@@ -75,11 +75,12 @@ docker compose exec app node scripts/create-admin.mjs
 | `npm run build` | 类型检查并构建 `dist/` |
 | `npm start` | 生产模式启动 `dist/server/entry.mjs` |
 | `npm run check` | Astro / TypeScript 检查 |
-| `npm test` | 内容、后端、Markdown、链接检查、备份等 110 项 |
+| `npm test` | 内容、后端、Markdown、链接检查、备份、恢复与迁移等 120 项 |
 | `npm run test:admin` | 后台端到端 28 项（自动临时数据库与端口） |
 | `npm run test:browser` | 前台只读交互 9 项（需先启动 dev，且本机有 Chrome） |
 | `npm run db:admin` | 创建管理员 |
 | `npm run db:backup` | 一致性备份 |
+| `npm run db:restore` | 离线恢复（先停止所有数据库使用者，见“备份与恢复”） |
 | `npm run links:check` | 批量检查已发布资源链接（手动/定时均可） |
 
 浏览器测试默认使用 `/usr/bin/google-chrome`，可通过 `CHROME_PATH`、`TEST_BASE_URL` 覆盖。CI 在 Node 24 上执行 check → test → build 与生产服务器冒烟，不运行浏览器测试。
@@ -112,7 +113,16 @@ docker compose exec app node scripts/backup-db.mjs   # 容器
 
 备份使用 `VACUUM INTO`，随后执行 `PRAGMA integrity_check` 并输出资源/指南/账户/反馈/版本计数，文件权限 `0600`。
 
-恢复流程：停应用 → 校验备份完整性 → 用备份替换 `DATABASE_PATH` → 启动 → 访问 `/api/health/`、首页与后台登录做冒烟检查。建议每季度演练一次。
+恢复必须离线进行：先停止应用、`maintenance`/定时任务和所有手动数据库脚本，并确认没有进程持有 `DATABASE_PATH` 或它的 `-wal`/`-shm`。不要直接用 `cp` 覆盖主库——遗留 WAL 会把备份后的写入带回，或造成索引损坏。
+
+```bash
+npm run db:restore -- --backup ./backups/site-YYYY-MM-DD.sqlite --yes
+# Docker：docker compose stop app maintenance
+#        docker compose run --rm --no-deps app node scripts/restore-db.mjs \
+#          --backup /app/backups/site-YYYY-MM-DD.sqlite --yes
+```
+
+工具会先校验备份完整性、必要表和 schema 兼容性；把当前主库及 sidecar 保全到 `site.sqlite.restore-*`；删除旧 `-wal`/`-shm` 后原子替换，并在恢复后复查完整性与表计数。失败时退出非零并保留诊断目录，替换后的复查失败会尝试回滚。工具只能检查同一 PID 命名空间内的进程；Docker 跨容器和共享卷的前置条件必须人工确认。恢复后再做 `/api/health/`、首页与后台登录冒烟检查。建议每季度演练一次。
 
 备份含密码哈希、反馈正文与版本历史，**不要提交到仓库**；`backups/` 已忽略。
 
@@ -150,7 +160,7 @@ src/
 ├── pages/             公开页、后台页、API、sitemap/robots
 ├── server/            SQLite、认证、权限、设置、链接检查、日志、迁移
 └── styles/            公开站与后台样式
-scripts/               建管理员、备份、批量链接检查
+scripts/               建管理员、备份/恢复、批量链接检查、维护
 tests/                 Node、后台端到端、浏览器测试
 docs/                  功能清单与 Agent 约定
 ```

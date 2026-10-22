@@ -55,8 +55,8 @@ export function saveSettings(actor: User, input: unknown): SiteSettings {
     const row = db.prepare('SELECT role,active FROM users WHERE id=?').get(actor.id);
     if (!row || !row.active) fail(401, '登录已失效，请重新登录');
     if (row.role !== 'admin') fail(403, '此操作仅限管理员');
-    if (parsed.data.featuredResourceId && !db.prepare('SELECT 1 FROM resources WHERE id=? AND deleted_at IS NULL').get(parsed.data.featuredResourceId)) {
-      fail(400, '首页精选资源不存在或在回收站中');
+    if (parsed.data.featuredResourceId && !db.prepare('SELECT 1 FROM resources WHERE id=? AND published IS NOT NULL AND deleted_at IS NULL AND discontinued_at IS NULL').get(parsed.data.featuredResourceId)) {
+      fail(400, '首页精选资源不存在，或未发布、在回收站中、已停用；只有仍在公开目录中的资源可以设为精选');
     }
     const categories = new Set(db.prepare('SELECT id FROM categories').all().map((item) => String(item.id)));
     for (const id of Object.keys(parsed.data.scenarios)) if (!categories.has(id)) fail(400, `分类不存在：${id}`);

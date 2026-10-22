@@ -14,7 +14,7 @@
 | ✅ | 数据时效 | 详情页显示“资料核对于 X 天前”；超期提示“可能已变化，使用前请复核”，不判定失效 | `src/lib/freshness.ts` |
 | ✅ | 列表时效与门槛 | 目录与场景页的状态列复用同一套 180/90 天规则：已核对但超期显示“核对已过期·建议使用前复核”，待核对不误报；场景页同时显示使用门槛 | `src/pages/index.astro`、`src/pages/scenarios/[id].astro` |
 | ✅ | 停用解释页 | 停用资源移出目录/搜索/sitemap 并 `noindex`，详情页仍可访问，说明停用日期、原因与替代资源；旧链接与指南引用不会 404 | `src/server/store.ts`、`src/components/ResourceDetail.astro` |
-| ✅ | 处理记录公告 | 已解决反馈可由维护者另写公告（标题/说明），首页“反馈已处理”与 `/updates/` 展示；不公开反馈正文与内部备注 | `src/pages/updates.astro` |
+| ✅ | 处理记录公告 | 已解决反馈可由维护者另写公告（标题/说明），首页“反馈已处理”与 `/updates/` 展示；不公开反馈正文与内部备注；关联资源撤回/删除后保留公告正文但不再输出 404 链接，停用解释页仍可链接 | `src/pages/updates.astro` |
 | ✅ | 使用指南 | `/guides/` 与 `/guides/<slug>/`，Markdown 正文，可关联资源；资源详情反向展示相关指南 | `src/pages/guides/` |
 | ✅ | 场景落地页 | `/scenarios/<分类>/`：场景说明、该分类资源、相关指南、切换场景 | `src/pages/scenarios/[id].astro` |
 | ✅ | 匿名反馈 | 无需登录；蜜罐、限流、同源校验；成功后才显示回执；支持“链接失效 / 版权与下架”等类型 | `src/pages/feedback.astro` |
@@ -36,15 +36,15 @@
 | 状态 | 功能 | 说明 | 位置 |
 |---|---|---|---|
 | ✅ | Markdown 字段 | 简介/许可/资格/限制/步骤按内联 Markdown；新增 `details` 长文字段按完整 Markdown | `src/lib/markdown.ts` |
-| ✅ | Markdown 安全 | 禁用原始 HTML；拒绝 `javascript:`/`data:` 链接；外链加 `target`/`rel` | 同上 |
+| ✅ | Markdown 安全 | 禁用原始 HTML；拒绝 `javascript:`/`data:` 链接；外链加 `target`/`rel`；图片只允许规范化后仍位于 `/images/` 的站内路径，远程、协议相对、`data:` 与路径绕过不生成图片元素；正文、内联字段与后台预览共用同一规则 | 同上 |
 | ✅ | 指南编辑 | 标题、摘要、正文、关联资源；草稿/发布/撤回 | `src/pages/admin/guides/` |
 | ✅ | 草稿与发布快照 | 公开站只读已发布快照；编辑者保存只改草稿，管理员发布后生效 | `src/server/store.ts` |
 | ✅ | 版本历史 | 保存/发布/撤回/恢复均留快照，保留最近 50 条；逐字段对比；恢复只改草稿；缺分类可选替代分类，缺资源关联需显式勾选移除才恢复；版本号永不复用（删除重建也不会回到 v1） | `src/components/RevisionHistory.astro` |
 | ✅ | 草稿整页预览 | 登录后按真实前台样式预览，`noindex`、不写快照、不计浏览 | `src/pages/admin/preview/` |
 | ✅ | 未保存输入备份 | 每次加载生成独立归属键（`window.open` 带 opener 也不会共用），兼容旧格式键并自动迁移；保存只清理自己的（或内容完全相同的）备份；多份分歧备份可逐份查看/恢复，最新备份与服务器相同不遮挡更早内容 | `src/scripts/draft-recovery.ts` |
-| ✅ | 回收站 | 软删除；前台/sitemap 立即消失；恢复为草稿；彻底删除清历史 | `src/pages/admin/trash.astro` |
+| ✅ | 回收站 | 软删除；前台/sitemap 立即消失；恢复为草稿；彻底删除清历史；资源仍被指南草稿或公开快照引用时拒绝彻底删除并列出指南，已有悬空关联必须在编辑页显式勾选移除 | `src/pages/admin/trash.astro`、`src/server/store.ts` |
 | ✅ | 导入导出 | 导出 JSON（草稿/发布快照/分类/设置，设置只含仍存在的分类）；导入**必须**先预检，预检计划冻结各条目身份（版本 + uid）、内容摘要与当前设置摘要，期间被人保存/删除重建/改设置则整批取消；失败条目与原因保留在结果页（最近 20 次）；只写草稿，首页设置需显式勾选才恢复 | `src/lib/importer.ts` |
-| ✅ | 首页编排 | 精选资源与场景文案存 `settings` 表，管理员可改，保存即时生效 | `src/pages/admin/settings.astro` |
+| ✅ | 首页编排 | 精选资源与场景文案存 `settings` 表，管理员可改，保存即时生效；精选候选与服务端校验都只接受仍在公开目录（已发布、未删除、未停用）的资源，配置不可用时不再静默换成其他资源 | `src/pages/admin/settings.astro` |
 | ✅ | 分类管理 | 稳定 ID；`all` 是保留标识（前台虚拟书架），导入同样拒绝；被草稿或发布快照引用时禁止删除 | `src/pages/admin/categories.astro` |
 | ✅ | 图片授权状态 | 资源记录 `imageRights` 与 `imageCredit`，未确认时前台提示 | `src/lib/resource-schema.ts` |
 | ◻ | 内容冲刺 | 目前 12 条资源、0 篇指南；计划先补 5 篇任务指南与 10 条资源（非代码功能） | — |
@@ -60,7 +60,8 @@
 | ✅ | 待发布队列 | 概览与公告板聚合“从未发布 / 有未发布修改”的草稿（资源与指南），显示等待天数，发布后自动消失；只做站内提示，不发外部通知 | `src/lib/notices.ts`、`src/pages/admin/index.astro` |
 | ✅ | 反馈处理与并发 | 处理反馈时可选该资源的一次快照，服务端校验归属；处理状态/备注带版本号，旧表单提交返回冲突提示，不覆盖他人备注 | `src/pages/admin/reports.astro` |
 | ✅ | 反馈公告发布 | 标记“已解决”后可勾选发布前台公告（标题 ≤120、说明 ≤600），可随时撤下；公告文案必须另写，绝不复用反馈正文 | `src/server/store.ts`、`src/pages/admin/reports.astro` |
-| ✅ | 停用与替代 | 管理员可停用已发布资源并指定替代资源与说明；停用是独立的公开可见性状态，不写入草稿快照，因此不会顺手发布未复核的草稿改动；恢复后立即回到目录 | `src/pages/admin/resources/[id].astro` |
+| ✅ | 停用与替代 | 管理员可停用已发布资源并指定替代资源与说明；停用是独立的公开可见性状态，不写入草稿快照，因此不会顺手发布未复核的草稿改动；资源列表/概览/复核队列明确标记停用，后台同时区分目录条目与公开快照；无公开快照时不显示可立即恢复的按钮并提供先发布的路径；恢复后立即回到目录 | `src/pages/admin/resources/[id].astro` |
+| ✅ | 人员表单并发 | `users.version` 乐观锁；旧人员页面提交停用/角色变更返回 409，不能重新启用已停用账户；最后一位有效管理员保护、实时权限校验与会话撤销保持不变 | `src/pages/admin/users.astro`、`src/server/migrations.ts` |
 | ✅ | 复核队列与批量复核 | 按类型到期（180/90 天）；勾选多条批量标记已核对/待核对；复核绑定页面显示的那一版，期间被改过的条目跳过并提示重新核对 | `src/pages/admin/reviews.astro` |
 | ✅ | 操作审计 | 内容、分类、人员、反馈、设置、导入等变更与审计同事务（导入按条写审计，审计失败该条一起回滚） | `src/pages/admin/audit.astro` |
 | ✅ | 数据概览 | 近 30 天浏览/外跳/指南/零结果 Top 10 | `src/pages/admin/metrics.astro` |
@@ -77,11 +78,11 @@
 |---|---|---|---|
 | ✅ | 数据库迁移 | `schema_migrations` + 顺序迁移；旧库自动补齐列 | `src/server/migrations.ts` |
 | ✅ | 备份脚本 | `VACUUM INTO` + 完整性校验 + 权限 0600 + 保留份数 | `scripts/backup-db.mjs` |
-| ✅ | 恢复流程 | README 记录：停服→校验→替换→启动→冒烟 | `README.md` |
+| ✅ | 恢复流程 | 离线恢复工具：校验备份完整性/必要表/schema → 保全当前主库与 sidecar → 删除旧 WAL/SHM → 原子替换 → 复查完整性与计数；失败回滚并保留诊断；文档明确 app、maintenance、定时任务和手动脚本全部离线 | `scripts/restore-db.mjs`、`README.md` |
 | ✅ | 健康检查 | `/api/health/` 查 `SELECT 1`，返回状态、DB、迁移版本、运行时长 | `src/server/http.ts` |
 | ✅ | 结构化日志 | 每请求一行 JSON（request id、方法、路径、状态、耗时），不记查询串/IP/UA | `src/server/log.ts` |
 | ✅ | CI | Node 24：check → test → build → 生产服务器冒烟 | `.github/workflows/ci.yml` |
-| ✅ | 测试覆盖 | `npm test` 110 项（内容/后端/Markdown/链接检查/备份）、后台端到端 28 项、浏览器 9 项；浏览器测试依赖本机 Chrome | `tests/` |
+| ✅ | 测试覆盖 | `npm test` 120 项（内容/后端/Markdown/链接检查/备份/恢复/迁移）、后台端到端 28 项、浏览器 9 项；浏览器测试依赖本机 Chrome | `tests/` |
 | ◻ | 定时链接检查 / 定时备份 | 脚本已就绪，但未内置调度；需外部 cron 或 DSH 自动化 | — |
 | ◻ | 监控与告警 | 无 uptime 监控、错误聚合或告警通道 | — |
 | ◻ | 日志轮转与集中收集 | 日志写 stdout，轮转交给 Docker/宿主 | — |

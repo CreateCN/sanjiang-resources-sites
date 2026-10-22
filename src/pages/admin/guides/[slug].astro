@@ -22,6 +22,9 @@ const candidates = [
     .filter((resource): resource is NonNullable<typeof resource> => Boolean(resource?.deletedAt))
     .map((resource) => ({ id: resource.id, title: resource.draft.title, deleted: true })),
 ];
+// 彻底删除的资源不会出现在 candidates 里。没有显式提示时，普通保存会把它们静默移除。
+const missingDraftResources = guide.resources.filter((id) => !findManagedResource(id));
+const missingPublishedResources = (entry?.published?.resources ?? []).filter((id) => !findManagedResource(id));
 ---
 <AdminLayout title={isNew ? '新建指南' : `编辑指南：${guide.title}`} session={session}>
   <div class="section-links"><a href="/admin/guides/">返回指南列表</a>{entry && <a href={`/admin/preview/guides/${entry.slug}/`} target="_blank" rel="noopener noreferrer">预览整页草稿 ↗</a>}{entry?.published && <a href={`/guides/${entry.slug}/`} target="_blank" rel="noopener noreferrer">查看当前公开版本 ↗</a>}</div>
@@ -37,6 +40,10 @@ const candidates = [
     </div>
     <div class="actions"><button type="button" class="secondary" id="guide-preview">预览正文</button><span class="muted">预览不会保存。</span></div>
     <div id="guide-preview-panel" class="panel" style="display:none;background:#f7f9f5;margin-top:18px"><h3>预览</h3><div class="markdown-body" id="guide-preview-body"></div></div>
+    {(missingDraftResources.length > 0 || missingPublishedResources.length > 0) && <div class="notice" role="alert" style="margin-top:24px"><strong>有已彻底删除的资源仍留在关联里。</strong>
+      {missingDraftResources.length > 0 && <><p>当前草稿：<strong>{missingDraftResources.join('、')}</strong>。这些资源已不存在，普通保存不会替你做决定。</p><label class="checkbox"><input type="checkbox" name="dropMissing" value="1" required/> 保存时移除这些失效关联</label><small>不勾选时服务端会拒绝保存，避免关联在维护者不知情时消失。</small></>}
+      {missingPublishedResources.length > 0 && <p>公开版本仍关联：<strong>{missingPublishedResources.join('、')}</strong>。公开页不会显示失效关联；下次发布会按当前草稿重写公开快照。</p>}
+    </div>}
     <fieldset class="panel" style="margin-top:24px;border:0;padding:20px 0 0"><legend><strong>关联资源</strong></legend><p class="muted">勾选指南中提到的资源，保存后会在详情页反向展示相关指南。标记“回收站”的资源是已有关联，在恢复前会一直保留；取消勾选即解除关联。</p><div class="form-grid">{candidates.map((resource) => <label class="checkbox"><input type="checkbox" name="resources" value={resource.id} checked={guide.resources.includes(resource.id)}/>{resource.title}{resource.deleted && <span class="badge">回收站</span>}</label>)}</div></fieldset>
     <div class="actions"><button type="submit">保存草稿</button></div><p role="status" aria-live="polite"></p>
   </form>

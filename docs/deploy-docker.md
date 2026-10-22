@@ -107,14 +107,22 @@ docker compose exec app node scripts/backup-db.mjs
 # 查看
 ls -l "${BACKUP_HOST_DIR:-./backups}"
 
-# 恢复：停 app → 校验 → 替换卷内数据库 → 启动 → 冒烟
-docker compose stop app
-docker volume ls | grep site-data                   # 确认实际卷名，通常是 <项目目录名>_site-data
-docker run --rm -v <project>_site-data:/data -v "$PWD/backups":/b alpine \
-  sh -c 'cp /b/site-YYYY-MM-DD.sqlite /data/site.sqlite && chown 1000:1000 /data/site.sqlite'
-docker compose start app
+# 恢复：先停止所有数据库使用者，再用恢复工具替换
+docker compose stop app maintenance
+docker compose ps -a                                # app / maintenance 都应为 exited
+docker ps --filter volume=<project>_site-data --format '{{.Names}}'
+# ↑ 必须没有输出；若有其他容器挂载同一数据卷，先停止它们。
+
+# 工具会校验备份、保全旧库和 sidecar、删除旧 WAL、替换并复查。
+# 它运行在独立的一次性容器中，看不到其他容器的进程，所以上面的停止/检查不能省略。
+docker compose run --rm --no-deps app node scripts/restore-db.mjs \
+  --backup /app/backups/site-YYYY-MM-DD.sqlite --yes
+
+docker compose up -d
 curl -fsS http://127.0.0.1:4321/api/health/
 ```
+
+恢复成功后旧库位于数据卷的 `site.sqlite.restore-*` 目录（含主库和原 `-wal`/`-shm`），确认无需要后再人工清理；失败时工具会退出非零并保留诊断目录。不要用 `docker cp`/`cp` 直接覆盖 `/app/data/site.sqlite`。
 
 - 备份含口令哈希与反馈正文：目录 `0700`，不要进仓库，最好加密后异地保存。
 - `docker compose down -v` 会删数据卷，只在确定弃用时使用。

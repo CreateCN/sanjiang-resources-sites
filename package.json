@@ -23,6 +23,7 @@
     "test:admin": "node --test tests/admin-e2e.mjs",
     "test:server": "node --test tests/server.test.mjs",
     "db:backup": "node scripts/backup-db.mjs",
+    "db:restore": "node scripts/restore-db.mjs",
     "links:check": "node scripts/check-links.mjs",
     "images:build": "node scripts/optimize-images.mjs",
     "predev": "npm run images:build",

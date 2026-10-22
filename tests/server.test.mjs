@@ -121,28 +121,59 @@ test('categories cannot be deleted while referenced by draft or snapshot', () =>
   assert.throws(() => store.saveCategory(admin, 'all', 'Reserved'), /保留/);
 });
 
+const userVersion = (id) => store.listUsers().find((entry) => entry.id === id).version;
+
 test('disabling, resetting passwords, and role changes revoke existing sessions', () => {
   let logged = session(editor);
-  store.updateUser(admin, editor.id, 'editor', false);
+  store.updateUser(admin, editor.id, userVersion(editor.id), 'editor', false);
   assert.equal(auth.getSession(logged.request), undefined);
   assert.throws(() => auth.login('editor', PASSWORD, 'disabled-login'), /密码错误/);
-  store.updateUser(admin, editor.id, 'editor', true);
+  store.updateUser(admin, editor.id, userVersion(editor.id), 'editor', true);
   logged = session(editor);
-  store.updateUser(admin, editor.id, 'admin', true);
+  store.updateUser(admin, editor.id, userVersion(editor.id), 'admin', true);
   assert.equal(auth.getSession(logged.request), undefined);
   logged = session(editor);
-  store.updateUser(admin, editor.id, 'editor', true, 'new-test-password!');
+  store.updateUser(admin, editor.id, userVersion(editor.id), 'editor', true, 'new-test-password!');
   assert.equal(auth.getSession(logged.request), undefined);
   assert.throws(() => auth.login('editor', PASSWORD, 'reset-login'), /密码错误/);
   assert.ok(auth.login('editor', 'new-test-password!', 'reset-login'));
 });
 
+test('stale user forms cannot overwrite a newer deactivation or role change', async () => {
+  const stale = store.listUsers().find((entry) => entry.id === editor.id);
+  const response = await manage(session(admin), 'update-user', {
+    id: String(editor.id), version: String(stale.version), role: 'editor', active: '', password: '',
+  });
+  assert.equal(response.status, 303);
+  const disabled = store.listUsers().find((entry) => entry.id === editor.id);
+  assert.equal(disabled.active, false);
+  const staleResponse = await manage(session(admin), 'update-user', {
+    id: String(editor.id), version: String(stale.version), role: 'editor', active: 'true', password: '',
+  });
+  assert.equal(staleResponse.status, 409);
+  assert.match(await staleResponse.text(), /重新加载人员与权限页面/);
+  assert.equal(store.listUsers().find((entry) => entry.id === editor.id).active, false, '旧表单不能重新启用账户');
+  const fresh = store.listUsers().find((entry) => entry.id === editor.id);
+  assert.equal((await manage(session(admin), 'update-user', {
+    id: String(editor.id), version: String(fresh.version), role: 'editor', active: 'true', password: '',
+  })).status, 303);
+  assert.equal(store.listUsers().find((entry) => entry.id === editor.id).active, true);
+});
+
+test('a sole administrator can reset their own password and old sessions are revoked', () => {
+  const logged = session(admin);
+  store.updateUser(admin, admin.id, userVersion(admin.id), 'admin', true, 'replacement-password-2026!');
+  assert.equal(auth.getSession(logged.request), undefined, '改密后旧会话立即失效');
+  assert.throws(() => auth.login('operator', PASSWORD, 'self-reset-old'), /密码错误/);
+  assert.ok(auth.login('operator', 'replacement-password-2026!', 'self-reset-new'));
+});
+
 test('cannot deactivate, demote, or delete the last active administrator', () => {
-  assert.throws(() => store.updateUser(admin, admin.id, 'admin', false), /最后一位/);
-  assert.throws(() => store.updateUser(admin, admin.id, 'editor', true), /最后一位/);
+  assert.throws(() => store.updateUser(admin, admin.id, userVersion(admin.id), 'admin', false), /最后一位/);
+  assert.throws(() => store.updateUser(admin, admin.id, userVersion(admin.id), 'editor', true), /最后一位/);
   assert.throws(() => store.deleteUser(admin, admin.id), /最后一位/);
   const second = store.createUser(admin, 'second-admin', PASSWORD, 'admin');
-  store.updateUser(admin, second.id, 'admin', false);
+  store.updateUser(admin, second.id, userVersion(second.id), 'admin', false);
   assert.throws(() => store.deleteUser(admin, admin.id), /最后一位/);
   assert.ok(store.listUsers().find((u) => u.id === admin.id).active);
 });
@@ -429,9 +460,73 @@ test('soft delete moves content to trash, restore keeps it a draft, purge remove
   assert.equal(store.listRevisions('resource', 'zotero').length, 0);
 });
 
+test('purging a resource is blocked while a guide draft or published snapshot references it', () => {
+  const guide = store.saveGuide(editor, guideInput({ slug: 'ref-guide', resources: ['python'] }), null);
+  store.changeGuidePublication(admin, 'ref-guide', guide.version, 'publish-guide');
+  const python = store.findManagedResource('python');
+  store.changePublication(admin, 'python', python.version, 'delete-resource');
+  assert.throws(() => store.purgeTrashResource(admin, 'python'), /ref-guide|仍被这些指南引用/);
+  assert.ok(store.findManagedResource('python'), '有引用时不能彻底删除');
+
+  const current = store.findManagedGuide('ref-guide');
+  const saved = store.saveGuide(editor, { ...current.draft, resources: [] }, current.version);
+  assert.throws(() => store.purgeTrashResource(admin, 'python'), /公开版本/, '只改草稿仍不能消除公开快照里的引用');
+  store.changeGuidePublication(admin, 'ref-guide', saved.version, 'publish-guide');
+  store.purgeTrashResource(admin, 'python');
+  assert.equal(store.findManagedResource('python'), undefined, '解除草稿和公开版本引用后才允许彻底删除');
+});
+
+test('an existing dangling guide association requires explicit removal on save', () => {
+  const saved = store.saveGuide(editor, guideInput({ slug: 'dangling-guide', resources: ['python'] }), null);
+  // Simulate data left behind by an older purge path; the new purge guard prevents creating this state.
+  database().prepare('DELETE FROM resources WHERE id=?').run('python');
+  const current = store.findManagedGuide('dangling-guide');
+  assert.throws(() => store.saveGuide(editor, { ...current.draft, resources: [] }, current.version), /已被彻底删除|失效关联/);
+  assert.deepEqual(store.findManagedGuide('dangling-guide').draft.resources, ['python'], '普通保存不能静默清空悬空关联');
+  const cleaned = store.saveGuide(editor, { ...current.draft, resources: [] }, saved.version, true);
+  assert.deepEqual(cleaned.draft.resources, [], '只有显式同意后才移除失效关联');
+});
+
+test('announcements keep text but stop linking after withdraw, soft delete, or purge', () => {
+  const body = '这条公告的正文应继续公开，即使关联资源已经下架。';
+  store.createReport({ resourceId: 'zotero', kind: '信息有误', title: '公告来源反馈', body: '这是一条用于公告测试的反馈正文。' });
+  const report = store.listReports()[0];
+  store.updateReport(admin, report.id, 'resolved', '', null, report.version, { title: '资源变化公告', body });
+  let item = store.listAnnouncements()[0];
+  assert.equal(item.resourceId, 'zotero');
+  assert.equal(item.resourceRemoved, false);
+
+  store.discontinueResource(admin, 'zotero', store.findManagedResource('zotero').version, null, '暂时停止展示');
+  item = store.listAnnouncements()[0];
+  assert.equal(item.resourceId, 'zotero', '停用资源仍有解释页，公告可以继续链接');
+  assert.equal(item.resourceRemoved, false);
+
+  store.changePublication(admin, 'zotero', store.findManagedResource('zotero').version, 'unpublish');
+  item = store.listAnnouncements()[0];
+  assert.equal(item.resourceId, null);
+  assert.equal(item.resourceRemoved, true);
+  assert.equal(item.body, body, '撤回后保留公告正文');
+
+  store.changePublication(admin, 'zotero', store.findManagedResource('zotero').version, 'publish');
+  assert.equal(store.listAnnouncements()[0].resourceId, 'zotero');
+  store.changePublication(admin, 'zotero', store.findManagedResource('zotero').version, 'delete-resource');
+  item = store.listAnnouncements()[0];
+  assert.equal(item.resourceId, null);
+  assert.equal(item.resourceRemoved, true, '软删除后不输出 404 链接');
+
+  store.restoreTrashResource(admin, 'zotero');
+  store.changePublication(admin, 'zotero', store.findManagedResource('zotero').version, 'publish');
+  store.changePublication(admin, 'zotero', store.findManagedResource('zotero').version, 'delete-resource');
+  store.purgeTrashResource(admin, 'zotero');
+  item = store.listAnnouncements()[0];
+  assert.equal(item.resourceId, null);
+  assert.equal(item.resourceRemoved, true, '彻底删除后不输出 404 链接');
+  assert.equal(item.title, '资源变化公告');
+});
+
 test('feedback can link to a revision of its own resource only', () => {
   const current = store.findManagedResource('zotero');
-  const saved = store.saveResource(admin, { ...current.draft, title: '反馈修复版本' }, current.version);
+  store.saveResource(admin, { ...current.draft, title: '反馈修复版本' }, current.version);
   const revision = store.listRevisions('resource', 'zotero')[0];
   assert.ok(revision);
   store.createReport({ resourceId: 'zotero', kind: '信息有误', title: '反馈标题', body: '这是至少十个字符的反馈内容。' });
@@ -490,6 +585,13 @@ test('home settings are admin-only, validated and merged with defaults', () => {
   assert.equal(saved.scenarios.development?.task, '开始写代码', '未填写的场景保留默认');
   assert.throws(() => settings.saveSettings(admin, { featuredResourceId: 'missing', scenarios: {} }), /不存在/);
   assert.throws(() => settings.saveSettings(admin, { featuredResourceId: 'zotero', scenarios: { nope: { task: 'x', detail: '', glyph: 'x' } } }), /分类不存在/);
+
+  const draftResource = store.saveResource(editor, draft('featured-draft'), null);
+  assert.throws(() => settings.saveSettings(admin, { featuredResourceId: draftResource.id, scenarios: {} }), /公开目录/, '草稿不能成为精选');
+  store.discontinueResource(admin, 'python', store.findManagedResource('python').version, null, '暂时停止展示');
+  assert.throws(() => settings.saveSettings(admin, { featuredResourceId: 'python', scenarios: {} }), /公开目录|已停用/, '停用资源不能成为精选');
+  settings.saveSettings(admin, { featuredResourceId: 'zotero', scenarios: {} });
+  assert.equal(settings.getSettings().featuredResourceId, 'zotero', '正常精选仍能保存');
 });
 
 test('batch review updates drafts and history for editors', () => {

@@ -72,6 +72,19 @@ docker compose exec -T app node scripts/check-links.mjs --limit 50 --delay 500
 非 Docker 环境可以在进程管理器中运行 `npm run maintenance`，并配置相同环境变量。
 仓库提供运行配置，本地开发不会自动启动定时进程。
 
+## 数据库恢复
+
+恢复是离线操作，不能用 `cp` 覆盖主库。先停止 `app`、`maintenance`（或本地 timer/cron）以及所有手动数据库脚本；Docker 还要确认没有其他容器挂载 `site-data` 卷。然后运行：
+
+```bash
+# 本地
+npm run db:restore -- --backup ./backups/site-YYYY-MM-DD.sqlite --yes
+# Docker（app/maintenance 已停止）
+docker compose run --rm --no-deps app node scripts/restore-db.mjs --backup /app/backups/site-YYYY-MM-DD.sqlite --yes
+```
+
+工具先校验备份完整性、必要表和 schema 兼容性；无效备份不会改动目标。替换前把当前主库及 `-wal`/`-shm` 保全到 `site.sqlite.restore-*`，删除旧 sidecar 后再替换，并对恢复结果复查完整性和表计数。失败退出非零并保留诊断；替换后的复查失败会尝试回滚。工具只能检测同一 PID 命名空间内的进程，跨容器、跨主机或共享卷的使用者必须人工确认已停止。
+
 ## 日志轮转
 
 两个容器均使用 Docker `json-file` 日志，每个文件最多 `10m`，保留 `3` 份。

@@ -20,7 +20,10 @@ const stateLabel = (resource: import('../lib/catalog').Resource) => {
   if (resource.status !== 'verified') return '资料待核对';
   return state?.overdue ? '核对已过期' : '官方信息已核对';
 };
-const featured = resources.find((resource) => resource.id === settings.featuredResourceId) ?? resources[0];
+// 明确配置了精选却已不可用时不再静默换成别的资源；只有“未指定”才自动取第一项。
+const featured = settings.featuredResourceId
+  ? resources.find((resource) => resource.id === settings.featuredResourceId)
+  : resources[0];
 const pictured = resources.filter((resource) => resource.image).slice(0, 4);
 const kinds = [...new Set(resources.map((resource) => resource.kind))];
 const verifiedCount = resources.filter((resource) => resource.status === 'verified').length;
@@ -76,7 +79,7 @@ const jsonLd = [
       {announcements.length > 0 && <section class="portal-updates" id="updates" aria-labelledby="updates-title">
         <div class="portal-section-heading"><h2 id="updates-title">反馈已处理</h2><a href="/updates/">全部处理记录 <span aria-hidden="true">↗</span></a></div>
         <ul class="update-list">
-          {announcements.map((item) => <li class="update-item"><div class="update-meta"><time datetime={item.publishedAt}>{item.publishedAt.slice(0, 10)}</time><span>{item.kind}</span></div><h3>{item.title}</h3>{item.body && <p>{item.body}</p>}{item.resourceId && <a class="text-link" href={`/resources/${item.resourceId}/`}>{item.resourceTitle ?? '查看相关资源'} <span aria-hidden="true">↗</span></a>}</li>)}
+          {announcements.map((item) => <li class="update-item"><div class="update-meta"><time datetime={item.publishedAt}>{item.publishedAt.slice(0, 10)}</time><span>{item.kind}</span></div><h3>{item.title}</h3>{item.body && <p>{item.body}</p>}{item.resourceId && <a class="text-link" href={`/resources/${item.resourceId}/`}>{item.resourceTitle ?? '查看相关资源'} <span aria-hidden="true">↗</span></a>}{item.resourceRemoved && <span class="muted">相关资源已不再公开展示</span>}</li>)}
         </ul>
       </section>}
 

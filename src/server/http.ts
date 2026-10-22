@@ -122,7 +122,7 @@ export async function managePost(context: Context): Promise<Response> {
       case 'update-user': {
         const rawActive = text(form, 'active');
         if (!['', '0', '1', 'false', 'true', 'on', 'off'].includes(rawActive)) fail(400, '无效账户状态');
-        updateUser(session.user, idNumber(form), text(form, 'role'), ['1', 'true', 'on'].includes(rawActive), text(form, 'password'));
+        updateUser(session.user, idNumber(form), versionNumber(form), text(form, 'role'), ['1', 'true', 'on'].includes(rawActive), text(form, 'password'));
         return redirect('/admin/users/');
       }
       case 'update-report': {
@@ -210,7 +210,7 @@ export async function managePost(context: Context): Promise<Response> {
           body: text(form, 'body'),
           resources: [...new Set(form.getAll('resources').filter((value): value is string => typeof value === 'string'))],
         };
-        saveGuide(session.user, guide, versionNumber(form));
+        saveGuide(session.user, guide, versionNumber(form), text(form, 'dropMissing') === '1');
         return redirect(`/admin/guides/${encodeURIComponent(guide.slug)}/`);
       }
       case 'restore-resource': {

@@ -17,10 +17,10 @@ function csrfFor(token: string): string { return hashToken(`csrf:${token}`); }
 export function getSession(request: Request): Session | undefined {
   const token = tokenFrom(request);
   if (!token) return undefined;
-  const row = database().prepare(`SELECT u.id,u.username,u.role,u.active FROM sessions s
+  const row = database().prepare(`SELECT u.id,u.username,u.role,u.active,u.version FROM sessions s
     JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires_at>? AND u.active=1`).get(hashToken(token), Date.now());
   if (!row) return undefined;
-  return { user: { id: Number(row.id), username: String(row.username), role: row.role as User['role'], active: true }, csrfToken: csrfFor(token) };
+  return { user: { id: Number(row.id), username: String(row.username), role: row.role as User['role'], active: true, version: Number(row.version ?? 1) }, csrfToken: csrfFor(token) };
 }
 export function requireSession(request: Request): Session {
   return getSession(request) || fail(401, '请先登录后台');

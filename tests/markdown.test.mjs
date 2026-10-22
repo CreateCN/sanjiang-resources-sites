@@ -39,6 +39,31 @@ test('相对链接保持原样，不强制新窗口', () => {
   assert.doesNotMatch(html, /target="_blank"/);
 });
 
+test('正文与内联字段只渲染规范的站内 /images/ 图片', () => {
+  const html = renderMarkdown([
+    '![正常](/images/optimized/zotero-abc.webp)',
+    '![下划线](/images/my_image_2.png)',
+    '![远程](https://tracker.invalid/pixel.png)',
+    '![协议相对](//tracker.invalid/pixel.png)',
+    '![内嵌](data:image/png;base64,iVBORw0KGgo=)',
+    '![绝对本站](https://site.invalid/images/zotero.webp)',
+    '![未规范化](images/zotero.webp)',
+    '![跳出目录](/images/../secret.png)',
+    '![编码跳出](/images/%2e%2e/secret.png)',
+    '![双重编码](/images/%252e%252e/secret.png)',
+    '![编码斜杠](/images/a%2f..%2fsecret.png)',
+    '![空段](/images//secret.png)',
+    '![查询串](/images/zotero.webp?track=1)',
+  ].join('\n\n'));
+  assert.equal((html.match(/<img\b/g) ?? []).length, 2, '只有规范站内图片生成 img');
+  assert.match(html, /<img src="\/images\/optimized\/zotero-abc\.webp"/);
+  assert.match(html, /<img src="\/images\/my_image_2\.png"/);
+  assert.doesNotMatch(html, /tracker\.invalid|data:image|secret\.png|site\.invalid\/images/i);
+  assert.match(html, /远程/, '被拒绝的图片保留 alt 文本，便于编辑者发现');
+  assert.doesNotMatch(renderInlineMarkdown('![远程](https://tracker.invalid/x.png)'), /<img/i, '内联字段共用同一策略');
+  assert.match(renderInlineMarkdown('![站内](/images/zotero.webp)'), /<img src="\/images\/zotero\.webp"/);
+});
+
 test('超长文本被拒绝', () => {
   assert.throws(() => renderMarkdown('a'.repeat(20001)), /过长/);
 });
