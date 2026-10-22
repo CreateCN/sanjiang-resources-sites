@@ -3,6 +3,7 @@
   "version": "0.2.0",
   "private": true,
   "license": "MIT",
+  "author": "CreateCN",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/CreateCN/sanjiang-resources-sites.git"

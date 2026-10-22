@@ -180,7 +180,7 @@ docs/                  功能清单与 Agent 约定
 
 ## 开源协议
 
-代码（`src/`、`scripts/`、`tests/`、构建配置）以 [MIT 协议](LICENSE) 发布，版权归三江资源项目贡献者。项目地址：<https://github.com/CreateCN/sanjiang-resources-sites>。
+代码（`src/`、`scripts/`、`tests/`、构建配置）以 [MIT 协议](LICENSE) 发布，版权归 CreateCN。项目地址：<https://github.com/CreateCN/sanjiang-resources-sites>。许可范围之外的附注见 [NOTICE](NOTICE)，`LICENSE` 保持 MIT 原文不做增补，以便 GitHub 正确识别协议。
 
 MIT 只覆盖代码。资源条目中的第三方项目名称、商标、官方文案与界面截图，权利归各提供方；站内收录的软件、课程与服务也不因本项目开源而改变其授权条件。图片的来源、许可与下架记录见 [public/images/CREDITS.md](public/images/CREDITS.md)。
 

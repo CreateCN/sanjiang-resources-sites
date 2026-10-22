@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 三江资源项目贡献者 (sanjiang-resources contributors)
+Copyright (c) 2026 CreateCN
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,14 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-说明 / Note
-
-本许可覆盖本仓库的源代码、样式与构建脚本。以下内容不在 MIT 许可范围内：
-
-- 资源条目中的第三方项目名称、商标、官方文案与界面截图，权利归各自权利人；
-- 站内收录的第三方软件、课程与服务本身。
-
-本站是面向三江学院学生的非官方整理项目，不代表三江学院或任何资源提供方授权、合作或背书。
