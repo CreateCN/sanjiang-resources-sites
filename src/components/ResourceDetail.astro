@@ -1,7 +1,7 @@
 ---
 import { getPublishedResources, categoryName, getStatusLabel, feedbackUrl } from '../lib/catalog';
 import { guidesForResource } from '../lib/guides';
-import { renderInlineMarkdown, renderMarkdown } from '../lib/markdown';
+import { renderMediaInline, renderMediaMarkdown } from '../lib/media-render';
 import { freshness, freshnessNote } from '../lib/freshness';
 import { accessLabel, accessHint } from '../lib/access';
 import ResourceImage from './ResourceImage.astro';
@@ -32,16 +32,16 @@ const imageUnconfirmed = Boolean(resource.image && resource.imageRights !== 'con
       <section class="detail-head">
         <h1>{resource.title}</h1>
         <div class="detail-tags"><span>{categoryName(resource.category)}</span><span>{resource.kind}</span><span class="access-chip">{accessLabel(resource.access)}</span>{resource.tags.map((tag) => <span>{tag}</span>)}</div>
-        <p class="detail-summary" set:html={renderInlineMarkdown(resource.summary)} />
+        <p class="detail-summary" set:html={renderMediaInline(resource.summary)} />
       </section>
       <div class="detail-body">
         <nav class="detail-nav" aria-label="本页目录"><a href="#conditions">使用条件</a>{resource.details && <a href="#details">详细说明</a>}<a href="#start">如何开始</a><a href="#verification">核验说明</a><a href="#report">问题反馈</a></nav>
-        <section id="conditions"><h2>先看看是否适合你</h2><dl class="facts"><div><dt>使用门槛</dt><dd>{accessLabel(resource.access)}：{accessHint(resource.access)}</dd></div><div><dt>费用与许可</dt><dd set:html={renderInlineMarkdown(resource.license)} /></div><div><dt>设备与平台</dt><dd>{resource.platforms.join('、')}</dd></div><div><dt>资格与身份要求</dt><dd set:html={renderInlineMarkdown(resource.eligibility)} /></div><div><dt>需要注意</dt><dd set:html={renderInlineMarkdown(resource.caveat)} /></div></dl></section>
-        {resource.details && <section id="details"><h2>详细说明</h2><div class="markdown-body" set:html={renderMarkdown(resource.details)} /></section>}
+        <section id="conditions"><h2>先看看是否适合你</h2><dl class="facts"><div><dt>使用门槛</dt><dd>{accessLabel(resource.access)}：{accessHint(resource.access)}</dd></div><div><dt>费用与许可</dt><dd set:html={renderMediaInline(resource.license)} /></div><div><dt>设备与平台</dt><dd>{resource.platforms.join('、')}</dd></div><div><dt>资格与身份要求</dt><dd set:html={renderMediaInline(resource.eligibility)} /></div><div><dt>需要注意</dt><dd set:html={renderMediaInline(resource.caveat)} /></div></dl></section>
+        {resource.details && <section id="details"><h2>详细说明</h2><div class="markdown-body" set:html={renderMediaMarkdown(resource.details)} /></section>}
         {resource.image && <figure class="screenshot"><ResourceImage src={resource.image} alt={resource.imageAlt ?? `${resource.title} 官方界面`} />
           {imageUnconfirmed && <p class="image-flag">网络图片，来源与授权未确认；如有侵权请联系管理员处理。</p>}
           <figcaption>{resource.imageCredit ?? '官方产品界面或官方网站截图'}。仅作资源识别与介绍，不代表对方背书。<a href="/about/#credits">来源说明</a>{imageUnconfirmed && <> · <a href={`/feedback/?resource=${encodeURIComponent(resource.id)}&kind=${encodeURIComponent('版权与下架')}`}>版权与下架</a></>}</figcaption></figure>}
-        <section id="start"><h2>从这里开始</h2><ol class="steps">{resource.steps.map((step) => <li set:html={renderInlineMarkdown(step)} />)}</ol><a class="text-link" href={resource.url} target="_blank" rel="noopener noreferrer">打开官方页面 ↗</a></section>
+        <section id="start"><h2>从这里开始</h2><ol class="steps">{resource.steps.map((step) => <li set:html={renderMediaInline(step)} />)}</ol><a class="text-link" href={resource.url} target="_blank" rel="noopener noreferrer">打开官方页面 ↗</a></section>
         <section id="verification"><h2>我们核对了什么</h2><p>{resource.status === 'verified' ? `本条目的官方公开页面信息已于 ${resource.checkedAt} 核对，包括资源用途、公开费用或资格说明。` : '本条目尚未完成官方公开页面资料核对，页面信息仅作候选资源参考。请在官方页面确认后再决定使用。'}</p><div class="notice"><strong>资料核对，不等于实际使用保证。</strong><p>我们没有验证你的学生资格、校内网络访问或第三方申请结果。外站的费用、地区限制和服务条款可能变化，以提供方最新说明为准。</p></div><p style="margin-top:16px"><a class="text-link" href={resource.sourceUrl} target="_blank" rel="noopener noreferrer">查看官方信息来源 ↗</a></p></section>
         <section id="report"><h2>信息不对，告诉我们</h2><p>遇到链接失效、收费变化，或资格说明有误？反馈会带上当前资源名称，便于维护者定位。</p><p style="margin-top:18px"><a class="portal-button" href={feedbackUrl(resource)}>报告资源问题</a></p><p class="form-help" style="margin-top:10px">无需登录即可提交；请勿填写学号、学生证或账号凭据。</p></section>
         {guides.length > 0 && <section><h2>相关指南</h2><div class="related-list">{guides.map((guide) => <a class="related-link" href={`/guides/${guide.slug}/`}><span>{guide.title}</span><span aria-hidden="true">↗</span></a>)}</div></section>}

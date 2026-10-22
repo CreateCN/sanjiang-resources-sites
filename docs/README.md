@@ -9,6 +9,7 @@
 | [非 Docker 部署](deploy-local.md) | 没有 Docker 的部署者 | 宿主机安装步骤、systemd/Nginx、定时任务变化 |
 | [Docker 生产部署](deploy-docker.md) | 用容器的部署者 | Compose 拓扑、端口与源 IP、反代容器、备份升级 |
 | [边缘防护（CDN/CC/DDoS）](edge-cdn-hardening.md) | 所有对外部署 | 源站隐身、真实 IP、限流参数、DCDN/WAF 升级与应急预案 |
+| [设计提案](design/README.md) | 写代码的人、评审者 | 新功能的设计、取舍与阶段划分变化 |
 | [安全设计与实现规范](SECURITY-SPEC.md) | 写代码的人、评审者 | 安全约束变化（必须同步评审与测试） |
 | [Agent 约定](agents/domain.md) | 自动化代理 | issue tracker、标签、领域文档约定变化 |
 

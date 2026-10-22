@@ -5,6 +5,7 @@ import { database, transaction } from './db.ts';
 import { audit, fail, hashPassword } from './security.ts';
 import { requestMemo } from './request-cache.ts';
 import { isReservedIdentifier, MAX_IDENTIFIER_LENGTH, RESERVED_IDENTIFIER_MESSAGE } from '../lib/identifiers.ts';
+import { assertMediaDependencies } from './media-references.ts';
 export type { Resource } from '../lib/resource-schema.ts';
 export type { Guide } from '../lib/guide-schema.ts';
 export type Role = 'admin' | 'editor';
@@ -82,13 +83,29 @@ export function listReports(): Report[] {
 export function listAudit(): AuditEntry[] {
   return database().prepare('SELECT * FROM audit ORDER BY id DESC LIMIT 1000').all().map((r) => ({ id: Number(r.id), actor: String(r.actor), action: String(r.action), target: String(r.target), createdAt: String(r.created_at) }));
 }
-function actorUser(actor: User, adminOnly = false): User {
+/** 服务端角色校验的唯一实现；认证状态变更模块也复用它，不另写一份。 */
+export function actorUser(actor: User, adminOnly = false): User {
   const row = database().prepare('SELECT id,username,role,active,version FROM users WHERE id=?').get(actor.id);
   if (!row || !row.active) fail(401, '登录已失效，请重新登录');
   const current = user(row);
   if (adminOnly && current.role !== 'admin') fail(403, '此操作仅限管理员');
   return current;
 }
+/**
+ * 认证证明撤销的唯一实现：会话、挑战、恢复码与代次必须一起处理。
+ * 任何"只删会话"的局部实现都会让旧挑战在有效期内继续可用。
+ */
+export function revokeAuthProofs(db: ReturnType<typeof database>, userId: number, options: { recoveryCodes?: boolean } = {}): void {
+  db.prepare('DELETE FROM sessions WHERE user_id=?').run(userId);
+  db.prepare('DELETE FROM login_challenges WHERE user_id=?').run(userId);
+  if (options.recoveryCodes) db.prepare('DELETE FROM recovery_codes WHERE user_id=?').run(userId);
+}
+
+/** auth_version 只增不减：挑战与最终事务都绑定它，旧证明随之失效。 */
+export function bumpAuthVersion(db: ReturnType<typeof database>, userId: number): void {
+  db.prepare('UPDATE users SET auth_version=auth_version+1 WHERE id=?').run(userId);
+}
+
 function requiredVersion(version: number | null): number {
   if (version === null || !Number.isSafeInteger(version) || version < 1) fail(400, '缺少有效版本号，请重新加载条目');
   return version;
@@ -114,6 +131,8 @@ export function saveResource(actor: User, input: unknown, version: number | null
     categoryExists(resource.category);
     const previous = findManagedResource(resource.id);
     if (previous?.deletedAt) fail(409, '该资源在回收站中，请先恢复后再编辑');
+    // 新增图片引用必须指向可用媒体；仅编辑其它字段时保留原有已下架引用是允许的。
+    assertMediaDependencies('resource', resource, previous?.draft ?? null);
     const now = new Date().toISOString();
     if (previous) {
       checkVersion(resource.id, version);
@@ -145,6 +164,7 @@ export function importResource(actor: User, input: unknown, expected: EntityIden
     const current = actorUser(actor);
     categoryExists(resource.category);
     const previous = findManagedResource(resource.id);
+    assertMediaDependencies('resource', resource, previous?.draft ?? null);
     const now = new Date().toISOString();
     if (!previous) {
       if (expected !== null) fail(409, `资源 ${resource.id} 在预检后已被删除；请重新预检后再导入`);
@@ -166,6 +186,8 @@ export function changePublication(actor: User, id: string, version: number | nul
   transaction((db) => {
     const current = actorUser(actor, true);
     const resource = checkVersion(id, version);
+    // 发布是"对外可见"的门槛：此时所有图片必须可用（previous=null 取消旧引用豁免）。
+    if (action === 'publish') assertMediaDependencies('resource', resource.draft, null);
     if (action === 'delete-resource') db.prepare('UPDATE resources SET deleted_at=?,published=NULL,published_category=NULL,version=version+1,updated_at=? WHERE id=?').run(new Date().toISOString(), new Date().toISOString(), id);
     else if (action === 'publish') db.prepare('UPDATE resources SET published=draft,published_category=draft_category,version=version+1,updated_at=? WHERE id=?').run(new Date().toISOString(), id);
     else if (action === 'unpublish') db.prepare('UPDATE resources SET published=NULL,published_category=NULL,version=version+1,updated_at=? WHERE id=?').run(new Date().toISOString(), id);
@@ -282,7 +304,12 @@ export function updateUser(actor: User, id: number, version: number | null, role
     protectLastAdmin(id, nextRole, active);
     db.prepare('UPDATE users SET role=?,active=?,password_hash=COALESCE(?,password_hash),version=version+1 WHERE id=?')
       .run(nextRole, active ? 1 : 0, passwordHash, id);
-    if (passwordHash || previous.role !== nextRole || Boolean(previous.active) !== active) db.prepare('DELETE FROM sessions WHERE user_id=?').run(id);
+    const authChanged = Boolean(passwordHash) || previous.role !== nextRole || Boolean(previous.active) !== active;
+    if (authChanged) {
+      // 改密、改角色、停用/重新启用都改变凭据代次：旧会话与旧挑战一并失效。
+      revokeAuthProofs(db, id);
+      bumpAuthVersion(db, id);
+    }
     const changes = [`${previous.role}->${nextRole}`, `active ${Number(previous.active)}->${active ? 1 : 0}`, ...(passwordHash ? ['password reset'] : [])];
     audit(current.username, 'update-user', `${id} (${changes.join(', ')})`);
   });
@@ -417,6 +444,7 @@ export function saveGuide(actor: User, input: unknown, version: number | null, d
     const current = actorUser(actor);
     const previous = findManagedGuide(guide.slug);
     if (previous?.deletedAt) fail(409, '该指南在回收站中，请先恢复后再编辑');
+    assertMediaDependencies('guide', guide, previous?.draft ?? null);
     // 彻底删除过的资源不会出现在编辑页复选框里；如果普通保存直接把它当成“取消勾选”，
     // 关联就会在维护者不知情时消失。必须由调用方显式同意移除。
     const missing = previous
@@ -451,6 +479,7 @@ export function importGuide(actor: User, input: unknown, expected: EntityIdentit
   return transaction((db) => {
     const current = actorUser(actor);
     const previous = findManagedGuide(guide.slug);
+    assertMediaDependencies('guide', guide, previous?.draft ?? null);
     checkGuideResources(db, guide.resources, previous);
     const now = new Date().toISOString();
     if (!previous) {
@@ -473,6 +502,7 @@ export function changeGuidePublication(actor: User, slug: string, version: numbe
   transaction((db) => {
     const current = actorUser(actor, true);
     const guide = guideVersion(slug, version);
+    if (action === 'publish-guide') assertMediaDependencies('guide', guide.draft, null);
     if (action === 'delete-guide') db.prepare('UPDATE guides SET deleted_at=?,published=NULL,version=version+1,updated_at=? WHERE slug=?').run(new Date().toISOString(), new Date().toISOString(), slug);
     else if (action === 'publish-guide') db.prepare('UPDATE guides SET published=draft,version=version+1,updated_at=? WHERE slug=?').run(new Date().toISOString(), slug);
     else if (action === 'unpublish-guide') db.prepare('UPDATE guides SET published=NULL,version=version+1,updated_at=? WHERE slug=?').run(new Date().toISOString(), slug);
@@ -537,6 +567,7 @@ export function restoreResourceRevision(actor: User, id: string, revisionId: num
       fail(409, `该历史版本使用的分类 ${resource.category} 已删除；请为该版本选择一个现有分类后再恢复，或先恢复该分类`);
     }
     resource.category = target;
+    assertMediaDependencies('resource', resource, item.draft);
     db.prepare('UPDATE resources SET draft=?,draft_category=?,version=version+1,updated_at=? WHERE id=?')
       .run(JSON.stringify(resource), resource.category, new Date().toISOString(), id);
     const saved = findManagedResource(id)!;
@@ -570,6 +601,7 @@ export function restoreGuideRevision(actor: User, slug: string, revisionId: numb
     }
     if (missing.length > 0) guide.resources = guide.resources.filter((id) => !missing.includes(id));
     checkGuideResources(db, guide.resources, item);
+    assertMediaDependencies('guide', guide, item.draft);
     db.prepare('UPDATE guides SET draft=?,version=version+1,updated_at=? WHERE slug=?')
       .run(JSON.stringify(guide), new Date().toISOString(), slug);
     const saved = findManagedGuide(slug)!;

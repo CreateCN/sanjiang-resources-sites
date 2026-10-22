@@ -1,11 +1,21 @@
 ---
 import manifest from '../data/image-variants.json';
+import { mediaImageInfo } from '../server/media';
 interface Props { src: string; alt: string; sizes?: string; }
 const { src, alt, sizes = '(max-width: 760px) calc(100vw - 40px), 760px' } = Astro.props;
 const images = manifest as Record<string, { width: number; height: number; variants: { src: string; width: number }[] }>;
-const image = images[src];
+// 构建期资源查清单；运行时媒体查 DB（已下架/缺失 → 带 alt 的占位，不输出指向 404 的 img）。
+const runtime = src.startsWith('/media/') ? mediaImageInfo(src) : undefined;
+const staticImage = src.startsWith('/media/') ? undefined : images[src];
 ---
-<picture>
-  {image && <source type="image/webp" srcset={image.variants.map((variant) => `${variant.src} ${variant.width}w`).join(', ')} sizes={sizes} />}
-  <img src={src} alt={alt} width={image?.width ?? 1200} height={image?.height ?? 800} loading="lazy" decoding="async" />
-</picture>
+{runtime
+  ? <picture>
+      <source type="image/webp" srcset={runtime.variants.map((variant) => `${variant.src} ${variant.width}w`).join(', ')} sizes={sizes} />
+      <img src={src} alt={alt} width={runtime.width} height={runtime.height} loading="lazy" decoding="async" />
+    </picture>
+  : staticImage
+    ? <picture>
+        <source type="image/webp" srcset={staticImage.variants.map((variant) => `${variant.src} ${variant.width}w`).join(', ')} sizes={sizes} />
+        <img src={src} alt={alt} width={staticImage.width} height={staticImage.height} loading="lazy" decoding="async" />
+      </picture>
+    : <span class="media-missing" role="img" aria-label={alt}>（图片已下架或不可用）{alt}</span>}

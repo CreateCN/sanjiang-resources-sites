@@ -1,0 +1,25 @@
+---
+import AdminLayout from '../../../layouts/AdminLayout.astro';
+import { challengeTokenFrom, getSession } from '../../../server/auth';
+// 完全认证用户不需要这一步；没有挑战凭据则回到口令页。
+if (getSession(Astro.request)) return Astro.redirect('/admin/');
+const challenge = challengeTokenFrom(Astro.request);
+if (!challenge) return Astro.redirect('/admin/login/');
+Astro.response.headers.set('Cache-Control', 'no-store');
+Astro.response.headers.set('X-Robots-Tag', 'noindex, nofollow');
+---
+<AdminLayout title="两步验证">
+  <section class="panel login-panel">
+    <h2>输入验证器中的 6 位验证码</h2>
+    <p class="muted">口令已通过，但还没有完成两步验证。此页面不会自动登录；验证码每 30 秒更新，登录会因网络或时钟偏差失败。</p>
+    <form action="/api/login/totp/" method="post">
+      <div class="field">
+        <label for="code">验证码或恢复码</label>
+        <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="20" required autofocus />
+        <small>恢复码格式为 XXXX-XXXX，每个只能使用一次。</small>
+      </div>
+      <div class="actions"><button type="submit">验证并登录</button><a class="button secondary" href="/admin/login/">重新开始</a></div>
+    </form>
+    <p class="admin-footer-note">连续输错会作废本次登录请求；失败次数按账号与客户端分别计数。忘记验证器时请使用恢复码，或联系管理员在“人员与权限”重置。</p>
+  </section>
+</AdminLayout>

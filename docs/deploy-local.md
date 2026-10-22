@@ -177,8 +177,8 @@ server {
     ssl_prefer_server_ciphers off;
 
     server_tokens off;
-    # 导入 JSON 上限 3 MiB，加上表单编码开销留 4 MiB；其余表单由应用侧限制为 96 KiB
-    client_max_body_size 4m;
+    # 图片上传 5 MiB + 64 KiB、导入 JSON 3 MiB；其余表单由应用侧限制为 96 KiB
+    client_max_body_size 6m;
 
     # 应用只接受「单值」客户端地址：这里必须覆盖写，不能用 $proxy_add_x_forwarded_for
     proxy_set_header Host              $host;
@@ -195,6 +195,14 @@ server {
         proxy_http_version 1.1;
         proxy_read_timeout 60s;
         proxy_send_timeout 60s;
+    }
+
+    # /media/ 必须转发到应用：每次请求实时查库、所有响应 no-store。禁止 alias/root 直出。
+    location ^~ /media/ {
+        proxy_pass http://127.0.0.1:4321;
+        proxy_http_version 1.1;
+        proxy_cache off;
+        add_header Cache-Control "no-store" always;
     }
 
     location ^~ /api/ {

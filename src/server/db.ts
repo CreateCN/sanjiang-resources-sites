@@ -4,7 +4,7 @@ import { mkdirSync, chmodSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { categories, resources } from '../data/resources.ts';
 import { ResourceSchema } from '../lib/resource-schema.ts';
-import { migrations } from './migrations.ts';
+import { applyMigrations } from './migrations.ts';
 import { clearRequestCache } from './request-cache.ts';
 
 let connection: DatabaseSync | undefined;
@@ -18,17 +18,7 @@ export function database(): DatabaseSync {
   try {
     if (path !== ':memory:') chmodSync(path, 0o600);
     db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
-    db.exec('CREATE TABLE IF NOT EXISTS schema_migrations (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL)');
-    const applied = new Set(db.prepare('SELECT id FROM schema_migrations').all().map((row) => String(row.id)));
-    for (const migration of migrations) {
-      if (applied.has(migration.id)) continue;
-      db.exec('BEGIN IMMEDIATE');
-      try {
-        migration.up(db);
-        db.prepare('INSERT INTO schema_migrations (id,applied_at) VALUES (?,?)').run(migration.id, new Date().toISOString());
-        db.exec('COMMIT');
-      } catch (error) { db.exec('ROLLBACK'); throw error; }
-    }
+    applyMigrations(db);
     db.exec('BEGIN IMMEDIATE');
     try {
       if (!db.prepare("SELECT 1 FROM metadata WHERE key = 'seeded'").get()) {

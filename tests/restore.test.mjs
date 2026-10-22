@@ -134,3 +134,73 @@ test('restore refuses while another process holds the database open', async () =
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+function authState(database) {
+  const db = new DatabaseSync(database, { readOnly: true });
+  try {
+    const user = db.prepare('SELECT auth_version,totp_last_step,totp_confirmed_at FROM users WHERE id=1').get();
+    return {
+      sessions: Number(db.prepare('SELECT COUNT(*) AS total FROM sessions').get().total),
+      challenges: Number(db.prepare('SELECT COUNT(*) AS total FROM login_challenges').get().total),
+      recovery: Number(db.prepare('SELECT COUNT(*) AS total FROM recovery_codes').get().total),
+      audits: Number(db.prepare("SELECT COUNT(*) AS total FROM audit WHERE action='restore-purge'").get().total),
+      authVersion: Number(user.auth_version),
+      lastStep: user.totp_last_step === null ? null : Number(user.totp_last_step),
+      confirmed: user.totp_confirmed_at,
+    };
+  } finally { db.close(); }
+}
+
+test('restore purges authentication proofs and raises the TOTP step floor', () => {
+  const { directory, database, backupDir } = fixture('sj-restore-auth-');
+  try {
+    const db = new DatabaseSync(database);
+    try {
+      db.exec('PRAGMA busy_timeout=5000');
+      db.prepare('UPDATE users SET auth_version=7, totp_secret=?, totp_confirmed_at=?, totp_last_step=1 WHERE id=1')
+        .run('v1:AAAAAAAAAAAAAAAA:AAAAAAAAAAAAAAAAAAAAAA:AAAAAAAA', new Date().toISOString());
+      db.prepare('INSERT INTO sessions (token_hash,user_id,expires_at,created_at) VALUES (?,1,?,?)')
+        .run('a'.repeat(64), Date.now() + 3600000, Date.now());
+      db.prepare('INSERT INTO login_challenges (token_hash,user_id,auth_version,purpose,client_hash,attempts,pending_secret,created_at,expires_at) VALUES (?,1,7,\'login\',?,0,NULL,?,?)')
+        .run('b'.repeat(64), 'c'.repeat(64), Date.now() - 1000, Date.now() + 240000);
+      db.prepare('INSERT INTO recovery_codes (user_id,code_hash,created_at) VALUES (1,?,?)')
+        .run('d'.repeat(64), new Date().toISOString());
+    } finally { db.close(); }
+
+    const backupFile = backup(database, backupDir);
+    // 备份之后又有新会话写入：恢复不得把它们带回来（也不该保留旧证明）。
+    insertReport(database, '恢复后的反馈仍然存在');
+    const run = runRestore(database, backupFile);
+    assert.equal(run.status, 0, run.stderr);
+    const state = authState(database);
+    assert.equal(state.sessions, 0, '恢复不得保留任何会话');
+    assert.equal(state.challenges, 0, '恢复不得保留登录挑战');
+    assert.equal(state.recovery, 0, '恢复必须作废旧恢复码');
+    assert.equal(state.audits, 1, '必须留下恢复审计');
+    assert.ok(state.authVersion >= 8, `auth_version 必须递增（实际 ${state.authVersion}）`);
+    assert.ok(state.lastStep !== null && state.lastStep >= Math.floor(Date.now() / 30000) + 1, 'last_step 必须抬升到当前步 + 窗口');
+    assert.equal(reports(database).includes('恢复后的反馈仍然存在'), false, '恢复后不应出现备份之后的写入');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('DB-only restore refuses a backup that contains media registrations', () => {
+  const { directory, database, backupDir } = fixture('sj-restore-media-');
+  try {
+    const db = new DatabaseSync(database);
+    try {
+      db.exec('PRAGMA busy_timeout=5000');
+      db.prepare(`INSERT INTO media (id,version,state,bytes,total_bytes,width,height,variants,encoding_version,source_name,uploaded_by,rights,credit,created_at)
+        VALUES (?,1,'ready',100,200,10,10,'[]','webp-q82-v1','x.png','tester','unconfirmed','',?)`)
+        .run('a'.repeat(64), new Date().toISOString());
+    } finally { db.close(); }
+    const backupFile = backup(database, backupDir);
+    const run = runRestore(database, backupFile);
+    assert.notEqual(run.status, 0, '含媒体登记的备份不得走 DB-only 恢复');
+    assert.match(`${run.stderr}${run.stdout}`, /restore-site/);
+    assert.equal(authState(database).sessions, 0);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

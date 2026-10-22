@@ -36,19 +36,20 @@
 | 状态 | 功能 | 说明 | 位置 |
 |---|---|---|---|
 | ✅ | Markdown 字段 | 简介/许可/资格/限制/步骤按内联 Markdown；新增 `details` 长文字段按完整 Markdown | `src/lib/markdown.ts` |
-| ✅ | Markdown 安全 | 禁用原始 HTML；拒绝 `javascript:`/`data:` 链接；外链加 `target`/`rel`；图片只允许规范化后仍位于 `/images/` 的站内路径，远程、协议相对、`data:` 与路径绕过不生成图片元素；正文、内联字段与后台预览共用同一规则 | 同上 |
+| ✅ | Markdown 安全 | 禁用原始 HTML；拒绝 `javascript:`/`data:` 链接；外链加 `target`/`rel`；图片只允许规范化后仍位于 `/images/` 或已登记 `/media/<sha256>.webp` 的站内路径，远程、协议相对、`data:` 与路径绕过不生成图片元素；正文、内联字段与后台预览共用同一规则 | `src/lib/markdown.ts` |
 | ✅ | 指南编辑 | 标题、摘要、正文、关联资源；草稿/发布/撤回 | `src/pages/admin/guides/` |
 | ✅ | 草稿与发布快照 | 公开站只读已发布快照；编辑者保存只改草稿，管理员发布后生效 | `src/server/store.ts` |
 | ✅ | 版本历史 | 保存/发布/撤回/恢复均留快照，保留最近 50 条；逐字段对比；恢复只改草稿；缺分类可选替代分类，缺资源关联需显式勾选移除才恢复；版本号永不复用（删除重建也不会回到 v1） | `src/components/RevisionHistory.astro` |
 | ✅ | 草稿整页预览 | 登录后按真实前台样式预览，`noindex`、不写快照、不计浏览 | `src/pages/admin/preview/` |
 | ✅ | 未保存输入备份 | 每次加载生成独立归属键（`window.open` 带 opener 也不会共用），兼容旧格式键并自动迁移；保存只清理自己的（或内容完全相同的）备份；多份分歧备份可逐份查看/恢复，最新备份与服务器相同不遮挡更早内容 | `src/scripts/draft-recovery.ts` |
 | ✅ | 回收站 | 软删除；前台/sitemap 立即消失；恢复为草稿；彻底删除清历史；资源仍被指南草稿或公开快照引用时拒绝彻底删除并列出指南，已有悬空关联必须在编辑页显式勾选移除 | `src/pages/admin/trash.astro`、`src/server/store.ts` |
-| ✅ | 导入导出 | 导出 JSON（草稿/发布快照/分类/设置，设置只含仍存在的分类）；导入**必须**先预检，预检计划冻结各条目身份（版本 + uid）、内容摘要与当前设置摘要，期间被人保存/删除重建/改设置则整批取消；失败条目与原因保留在结果页（最近 20 次）；只写草稿，首页设置需显式勾选才恢复 | `src/lib/importer.ts` |
+| ✅ | 导入导出 | 导出版本 2：草稿/发布快照/分类/设置 + 媒体元数据（不含二进制）；导入**必须**先预检，计划冻结条目身份（版本 + uid）、内容摘要、缺失媒体清单与设置摘要，期间改动则整批取消；缺图默认逐条拒绝，显式勾选“移除缺失图片”才保留 alt 并移除引用；失败条目与原因保留在结果页（最近 20 次）；只写草稿 | `src/lib/importer.ts` |
 | ✅ | 首页编排 | 精选资源与场景文案存 `settings` 表，管理员可改，保存即时生效；精选候选与服务端校验都只接受仍在公开目录（已发布、未删除、未停用）的资源，配置不可用时不再静默换成其他资源 | `src/pages/admin/settings.astro` |
 | ✅ | 分类管理 | 稳定 ID；`all` 是保留标识（前台虚拟书架），导入同样拒绝；被草稿或发布快照引用时禁止删除 | `src/pages/admin/categories.astro` |
 | ✅ | 图片授权状态 | 资源记录 `imageRights` 与 `imageCredit`，未确认时前台提示 | `src/lib/resource-schema.ts` |
 | ◻ | 内容冲刺 | 目前 12 条资源、0 篇指南；计划先补 5 篇任务指南与 10 条资源（非代码功能） | — |
-| ◻ | 图片上传 / 媒体库 | 目前只能引用 `public/images/` 现有文件；无上传、裁剪与许可登记流程 | — |
+| ✅ | 图片上传 / 媒体库（P0） | 编辑页上传本地 PNG/JPEG/WebP（≤5 MiB），服务端按 magic bytes + 解码校验、按 EXIF 方向旋转后重编码 WebP、剥离 EXIF/GPS/XMP/ICC，生成 320/640/960/1280/1920 变体与哈希清单；内容寻址不可变文件组、失败只清理自己的暂存、跨进程操作占位与容量预留；`/media/` 每次请求实时查库、全部 `no-store`；管理员可下架/恢复/彻底删除（彻底删除需无任何引用并留墓碑）；编辑页"移除"只解除草稿关联 | `src/server/media.ts`、`src/server/media-http.ts`、`src/server/media-references.ts`、`src/pages/admin/media.astro` |
+| ◻ | 媒体库列表增强 / 在线裁剪 | P1：媒体选择器、自动 GC 任务、跨环境登记；在线裁剪、滤镜与公开上传未实现 | — |
 | ◻ | 定时发布 | 只有手动发布；无计划发布时间 | — |
 
 ## 后台治理
@@ -69,7 +70,7 @@
 | ◻ | 外部通知 | 邮件、企业微信/飞书 webhook 未实现；当前仅在后台公告板提示 | — |
 | ◻ | 多角色审批流 | 仅管理员/编辑者两角色；无逐级审核 | — |
 | ◻ | 邮件找回密码 | 忘记密码只能在服务器上再建管理员 | — |
-| ◻ | 双因素认证 | 未实现 | — |
+| ✅ | 双因素认证（TOTP，P0） | 服务端二维码（`qrcode`）+ 6 位验证确认后启用；挑战一次性（5 分钟、绑定用途/客户端/`auth_version`、5 次失败作废）；AES-256-GCM 加密密钥；10 个一次性恢复码；`off/admin/admin,editor` 强制策略需配套离线撤销命令；管理员重置、`totp:reset` CLI、旧库恢复净化 | `src/server/totp.ts`、`src/server/auth.ts`、`src/pages/admin/security.astro` |
 | ◻ | 公开投稿后台 | 推荐类内容走匿名反馈，人工整理；无投稿工作流 | — |
 
 ## 运维与质量
@@ -77,7 +78,9 @@
 | 状态 | 功能 | 说明 | 位置 |
 |---|---|---|---|
 | ✅ | 数据库迁移 | `schema_migrations` + 顺序迁移；旧库自动补齐列 | `src/server/migrations.ts` |
-| ✅ | 备份脚本 | `VACUUM INTO` + 完整性校验 + 权限 0600 + 保留份数 | `scripts/backup-db.mjs` |
+| ✅ | 数据库备份 | `VACUUM INTO` + 完整性校验 + 权限 0600 + 保留份数；只是诊断快照，不是媒体站点备份 | `scripts/backup-db.mjs` |
+| ✅ | 站点备份 / 恢复（P0） | `site:backup`：先要求无未结算媒体操作与完整对象，再生成 DB 快照 + 全部对象 + 哈希清单，最后写 `COMPLETE`；`site:restore`：暂存校验、迁移 + 认证净化、按日志切换并可回滚，缺文件/哈希不符拒绝 | `scripts/backup-site.mjs`、`scripts/restore-site.mjs`、`src/server/restore-prepare.ts` |
+| ✅ | 媒体离线对账 | 默认 dry-run；未提交对象隔离、占位需显式 `--clear-guard`、哈希不符保持上传暂停 | `scripts/reconcile-media.mjs` |
 | ✅ | 恢复流程 | 离线恢复工具：校验备份完整性/必要表/schema → 保全当前主库与 sidecar → 删除旧 WAL/SHM → 原子替换 → 复查完整性与计数；失败回滚并保留诊断；文档明确 app、maintenance、定时任务和手动脚本全部离线 | `scripts/restore-db.mjs`、`README.md` |
 | ✅ | 健康检查 | `/api/health/` 查 `SELECT 1`，返回状态、DB、迁移版本、运行时长 | `src/server/http.ts` |
 | ✅ | 结构化日志 | 每请求一行 JSON（request id、方法、路径、状态、耗时），不记查询串/IP/UA | `src/server/log.ts` |

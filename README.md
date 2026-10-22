@@ -57,13 +57,18 @@ docker compose exec app node scripts/create-admin.mjs
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `SITE_URL` | `http://localhost:4321` | 站点绝对地址；决定 canonical、分享链接、Origin 校验与 Cookie `Secure` |
+| `SITE_URL` | `http://localhost:4321` | 站点绝对地址；决定 canonical、分享链接、Origin 校验与 Cookie `Secure`（含 TOTP 挑战 Cookie） |
 | `TRUST_PROXY` | `0`（compose 中为 `1`） | 是否信任代理写入的单值 `X-Forwarded-For`；关闭时按站点共享限流 |
 | `DATABASE_PATH` | `./data/site.sqlite` | SQLite 文件；容器内为 `/app/data/site.sqlite` |
 | `BACKUP_DIR` | `./backups` | 备份目录；容器内挂载到宿主机 |
 | `BACKUP_KEEP` | `7` | 保留备份份数 |
 | `BACKUP_HOST_DIR` | `./backups` | Compose 中宿主机备份目录 |
 | `HOST` / `PORT` | `0.0.0.0` / `4321` | 监听地址与端口 |
+| `MEDIA_DIR` | `./data/media` | 上传图片与不可变文件组；容器内 `/app/data/media`（与 DB 同卷） |
+| `MEDIA_QUOTA_BYTES` | `536870912`（512 MiB） | 媒体总预算（含下架与未结算预留） |
+| `MEDIA_MIN_FREE_BYTES` | `134217728`（128 MiB） | 落盘必须保留的磁盘余量 |
+| `TOTP_ENC_KEY` | 无 | 32 字节 base64url，加密 TOTP 密钥；缺失时双因素启用/验证 fail-closed |
+| `TOTP_REQUIRED_FOR` | `off` | `off`/`admin`/`admin,editor`；切换前必须先跑 `npm run totp:policy` |
 
 环境变量示例见 [.env.example](.env.example)。
 
@@ -82,6 +87,11 @@ docker compose exec app node scripts/create-admin.mjs
 | `npm run db:backup` | 一致性备份 |
 | `npm run db:restore` | 离线恢复（先停止所有数据库使用者，见“备份与恢复”） |
 | `npm run links:check` | 批量检查已发布资源链接（手动/定时均可） |
+| `npm run totp:reset -- <用户名> --reason "…" --yes` | 离线重置某账户双因素（唯一管理员丢设备时的兜底） |
+| `npm run totp:policy -- --from off --to admin --yes` | 离线撤销受影响账户的旧认证证明，再改环境变量重启 |
+| `npm run media:reconcile` | 媒体离线对账（默认 dry-run；`--yes` 执行，`--clear-guard` 确认写入者已停止） |
+| `npm run site:backup` | 站点级备份：DB + 全部媒体对象 + 哈希清单（离线一致性） |
+| `npm run site:restore -- --backup <批次目录> --yes` | 站点级恢复：暂存校验 → 迁移与认证净化 → 可回滚切换 |
 
 浏览器测试默认使用 `/usr/bin/google-chrome`，可通过 `CHROME_PATH`、`TEST_BASE_URL` 覆盖。CI 在 Node 24 上执行 check → test → build 与生产服务器冒烟，不运行浏览器测试。
 
@@ -91,7 +101,9 @@ docker compose exec app node scripts/create-admin.mjs
 - 上公网前先做**源站隐身**：Nginx 只允许 CDN 回源段与运维 IP，直连 `return 444`；否则源站 IP 一旦泄露，CDN 层防护可被完全绕过。见 [边缘防护](docs/edge-cdn-hardening.md)。
 - 有 CDN 时必须 `set_real_ip_from` + `real_ip_header` 还原访客 IP，否则 `limit_req` 与应用按访客限流都会退化成"全站一个桶"。
 - 边缘层再加 `limit_req`/`limit_conn` 抗 CC（应用层限流负责业务语义，两层不冲突）。
-- 数据在命名卷 `site-data`，备份写到宿主机目录；`docker compose down -v` 会删除全部数据。
+- 数据（SQLite + `media/`）在命名卷 `site-data`，备份写到宿主机目录；`docker compose down -v` 会删除全部数据。
+- `/media/` **必须**转发到应用（每次请求实时查库、`no-store`）。**禁止**在 Nginx 用 `alias`/`root` 直出媒体目录，也禁止 CDN 缓存该路径——否则下架后旧 URL 仍可取到图片。
+- 上传体积：应用上限 5 MiB + 64 KiB，代理 `client_max_body_size` 取 `6m` 或更大。
 - `SITE_URL` 必须与浏览器地址一致（协议 + 域名 + 端口）；HTTPS 地址会自动给会话 Cookie 加 `Secure`。
 - 反向代理必须**覆盖写入**客户端地址，而不是透传客户端的值：
 
@@ -106,8 +118,21 @@ docker compose exec app node scripts/create-admin.mjs
 
 ## 备份与恢复
 
+**含媒体上传的站点必须使用站点级备份**：`db:backup` 只包含 SQLite，是诊断快照；
+用它恢复会让数据库指向不存在的图片（`restore-db` 在发现媒体登记时会直接拒绝，
+并提示改用 `restore-site`）。
+
 ```bash
-npm run db:backup                                    # 本地
+npm run site:backup                                  # DB + media/objects + manifest + COMPLETE
+npm run site:restore -- --backup ./backups/site-… --yes
+```
+
+站点备份/恢复都要求离线：先停止 app、maintenance 与所有手动媒体任务。备份前会检查
+媒体占位为空、对象哈希完整；恢复会在暂存位置完成校验、迁移与认证净化（清空会话/挑战/
+恢复码、递增 `auth_version`、抬升 TOTP 步数下限），切换失败按日志回滚。
+
+```bash
+npm run db:backup                                    # 本地（仅数据库诊断快照）
 docker compose exec app node scripts/backup-db.mjs   # 容器
 ```
 

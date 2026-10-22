@@ -30,7 +30,7 @@ const fields: EditorField[] = [
   {key:'eligibility',name:'资格与身份要求',area:true}, {key:'caveat',name:'限制与注意事项',area:true},
   {key:'steps',name:'入门步骤',area:true,help:'每行一步，不用添加序号。'},
   {key:'details',name:'详细说明（Markdown）',area:true,optional:true,max:20000,help:'可选。支持标题、列表、链接、引用、表格与代码块；原始 HTML 会被转义。' },
-  {key:'image',name:'本地图片路径',help:'可空；仅支持 /images/ 下现有文件。首版不提供文件上传。',optional:true}, {key:'imageAlt',name:'图片说明',optional:true},
+  {key:'image',name:'图片路径（只读回填）',help:'上传后自动填入 /media/<哈希>.webp；/images/ 下的构建期图片可直接填写。清空即移除草稿引用。',optional:true}, {key:'imageAlt',name:'图片说明（alt）',help:'设置图片时必填，用于缺图占位与屏幕阅读器。',optional:true},
 ];
 const valueOf = (key: string) => { const value = (resource as unknown as Record<string,unknown>)[key]; return Array.isArray(value) ? value.join(key === 'steps' ? '\n' : ', ') : typeof value === 'string' ? value : ''; };
 ---
@@ -48,6 +48,18 @@ const valueOf = (key: string) => { const value = (resource as unknown as Record<
       <div class="field"><label for="image-rights">图片授权状态</label><select id="image-rights" data-field="imageRights"><option value="unconfirmed" selected={resource.imageRights !== 'confirmed'}>来源未确认（侵权联系删除）</option><option value="confirmed" selected={resource.imageRights === 'confirmed'}>已确认授权</option></select><small>来源未确认的截图会在前台标注“网络图片”并提供下架入口。</small></div>
       <div class="field"><label for="image-credit">图片署名与许可</label><input id="image-credit" data-field="imageCredit" value={valueOf('imageCredit')} maxlength="300" /><small>例如：作者 / 机构，许可协议。确认授权时请填写。</small></div>
       <div class="field"><label for="checked-at">核对日期</label><input id="checked-at" data-field="checkedAt" type="date" value={resource.checkedAt ?? ''}/><small>已核对时必填；待核对时留空。</small></div>
+    <div class="field full" data-media-panel>
+        <label>上传图片</label>
+        <p class="muted">只接受 PNG/JPEG/WebP，单张 ≤5 MiB，服务端会重新编码为 WebP 并清除 EXIF。上传成功只回填草稿字段，仍需保存；移除只解除本条目对图片的引用，不会下架共享媒体。</p>
+        <div class="media-upload" data-media-upload data-csrf={session.csrfToken}>
+          <input type="file" id="media-file" accept="image/png,image/jpeg,image/webp" />
+          <button type="button" class="secondary" id="media-upload-button">上传并填入</button>
+          <button type="button" class="secondary" id="media-clear">移除图片</button>
+          <p class="media-status" aria-live="polite" data-media-status></p>
+        </div>
+        <p class="media-preview" id="media-preview" hidden><img alt="" /></p>
+        <noscript><p class="error">上传图片需要启用 JavaScript。未启用时请联系管理员代传，或手动填写已存在的 /images/ 路径。</p></noscript>
+      </div>
     </div><div class="actions"><button type="button" class="secondary" id="details-preview">预览详细说明</button><span class="muted">预览不会保存。</span></div><div id="details-preview-panel" class="panel" style="display:none;background:#f7f9f5"><h3>详细说明预览</h3><div class="markdown-body" id="details-preview-body"></div></div><div class="actions"><button type="submit">保存草稿</button></div><p role="status" aria-live="polite"></p><noscript><p class="error">结构化编辑器需要启用 JavaScript 才能序列化字段，请启用后重新打开此页。未启用时请勿保存。</p></noscript>
   </form>
   {entry && <section class="panel"><h2>链接检查</h2><p>手动检查只记录结果，不会自动下架或改动发布状态；403/429 视为“需人工确认”，不当作失效。手动检查的对象是当前已保存的草稿链接。</p>{linkCheck
@@ -71,6 +83,13 @@ const valueOf = (key: string) => { const value = (resource as unknown as Record<
         : <p class="muted">尚未发布，无需停用；可以直接移入回收站。</p>}
   </section>}
 </AdminLayout>
+<style>
+  .media-upload { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .media-upload input[type=file] { max-width: 320px; }
+  .media-status { flex-basis: 100%; color: #52675d; font-size: 14px; }
+  .media-status:empty { display: none; }
+  .media-preview img { max-width: 100%; height: auto; border: 1px solid #e6ebe3; }
+</style>
 <script>
   const form = document.querySelector<HTMLFormElement>('[data-resource-editor]');
   form?.addEventListener('submit', () => {
@@ -88,6 +107,48 @@ const valueOf = (key: string) => { const value = (resource as unknown as Record<
     if (resource.status === 'review') resource.checkedAt = null;
     if (input) input.value = JSON.stringify(resource);
   }, {capture:true});
+  const mediaInput = form?.querySelector<HTMLInputElement>('[data-field="image"]');
+  const mediaPreview = document.querySelector<HTMLElement>('#media-preview');
+  const mediaStatus = document.querySelector<HTMLElement>('.media-status');
+  const mediaFile = document.querySelector<HTMLInputElement>('#media-file');
+  const showPreview = (src?: string) => {
+    if (!mediaPreview) return;
+    const img = mediaPreview.querySelector('img');
+    if (!src) { mediaPreview.hidden = true; if (img) img.removeAttribute('src'); return; }
+    mediaPreview.hidden = false;
+    if (img) img.src = src;
+    if (img) img.alt = form?.querySelector<HTMLInputElement>('[data-field="imageAlt"]')?.value ?? '';
+  };
+  showPreview(mediaInput?.value || undefined);
+  document.querySelector<HTMLButtonElement>('#media-clear')?.addEventListener('click', () => {
+    if (mediaInput) mediaInput.value = '';
+    showPreview();
+    if (mediaStatus) mediaStatus.textContent = '已移除草稿中的图片引用；保存后生效（不会下架共享媒体）。';
+  });
+  document.querySelector<HTMLButtonElement>('#media-upload-button')?.addEventListener('click', async () => {
+    const file = mediaFile?.files?.[0];
+    if (!file) { if (mediaStatus) mediaStatus.textContent = '请先选择一张图片。'; return; }
+    if (file.size > 5 * 1024 * 1024) { if (mediaStatus) mediaStatus.textContent = '图片超过 5 MiB 上限。'; return; }
+    const button = document.querySelector<HTMLButtonElement>('#media-upload-button');
+    if (button) button.disabled = true;
+    if (mediaStatus) mediaStatus.textContent = '上传并转码中…';
+    try {
+      const body = new FormData();
+      body.set('csrf', form?.querySelector<HTMLInputElement>('input[name=csrf]')?.value ?? '');
+      body.set('action', 'upload-media');
+      body.set('file', file);
+      body.set('rights', form?.querySelector<HTMLSelectElement>('[data-field="imageRights"]')?.value ?? 'unconfirmed');
+      body.set('credit', form?.querySelector<HTMLInputElement>('[data-field="imageCredit"]')?.value ?? '');
+      const response = await fetch('/api/manage/', { method: 'POST', body, headers: { Accept: 'application/json' } });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(typeof data.error === 'string' ? data.error : '上传失败');
+      if (mediaInput) mediaInput.value = data.media.src;
+      showPreview(data.media.src);
+      if (mediaStatus) mediaStatus.textContent = `已上传 ${data.media.width}×${data.media.height}；请填写图片说明并保存草稿。`;
+    } catch (error) {
+      if (mediaStatus) mediaStatus.textContent = error instanceof Error ? error.message : '上传失败';
+    } finally { if (button) button.disabled = false; }
+  });
   const previewButton = document.querySelector<HTMLButtonElement>('#details-preview');
   const details = document.querySelector<HTMLTextAreaElement>('[data-field="details"]');
   const panel = document.querySelector<HTMLElement>('#details-preview-panel');

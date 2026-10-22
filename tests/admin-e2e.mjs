@@ -9,6 +9,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { launchTestBrowser } from './browser-harness.mjs';
+import sharp from 'sharp';
+import jsQR from 'jsqr';
+import * as totp from '../src/server/totp.ts';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), 'sj-e2e-'));
@@ -35,7 +38,11 @@ before(async () => {
   assert.equal(seeded.status, 0, seeded.stderr);
   server = spawn(process.execPath, ['dist/server/entry.mjs'], {
     cwd: root,
-    env: { ...process.env, NODE_ENV: 'production', HOST: '127.0.0.1', PORT: String(port), DATABASE_PATH: dbPath, SITE_URL: base, MAINTENANCE_STATE_PATH: join(dir, 'maintenance.sqlite') },
+    env: {
+      ...process.env, NODE_ENV: 'production', HOST: '127.0.0.1', PORT: String(port), DATABASE_PATH: dbPath,
+      SITE_URL: base, MAINTENANCE_STATE_PATH: join(dir, 'maintenance.sqlite'),
+      MEDIA_DIR: join(dir, 'media'), TOTP_ENC_KEY: Buffer.alloc(32, 9).toString('base64url'),
+    },
     stdio: ['ignore', 'ignore', 'pipe'],
   });
   server.stderr.on('data', (chunk) => process.stderr.write(chunk));
@@ -440,7 +447,7 @@ test('导出 JSON、导入预检与导入应用', async () => {
   const exported = await page.request.get(`${base}/api/export/`);
   assert.equal(exported.status(), 200);
   const payload = await exported.json();
-  assert.equal(payload.schemaVersion, 1);
+  assert.equal(payload.schemaVersion, 2, '导出升级为 v2：带媒体元数据');
   assert.ok(payload.resources.length >= 12);
 
   const resource = {
@@ -736,4 +743,357 @@ test('最新备份等于服务器内容时不遮挡更早的分歧备份', async
     await pageC.getByRole('button', { name: '查看待合并内容' }).click();
     assert.match(await pageC.locator('[data-draft-content]').inputValue(), /较早的分歧内容/);
   } finally { await context.close(); }
+});
+
+/* --------------------------------------------------------------- TOTP 2FA */
+
+const TOTP_KEY = Buffer.alloc(32, 9).toString('base64url');
+
+async function decodeQrFromPage(page) {
+  const svg = await page.locator('.totp-qr svg').evaluate((element) => element.outerHTML);
+  const { data, info } = await sharp(Buffer.from(svg)).resize(480, 480).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const decoded = jsQR(new Uint8ClampedArray(data), info.width, info.height);
+  assert.ok(decoded, '页面上的二维码必须可以被独立解码');
+  const uri = new URL(decoded.data);
+  assert.equal(uri.searchParams.get('issuer'), '三江资源');
+  return { secret: uri.searchParams.get('secret'), uri: decoded.data };
+}
+
+function rewindStep(username, steps = 8) {
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec('PRAGMA busy_timeout=5000');
+    db.prepare('UPDATE users SET totp_last_step = COALESCE(totp_last_step, 0) - ? WHERE username=?').run(steps, username);
+  } finally { db.close(); }
+}
+
+function addSecondAdmin() {
+  const run = spawnSync(process.execPath, ['scripts/create-admin.mjs'], {
+    cwd: root,
+    env: { ...process.env, DATABASE_PATH: dbPath, ADMIN_USERNAME: 'secondadmin', ADMIN_PASSWORD: 'second-password-123' },
+    encoding: 'utf8',
+  });
+  assert.equal(run.status, 0, run.stderr);
+}
+
+test('TOTP：真实二维码绑定、Cookie 传递、恢复码登录与一次性结果页', async () => {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await login(page, 'rootadmin', 'root-password-123');
+
+  // 1) 自助启用：口令 → enroll 挑战 Cookie（Path=/、HttpOnly），页面带可解码二维码。
+  await page.goto(`${base}/admin/security/`);
+  await page.locator('#enroll-password').fill('root-password-123');
+  await Promise.all([
+    page.waitForURL(`${base}/admin/login/enroll/`),
+    page.getByRole('button', { name: '开始绑定' }).click(),
+  ]);
+  const cookies = await context.cookies(base);
+  const challengeCookie = cookies.find((cookie) => cookie.name === 'sanjiang_mfa');
+  assert.ok(challengeCookie, '必须下发挑战 Cookie');
+  assert.equal(challengeCookie.path, '/', 'Path 必须覆盖页面与 /api/login/*');
+  assert.equal(challengeCookie.httpOnly, true);
+  assert.equal(challengeCookie.sameSite, 'Strict');
+  // 自愿启用时本来就有会话；"口令通过后不得残留会话"的断言在下面的登录流程里验证。
+
+  const { secret } = await decodeQrFromPage(page);
+  // 刷新复用同一 secret，不生成新秘密。
+  await page.reload();
+  const again = await decodeQrFromPage(page);
+  assert.equal(again.secret, secret, '刷新必须复用同一秘密');
+
+  // 2) 未提交验证码 / 错误验证码都不能启用。
+  await page.goto(`${base}/admin/login/enroll/`);
+  await page.locator('#code').fill('000000');
+  await page.getByRole('button', { name: '确认并启用' }).click();
+  await page.waitForLoadState();
+  assert.match(await page.locator('body').innerText(), /验证码不正确|登录请求已失效/);
+  {
+    const db = new DatabaseSync(dbPath);
+    try {
+      const row = db.prepare("SELECT totp_secret,totp_confirmed_at FROM users WHERE username='rootadmin'").get();
+      assert.equal(row.totp_secret, null, '错误验证码不能安装因子');
+      assert.equal(row.totp_confirmed_at, null);
+    } finally { db.close(); }
+  }
+
+  // 3) 正确验证码（来自解码出的 secret）才完成绑定，并一次性展示恢复码。
+  await page.goto(`${base}/admin/login/enroll/`);
+  const fresh = await decodeQrFromPage(page);
+  const code = totp.hotp(totp.base32Decode(fresh.secret), totp.currentStep() + 1);
+  await page.locator('#code').fill(code);
+  await Promise.all([
+    page.waitForLoadState('load'),
+    page.getByRole('button', { name: '确认并启用' }).click(),
+  ]);
+  const body = await page.locator('body').innerText();
+  assert.match(body, /双因素认证已启用/);
+  const codes = await page.locator('code').allTextContents();
+  assert.equal(codes.length, 10, '必须一次性展示 10 个恢复码');
+  assert.equal((await context.cookies(base)).find((cookie) => cookie.name === 'sanjiang_mfa'), undefined, '成功后必须清除挑战 Cookie');
+  assert.ok((await context.cookies(base)).find((cookie) => cookie.name === 'sanjiang_session'), '成功后签发会话');
+
+  // 4) “我已保存”只是普通 GET，不会再次兑换或重放恢复码。
+  await page.getByRole('link', { name: '我已保存，进入后台' }).click();
+  await page.waitForURL(`${base}/admin/`);
+  await page.goto(`${base}/admin/login/enroll/`);
+  assert.equal(new URL(page.url()).pathname, '/admin/security/', '已消费的挑战页应回到安全设置，而不是重新注册');
+  const residue = (await page.locator('code').allTextContents()).filter((text) => /^[A-Z2-7]{4}-[A-Z2-7]{4}$/.test(text.trim()));
+  assert.deepEqual(residue, [], '恢复码不得重复展示');
+
+  // 5) 退出后重新登录：口令只发挑战，第二步才进后台。
+  await page.getByRole('button', { name: '退出登录' }).click();
+  await page.waitForURL(`${base}/admin/login/`);
+  await page.locator('#username').fill('rootadmin');
+  await page.locator('#password').fill('root-password-123');
+  await Promise.all([
+    page.waitForURL(`${base}/admin/login/totp/`),
+    page.getByRole('button', { name: '登录后台' }).click(),
+  ]);
+  assert.equal(new URL(page.url()).pathname, '/admin/login/totp/');
+  await page.goto(`${base}/admin/`);
+  assert.equal(new URL(page.url()).pathname, '/admin/login/', '只拿到挑战 Cookie 不能访问后台');
+
+  await page.goto(`${base}/admin/login/totp/`);
+  rewindStep('rootadmin');
+  await page.locator('#code').fill(totp.hotp(totp.base32Decode(secret), totp.currentStep()));
+  await Promise.all([
+    page.waitForURL(`${base}/admin/`),
+    page.getByRole('button', { name: '验证并登录' }).click(),
+  ]);
+  assert.equal(await page.locator('h1').first().textContent(), '工作概览');
+
+  // 6) 恢复码登录：一次性使用。
+  await page.getByRole('button', { name: '退出登录' }).click();
+  await page.waitForURL(`${base}/admin/login/`);
+  await page.locator('#username').fill('rootadmin');
+  await page.locator('#password').fill('root-password-123');
+  await Promise.all([
+    page.waitForURL(`${base}/admin/login/totp/`),
+    page.getByRole('button', { name: '登录后台' }).click(),
+  ]);
+  await page.locator('#code').fill(codes[0]);
+  await Promise.all([
+    page.waitForURL(`${base}/admin/`),
+    page.getByRole('button', { name: '验证并登录' }).click(),
+  ]);
+  await page.getByRole('button', { name: '退出登录' }).click();
+  await page.waitForURL(`${base}/admin/login/`);
+  await page.locator('#username').fill('rootadmin');
+  await page.locator('#password').fill('root-password-123');
+  await Promise.all([
+    page.waitForURL(`${base}/admin/login/totp/`),
+    page.getByRole('button', { name: '登录后台' }).click(),
+  ]);
+  await page.locator('#code').fill(codes[0]);
+  await page.getByRole('button', { name: '验证并登录' }).click();
+  await page.waitForLoadState();
+  // 失败走错误页（401），不重定向；关键是不得进入后台，也不得签发新会话。
+  assert.match(await page.locator('body').innerText(), /验证码不正确|登录请求已失效/);
+  assert.notEqual(new URL(page.url()).pathname, '/admin/', '已使用的恢复码必须被拒绝');
+  await context.close();
+});
+
+test('TOTP：管理员重置他人双因素后，对方回到口令登录', async () => {
+  // 1) editor1 在独立上下文里自助启用（不复用会话缓存，避免旧会话被撤销后误判）。
+  const editorContext = await browser.newContext();
+  const editorPage = await editorContext.newPage();
+  await editorPage.goto(`${base}/admin/login/`);
+  await editorPage.locator('#username').fill('editor1');
+  await editorPage.locator('#password').fill('editor-password-123');
+  await Promise.all([editorPage.waitForURL(`${base}/admin/`), editorPage.getByRole('button', { name: '登录后台' }).click()]);
+  await editorPage.goto(`${base}/admin/security/`);
+  await editorPage.locator('#enroll-password').fill('editor-password-123');
+  await Promise.all([
+    editorPage.waitForURL(`${base}/admin/login/enroll/`),
+    editorPage.getByRole('button', { name: '开始绑定' }).click(),
+  ]);
+  const { secret } = await decodeQrFromPage(editorPage);
+  await editorPage.locator('#code').fill(totp.hotp(totp.base32Decode(secret), totp.currentStep() + 1));
+  await Promise.all([editorPage.waitForLoadState('load'), editorPage.getByRole('button', { name: '确认并启用' }).click()]);
+  await Promise.all([editorPage.waitForURL(`${base}/admin/`), editorPage.getByRole('link', { name: '我已保存，进入后台' }).click()]);
+  await editorContext.close();
+
+  // 2) 另一位管理员（未启用因子）在人员页重置 editor1。
+  addSecondAdmin();
+  const adminContext = await browser.newContext();
+  const adminPage = await adminContext.newPage();
+  await adminPage.goto(`${base}/admin/login/`);
+  await adminPage.locator('#username').fill('secondadmin');
+  await adminPage.locator('#password').fill('second-password-123');
+  await Promise.all([adminPage.waitForURL(`${base}/admin/`), adminPage.getByRole('button', { name: '登录后台' }).click()]);
+
+  await adminPage.goto(`${base}/admin/users/`);
+  const section = adminPage.locator('section.panel', { hasText: 'editor1' }).first();
+  await section.locator('input[name="password"]').last().fill('second-password-123');
+  await section.locator('input[name="reason"]').fill('设备丢失，管理员重置');
+  // 重置表单带 data-confirm：Playwright 默认 dismiss 会让提交直接中止。
+  adminPage.once('dialog', (dialog) => dialog.accept());
+  await section.getByRole('button', { name: '重置该账户的双因素' }).click();
+  // fetch 提交是异步的：轮询等待重置落库，而不是立即断言。
+  let row = null;
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const db = new DatabaseSync(dbPath);
+    try { row = db.prepare("SELECT totp_secret,totp_confirmed_at FROM users WHERE username='editor1'").get(); } finally { db.close(); }
+    if (row && row.totp_secret === null) break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.equal(row?.totp_secret ?? null, null, '管理员重置必须清空因子');
+  assert.equal(row?.totp_confirmed_at ?? null, null);
+
+  // 3) off 策略下，editor1 回到口令登录。
+  const after = await browser.newContext();
+  const afterPage = await after.newPage();
+  await afterPage.goto(`${base}/admin/login/`);
+  await afterPage.locator('#username').fill('editor1');
+  await afterPage.locator('#password').fill('editor-password-123');
+  await Promise.all([afterPage.waitForURL(`${base}/admin/`), afterPage.getByRole('button', { name: '登录后台' }).click()]);
+  assert.equal(await afterPage.locator('h1').first().textContent(), '工作概览');
+  await after.close();
+  await adminContext.close();
+});
+
+test('TOTP：强制策略下未启用管理员登录即进入注册，完成绑定后才进后台', async () => {
+  const forcedDir = mkdtempSync(join(tmpdir(), 'sj-e2e-totp-'));
+  const forcedDb = join(forcedDir, 'site.sqlite');
+  const forcedPort = port + 137;
+  const forcedBase = `http://127.0.0.1:${forcedPort}`;
+  const seeded = spawnSync(process.execPath, ['scripts/create-admin.mjs'], {
+    cwd: root,
+    env: { ...process.env, DATABASE_PATH: forcedDb, ADMIN_USERNAME: 'forcedadmin', ADMIN_PASSWORD: 'forced-password-123' },
+    encoding: 'utf8',
+  });
+  assert.equal(seeded.status, 0, seeded.stderr);
+  const forced = spawn(process.execPath, ['dist/server/entry.mjs'], {
+    cwd: root,
+    env: {
+      ...process.env, NODE_ENV: 'production', HOST: '127.0.0.1', PORT: String(forcedPort),
+      DATABASE_PATH: forcedDb, SITE_URL: forcedBase, MEDIA_DIR: join(forcedDir, 'media'),
+      MAINTENANCE_STATE_PATH: join(forcedDir, 'maintenance.sqlite'),
+      TOTP_ENC_KEY: TOTP_KEY, TOTP_REQUIRED_FOR: 'admin',
+    },
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  forced.stderr.on('data', (chunk) => process.stderr.write(chunk));
+  try {
+    for (let attempt = 0; attempt < 60; attempt++) {
+      try { const response = await fetch(`${forcedBase}/api/health/`); if (response.ok) break; } catch {}
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto(`${forcedBase}/admin/login/`);
+    await page.locator('#username').fill('forcedadmin');
+    await page.locator('#password').fill('forced-password-123');
+    await Promise.all([
+      page.waitForURL(`${forcedBase}/admin/login/enroll/`),
+      page.getByRole('button', { name: '登录后台' }).click(),
+    ]);
+    assert.match(await page.locator('body').innerText(), /扫码/);
+    await page.goto(`${forcedBase}/admin/`);
+    assert.equal(new URL(page.url()).pathname, '/admin/login/', '未完成注册不能进入后台');
+
+    await page.goto(`${forcedBase}/admin/login/enroll/`);
+    const { secret } = await decodeQrFromPage(page);
+    await page.locator('#code').fill(totp.hotp(totp.base32Decode(secret), totp.currentStep() + 1));
+    await Promise.all([page.waitForLoadState('load'), page.getByRole('button', { name: '确认并启用' }).click()]);
+    assert.match(await page.locator('body').innerText(), /恢复码/);
+    await page.getByRole('link', { name: '我已保存，进入后台' }).click();
+    await page.waitForURL(`${forcedBase}/admin/`);
+    assert.equal(await page.locator('h1').first().textContent(), '工作概览');
+    await context.close();
+  } finally {
+    forced.kill('SIGTERM');
+    await new Promise((resolve) => forced.once('exit', resolve));
+    rmSync(forcedDir, { recursive: true, force: true });
+  }
+});
+
+/* ------------------------------------------------------------ 媒体上传 P0 */
+
+test('媒体：编辑器上传→回填→保存→发布→变体显示；下架后旧 URL 立即 404 并显示占位', async () => {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  // TOTP 用例已经把 rootadmin 变成"需要第二因子"，这里用运维 CLI 重置（离线恢复路径），
+  // 再验证 off 策略下的口令登录；避免复用失效的会话缓存。
+  const reset = spawnSync(process.execPath, ['scripts/reset-totp.mjs', 'rootadmin', '--reason', '媒体用例前置重置', '--yes'], {
+    cwd: root, env: { ...process.env, DATABASE_PATH: dbPath }, encoding: 'utf8',
+  });
+  assert.equal(reset.status, 0, reset.stderr);
+  assert.match(reset.stdout, /"status": "reset"/);
+  await page.goto(`${base}/admin/login/`);
+  await page.locator('#username').fill('rootadmin');
+  await page.locator('#password').fill('root-password-123');
+  await Promise.all([page.waitForURL(`${base}/admin/`), page.getByRole('button', { name: '登录后台' }).click()]);
+  const png = await sharp({ create: { width: 900, height: 600, channels: 3, background: '#2f5d46' } }).png().toBuffer();
+
+  await page.goto(`${base}/admin/resources/new/`);
+  await page.locator('#field-id').fill('media-demo');
+  await page.locator('#field-title').fill('媒体上传示例');
+  await page.locator('#field-summary').fill('用于验证上传与变体渲染的示例资源。');
+  await page.locator('#field-cost').fill('免费');
+  await page.locator('#field-url').fill('https://example.com/media-demo');
+  await page.locator('#field-sourceUrl').fill('https://example.com/media-demo/about');
+  await page.locator('#field-platforms').fill('网页');
+  await page.locator('#field-tags').fill('测试,图片');
+  await page.locator('#field-license').fill('示例许可');
+  await page.locator('#field-eligibility').fill('无');
+  await page.locator('#field-caveat').fill('仅用于测试');
+  await page.locator('#field-steps').fill('第一步');
+  await page.locator('#image-rights').selectOption('confirmed');
+  await page.locator('#image-credit').fill('测试 / CC0');
+  await page.locator('#field-imageAlt').fill('示例界面截图');
+
+  await page.setInputFiles('#media-file', { name: 'shot.png', mimeType: 'image/png', buffer: png });
+  await page.getByRole('button', { name: '上传并填入' }).click();
+  await page.waitForFunction(() => document.querySelector('.media-status')?.textContent?.includes('已上传'));
+  const src = await page.locator('[data-field="image"]').inputValue();
+  assert.match(src, /^\/media\/[a-f0-9]{64}\.webp$/);
+  assert.equal(await page.locator('#media-preview img').getAttribute('src'), src);
+  const mediaId = src.slice('/media/'.length, -'.webp'.length);
+
+  // 详情正文也引用这张图，验证 Markdown 与结构化图片共用可用性判定。
+  await page.locator('[data-field="details"]').fill(`正文截图：![示例](${src})`);
+  await Promise.all([page.waitForURL(`${base}/admin/resources/media-demo/`), page.getByRole('button', { name: '保存草稿' }).click()]);
+
+  await page.goto(`${base}/admin/resources/media-demo/`);
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.getByRole('button', { name: '发布当前草稿' }).click();
+  await page.waitForURL(`${base}/admin/resources/media-demo/`);
+
+  const detail = await (await fetch(`${base}/resources/media-demo/`)).text();
+  assert.match(detail, new RegExp(`/media/${mediaId}\\.webp`));
+  assert.match(detail, new RegExp(`/media/${mediaId}-320\\.webp`), '必须输出多档 srcset');
+  assert.match(detail, /示例截图|示例界面截图/);
+
+  const image = await fetch(`${base}/media/${mediaId}.webp`);
+  assert.equal(image.status, 200);
+  assert.equal(image.headers.get('content-type'), 'image/webp');
+  assert.match(String(image.headers.get('cache-control')), /no-store/, '/media/ 不允许缓存');
+  const variant = await fetch(`${base}/media/${mediaId}-320.webp`);
+  assert.equal(variant.status, 200);
+  const head = await fetch(`${base}/media/${mediaId}.webp`, { method: 'HEAD' });
+  assert.equal(head.status, 200);
+  assert.equal((await fetch(`${base}/media/${mediaId}-500.webp`)).status, 404, '未声明的变体不允许访问');
+
+  // 全局下架（管理员入口），旧 URL 的新请求立即被拒绝。
+  await page.goto(`${base}/admin/media/`);
+  const row = page.locator('tr', { hasText: mediaId.slice(0, 12) });
+  await row.locator('input[name="reason"]').fill('截图过期');
+  page.once('dialog', (dialog) => dialog.accept());
+  await row.getByRole('button', { name: '全局下架' }).click();
+  await page.waitForURL(`${base}/admin/media/`);
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const probe = await fetch(`${base}/media/${mediaId}.webp`);
+    if (probe.status === 404) break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const afterTakedown = await fetch(`${base}/media/${mediaId}.webp`);
+  assert.equal(afterTakedown.status, 404, '下架后旧 URL 的新请求必须被拒绝');
+  assert.match(String(afterTakedown.headers.get('cache-control')), /no-store/);
+
+  const pageAfter = await (await fetch(`${base}/resources/media-demo/`)).text();
+  assert.match(pageAfter, /图片已下架|不可用/, '已下架的图片必须显示可理解的占位');
+  assert.doesNotMatch(pageAfter, new RegExp(`<img[^>]+/media/${mediaId}\\.webp`), '不得输出指向 404 的 img');
+  await context.close();
 });

@@ -22,6 +22,11 @@ services:
       # 若把 4321 直接暴露给公网，请改为 0。
       TRUST_PROXY: ${TRUST_PROXY:-1}
       DATABASE_PATH: /app/data/site.sqlite
+      MEDIA_DIR: /app/data/media
+      MEDIA_QUOTA_BYTES: ${MEDIA_QUOTA_BYTES:-536870912}
+      MEDIA_MIN_FREE_BYTES: ${MEDIA_MIN_FREE_BYTES:-134217728}
+      TOTP_ENC_KEY: ${TOTP_ENC_KEY:-}
+      TOTP_REQUIRED_FOR: ${TOTP_REQUIRED_FOR:-off}
       BACKUP_DIR: /app/backups
       BACKUP_KEEP: ${BACKUP_KEEP:-7}
       BACKUP_UTC_HOUR: ${BACKUP_UTC_HOUR:-19}
@@ -56,6 +61,7 @@ services:
     logging: *logging
     environment:
       DATABASE_PATH: /app/data/site.sqlite
+      MEDIA_DIR: /app/data/media
       BACKUP_DIR: /app/backups
       BACKUP_KEEP: ${BACKUP_KEEP:-7}
       BACKUP_UTC_HOUR: ${BACKUP_UTC_HOUR:-19}

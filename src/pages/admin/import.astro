@@ -19,7 +19,7 @@ const runErrors = (() => {
 })();
 ---
 <AdminLayout title="导入导出" session={session}>
-  <div class="notice"><strong>导入只恢复草稿，不会改公开版本。</strong><p>导出包含草稿、发布快照、分类与首页设置；导入会校验每一条资源/指南，缺失分类自动创建。首页设置只有在勾选后才会恢复。发布仍需在编辑页逐条确认。导出的 JSON 可直接导回（自动识别导出结构）；导出中含有的回收站条目，导入后会恢复为草稿。导出文件含草稿，请妥善保管。</p></div>
+  <div class="notice"><strong>导入只恢复草稿，不会改公开版本。</strong><p>导出包含草稿、发布快照、分类、媒体元数据与首页设置（不含图片二进制）；导入会校验每一条资源/指南，缺失分类自动创建。首页设置只有在勾选后才会恢复。发布仍需在编辑页逐条确认。导出的 JSON 可直接导回（自动识别导出结构）；导出中含有的回收站条目，导入后会恢复为草稿。导出文件含草稿，请妥善保管。</p></div>
   {imported !== null && <div class="notice" role="status"><strong>导入完成</strong><p>资源 {imported} 条，指南 {guides} 篇，新建分类 {categories} 个，恢复回收站条目 {restored ?? 0} 条，首页设置{settingsRestored === '1' ? '已恢复' : '未恢复'}，失败 {errors} 条。</p></div>}
   {runErrors.length > 0 && <section class="panel" role="status"><h2>这次导入的失败条目</h2><p class="muted">共 {runErrors.length} 条；修正后重新预检即可再次导入。结果保留最近 20 次。</p><ul>{runErrors.map((item) => <li><strong>{item.id}</strong>：{item.error}</li>)}</ul></section>}
   <section class="panel"><h2>导出</h2><p>下载 JSON 备份，可用于迁移或批量编辑前的留档。</p><div class="actions"><a class="button" href="/api/export/">下载内容 JSON</a><span class="muted">仅管理员；文件不进仓库。</span></div></section>
@@ -89,6 +89,25 @@ const runErrors = (() => {
         }
         return fragment;
       };
+      // 缺图条目默认逐条拒绝；这里把缺失清单明确列出来，避免管理员反复重试。
+      const mediaPart = (): DocumentFragment => {
+        const fragment = document.createDocumentFragment();
+        const value = result.media as { missing?: string[]; entries?: { kind: string; id: string; missing: string[] }[] } | undefined;
+        const entries = Array.isArray(value?.entries) ? value.entries : [];
+        if (entries.length === 0) return fragment;
+        fragment.append(heading('缺失图片'));
+        fragment.append(paragraph(`有 ${entries.length} 个条目引用了目标库缺失或已下架的图片，默认整条拒绝导入；请先恢复/重新上传图片，或从资源中移除引用后重新预检。`));
+        const list = document.createElement('ul');
+        for (const entry of entries) {
+          const row = document.createElement('li');
+          const label = document.createElement('strong');
+          label.textContent = entry.id;
+          row.append(label, document.createTextNode(`（${entry.kind === 'guide' ? '指南' : '资源'}）：${entry.missing.map((id) => `/media/${id}.webp`).join('、')}`));
+          list.append(row);
+        }
+        fragment.append(list);
+        return fragment;
+      };
       const settingsPart = (): DocumentFragment => {
         const fragment = document.createDocumentFragment();
         fragment.append(heading('首页设置'));
@@ -115,6 +134,7 @@ const runErrors = (() => {
           })()] : []),
           renderPart('资源', result.resources),
           renderPart('指南', result.guides),
+          mediaPart(),
           settingsPart(),
         );
       }

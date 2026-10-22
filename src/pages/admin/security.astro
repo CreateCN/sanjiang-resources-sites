@@ -1,0 +1,63 @@
+---
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import { getSession } from '../../server/auth';
+import { securitySummary } from '../../server/account';
+const session = getSession(Astro.request);
+if (!session) return Astro.redirect('/admin/login/');
+const security = securitySummary(session.user);
+if (!security) return Astro.redirect('/admin/login/');
+const stateLabel = security.state === 'enabled' ? '已启用' : security.state === 'disabled' ? '未启用' : '状态异常';
+---
+<AdminLayout title="账户安全" session={session}>
+  <section class="panel">
+    <h2>双因素认证（TOTP）</h2>
+    <dl class="facts">
+      <div><dt>当前状态</dt><dd>{stateLabel}</dd></div>
+      <div><dt>启用时间</dt><dd>{security.confirmedAt ? security.confirmedAt.slice(0, 10) : '—'}</dd></div>
+      <div><dt>剩余恢复码</dt><dd>{security.state === 'enabled' ? `${security.remainingRecoveryCodes} 个` : '—'}</dd></div>
+      <div><dt>强制策略</dt><dd>{security.policyRaw}（TOTP_REQUIRED_FOR）{security.policyRequired ? ' · 当前角色必须启用' : ''}</dd></div>
+      <div><dt>加密密钥</dt><dd>{security.keyConfigured ? '已配置' : '未配置（无法启用或验证）'}</dd></div>
+    </dl>
+    {security.state === 'invalid' && <div class="notice"><strong>账户认证状态异常。</strong><p>密钥与启用时间不一致，登录会被拒绝。请联系运维使用 <code>scripts/reset-totp.mjs</code> 重置后重新绑定。</p></div>}
+    {!security.keyConfigured && <div class="notice"><strong>未配置 TOTP_ENC_KEY。</strong><p>在服务器环境变量中设置 32 字节 base64url 密钥并重启后，才能启用或验证双因素。</p></div>}
+  </section>
+
+  {security.state === 'disabled' && <section class="panel">
+    <h2>启用双因素</h2>
+    <p class="muted">先确认当前口令，然后扫码绑定。绑定成功会一次性显示 10 个恢复码，并让其它设备上的会话失效。</p>
+    <form action="/api/manage/" method="post" data-admin-form>
+      <input type="hidden" name="csrf" value={session.csrfToken} />
+      <input type="hidden" name="action" value="begin-totp-enroll" />
+      <div class="field"><label for="enroll-password">当前口令</label><input id="enroll-password" name="password" type="password" autocomplete="current-password" required /></div>
+      <div class="actions"><button type="submit">开始绑定</button></div>
+      <p role="status" aria-live="polite"></p>
+    </form>
+  </section>}
+
+  {security.state === 'enabled' && <>
+    <section class="panel">
+      <h2>重新生成恢复码</h2>
+      <p class="muted">旧的恢复码会全部作废，其它设备上的会话与进行中的登录请求也会失效。新恢复码只显示一次。</p>
+      <form action="/api/manage/" method="post" data-admin-form>
+        <input type="hidden" name="csrf" value={session.csrfToken} />
+        <input type="hidden" name="action" value="regenerate-recovery" />
+        <div class="field"><label for="regen-password">当前口令</label><input id="regen-password" name="password" type="password" autocomplete="current-password" required /></div>
+        <div class="field"><label for="regen-code">当前验证码或恢复码</label><input id="regen-code" name="code" inputmode="numeric" maxlength="20" required /></div>
+        <div class="actions"><button type="submit">重新生成恢复码</button></div>
+        <p role="status" aria-live="polite"></p>
+      </form>
+    </section>
+    <section class="panel">
+      <h2>停用双因素</h2>
+      <p class="muted">停用后该账户只凭口令即可登录。若策略要求当前角色必须启用，这里会被拒绝——请改用另一位管理员或运维命令。</p>
+      <form action="/api/manage/" method="post" data-admin-form data-confirm="停用后只凭口令即可登录，确定继续？">
+        <input type="hidden" name="csrf" value={session.csrfToken} />
+        <input type="hidden" name="action" value="disable-totp" />
+        <div class="field"><label for="disable-password">当前口令</label><input id="disable-password" name="password" type="password" autocomplete="current-password" required /></div>
+        <div class="field"><label for="disable-code">当前验证码或恢复码</label><input id="disable-code" name="code" inputmode="numeric" maxlength="20" required /></div>
+        <div class="actions"><button type="submit" class="danger">停用双因素</button></div>
+        <p role="status" aria-live="polite"></p>
+      </form>
+    </section>
+  </>}
+</AdminLayout>

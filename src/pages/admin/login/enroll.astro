@@ -1,0 +1,43 @@
+---
+import AdminLayout from '../../../layouts/AdminLayout.astro';
+import { challengeTokenFrom, getSession } from '../../../server/auth';
+import { enrollChallengeView } from '../../../server/auth';
+import { clientIdentity } from '../../../server/security';
+Astro.response.headers.set('Cache-Control', 'no-store');
+Astro.response.headers.set('X-Robots-Tag', 'noindex, nofollow');
+const challenge = challengeTokenFrom(Astro.request);
+const session = getSession(Astro.request);
+const view = challenge ? await enrollChallengeView(challenge, clientIdentity(Astro.request, Astro.clientAddress)) : undefined;
+if (!view) return Astro.redirect(session ? '/admin/security/' : '/admin/login/');
+const grouped = view.secret.replace(/(.{4})/g, '$1 ').trim();
+---
+<AdminLayout title="绑定验证器">
+  <section class="panel login-panel">
+    <h2>用验证器扫码，然后输入它显示的 6 位验证码</h2>
+    <p class="muted">绑定对象：<strong>{view.username}</strong>（三江资源）。二维码由服务器生成，只在本页显示，不保存、不缓存、不上传。</p>
+    {view.svg
+      ? <div class="totp-qr" aria-label="两步验证二维码" set:html={view.svg} />
+      : <p class="error" role="status">{view.qrError ?? '二维码暂时无法生成'}</p>}
+    <details class="totp-manual">
+      <summary>扫码不可用？手动输入密钥</summary>
+      <p>在验证器中添加账户时选择“输入设置密钥”，粘贴下面这串字符，类型选择“基于时间”。</p>
+      <p><code class="totp-secret">{grouped}</code></p>
+    </details>
+    <form action="/api/login/enroll/" method="post">
+      <div class="field">
+        <label for="code">验证器当前显示的 6 位验证码</label>
+        <input id="code" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required autofocus />
+        <small>只有服务端验证通过才会启用双因素；刷新本页不会更换密钥。</small>
+      </div>
+      <div class="actions"><button type="submit">确认并启用</button><a class="button secondary" href={session ? '/admin/security/' : '/admin/login/'}>取消</a></div>
+    </form>
+    <p class="admin-footer-note">启用后会用一次性页面显示 10 个恢复码，请离线保存。之后每次登录都需要验证码或恢复码。</p>
+  </section>
+</AdminLayout>
+<style>
+  .totp-qr { display: flex; justify-content: center; padding: 16px; background: #fff; }
+  .totp-qr :global(svg) { width: 320px; height: 320px; }
+  .totp-manual { margin: 12px 0 18px; }
+  .totp-manual summary { cursor: pointer; color: #245c42; }
+  .totp-secret { font: 18px/1.6 ui-monospace, SFMono-Regular, monospace; letter-spacing: 1px; word-break: break-all; }
+</style>

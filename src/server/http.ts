@@ -1,7 +1,10 @@
 import { randomToken, HttpError, fail, rateLimit, requireOrigin, clientIdentity } from './security.ts';
-import { login, logout, requireCsrf, sessionCookie } from './auth.ts';
+import { challengeCookie, challengeTokenFrom, confirmEnrollment, login, logout, requireCsrf, sessionCookie, verifyLoginChallenge } from './auth.ts';
+import { disableTotp, regenerateRecoveryCodes, resetTotpByAdmin, verifyFreshPassword } from './account.ts';
 import { changeGuidePublication, changePublication, createReport, createUser, deleteCategory, discontinueResource, findManagedResource, isMetricTargetAllowed, pingDatabase, purgeTrashGuide, purgeTrashResource, reactivateResource, recordEvent, restoreGuideRevision, restoreResourceRevision, restoreTrashGuide, restoreTrashResource, saveCategory, saveGuide, saveLinkCheck, saveResource, updateReport, updateUser } from './store.ts';
 import { checkResourceLink } from './linkcheck.ts';
+import { issueEnrollChallenge } from './auth.ts';
+import { IMAGE_MAX_BYTES, MULTIPART_MAX_BYTES, deleteMedia, ingestUpload, purgeMedia, restoreMedia } from './media.ts';
 import { saveSettings } from './settings.ts';
 import { bulkReviewResources, saveImportRun, schemaVersion } from './store.ts';
 import { applyImport } from '../lib/importer.ts';
@@ -10,9 +13,10 @@ import { MAX_IDENTIFIER_LENGTH } from '../lib/identifiers.ts';
 
 type Context = { request: Request; clientAddress?: string };
 const privateHeaders = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin' };
-function redirect(location: string, cookie?: string): Response {
+function redirect(location: string, cookies: string | string[] = []): Response {
   const headers = new Headers({ ...privateHeaders, Location: location });
-  if (cookie) headers.set('Set-Cookie', cookie);
+  // 多个 Set-Cookie 必须逐条 append：set() 会让"签发新会话 + 清除挑战"只留下一个。
+  for (const cookie of Array.isArray(cookies) ? cookies : [cookies]) if (cookie) headers.append('Set-Cookie', cookie);
   return new Response(null, { status: 303, headers });
 }
 function text(form: FormData, field: string): string {
@@ -40,8 +44,8 @@ function versionNumber(form: FormData): number | null {
 export const FORM_MAX_BYTES = 96 * 1024;
 /** 导入 JSON 上限，与导出规模匹配（500 条资源 / 200 篇指南）。 */
 export const IMPORT_MAX_BYTES = 3 * 1024 * 1024;
-/** /api/manage/ 的硬上限：导入需要更大空间，其余动作在处理时回落到 FORM_MAX_BYTES。 */
-export const MANAGE_MAX_BYTES = IMPORT_MAX_BYTES + 64 * 1024;
+/** /api/manage/ 的硬上限：导入与图片上传需要更大空间，其余动作在处理时回落到 FORM_MAX_BYTES。 */
+export const MANAGE_MAX_BYTES = Math.max(IMPORT_MAX_BYTES, MULTIPART_MAX_BYTES) + 64 * 1024;
 
 export async function readForm(request: Request, limit = FORM_MAX_BYTES): Promise<{ form: FormData; bytes: number }> {
   const type = request.headers.get('content-type') || '';
@@ -65,6 +69,10 @@ export async function readForm(request: Request, limit = FORM_MAX_BYTES): Promis
   try { return { form: await new Response(bytes, { headers: { 'Content-Type': type } }).formData(), bytes: total }; }
   catch { return fail(400, '无法解析表单内容'); }
 }
+function jsonResponse(payload: unknown, status = 200): Response {
+  return new Response(JSON.stringify(payload), { status, headers: { ...privateHeaders, 'Content-Type': 'application/json; charset=utf-8' } });
+}
+
 function escape(value: string): string { return value.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!); }
 function errorResponse(request: Request, error: unknown, draft?: string): Response {
   const status = error instanceof HttpError ? error.status : 500;
@@ -98,8 +106,14 @@ export async function managePost(context: Context): Promise<Response> {
     requireOrigin(request);
     const { form, bytes } = await readForm(request, MANAGE_MAX_BYTES);
     const action = text(form, 'action');
-    // 导入允许更大的请求体；其余动作仍受普通表单上限约束，避免放宽整体 DoS 面。
-    if (action !== 'import-apply' && bytes > FORM_MAX_BYTES) fail(413, '提交内容过大');
+    // 每个动作各自的真实上限：普通表单 96 KiB、导入 3 MiB、图片上传 5 MiB + 64 KiB。
+    if (action === 'import-apply') {
+      if (bytes > IMPORT_MAX_BYTES) fail(413, '提交内容过大');
+    } else if (action === 'upload-media') {
+      if (bytes > MULTIPART_MAX_BYTES) fail(413, '图片超过上传上限');
+    } else if (bytes > FORM_MAX_BYTES) {
+      fail(413, '提交内容过大');
+    }
     // Preserve the submitted draft even if the session expired while editing.
     // It is never evaluated and is always HTML-escaped on the error page.
     if (action === 'save-resource') draft = text(form, 'resource');
@@ -198,6 +212,55 @@ export async function managePost(context: Context): Promise<Response> {
         const runId = result.errors.length > 0 ? saveImportRun(session.user, result) : null;
         return redirect(`/admin/import/?resources=${result.resources}&guides=${result.guides}&categories=${result.categoriesCreated}&restored=${result.restored}&settings=${result.settings ? 1 : 0}&errors=${result.errors.length}${runId ? `&run=${runId}` : ''}`);
       }
+      case 'upload-media': {
+        const files = form.getAll('file');
+        if (files.length !== 1 || typeof files[0] === 'string') fail(400, '请选择一个图片文件');
+        const file = files[0] as File;
+        if (file.size === 0) fail(400, '上传的文件为空');
+        if (file.size > IMAGE_MAX_BYTES) fail(413, '图片超过 5 MiB 上限');
+        const rights = text(form, 'rights');
+        if (rights !== 'confirmed' && rights !== 'unconfirmed') fail(400, '请选择图片授权状态');
+        if (!request.headers.get('accept')?.includes('application/json')) {
+          fail(400, '上传需要启用 JavaScript 的编辑器界面；未启用时请联系管理员代传');
+        }
+        rateLimit('media-upload', session.user.username, 20, 60 * 60 * 1000);
+        const view = await ingestUpload(session.user, {
+          bytes: Buffer.from(await file.arrayBuffer()),
+          name: file.name || 'upload',
+          rights,
+          credit: text(form, 'credit'),
+        });
+        return jsonResponse({ ok: true, media: view });
+      }
+      case 'delete-media':
+        deleteMedia(session.user, text(form, 'id'), versionNumber(form), text(form, 'reason'));
+        return redirect('/admin/media/');
+      case 'restore-media':
+        restoreMedia(session.user, text(form, 'id'), versionNumber(form), text(form, 'reason'));
+        return redirect('/admin/media/');
+      case 'purge-media':
+        purgeMedia(session.user, text(form, 'id'), versionNumber(form));
+        return redirect('/admin/media/');
+      case 'begin-totp-enroll': {
+        if (!verifyFreshPassword(session.user, text(form, 'password'))) fail(403, '当前口令不正确');
+        const token = issueEnrollChallenge(session.user.id, identity(context));
+        return redirect('/admin/login/enroll/', challengeCookie(token));
+      }
+      case 'disable-totp': {
+        disableTotp(session.user, text(form, 'password'), text(form, 'code'));
+        return redirect('/admin/login/', [sessionCookie('', true, secureCookie(context.request)), challengeCookie()]);
+      }
+      case 'regenerate-recovery': {
+        const result = regenerateRecoveryCodes(session.user, text(form, 'password'), text(form, 'code'));
+        const headers = new Headers({ ...privateHeaders, 'Content-Type': 'text/html; charset=utf-8' });
+        headers.set('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+        headers.append('Set-Cookie', sessionCookie(result.token, false, secureCookie(context.request)));
+        return new Response(recoveryCodesPage(result.codes), { status: 200, headers });
+      }
+      case 'reset-totp': {
+        resetTotpByAdmin(session.user, numberField(form, 'id'), versionNumber(form), text(form, 'password'), text(form, 'code'), text(form, 'reason'));
+        return redirect('/admin/users/');
+      }
       case 'restore-trash-resource': restoreTrashResource(session.user, text(form, 'id')); return redirect('/admin/trash/');
       case 'purge-resource': purgeTrashResource(session.user, text(form, 'id')); return redirect('/admin/trash/');
       case 'restore-trash-guide': restoreTrashGuide(session.user, text(form, 'slug')); return redirect('/admin/trash/');
@@ -244,8 +307,43 @@ export async function loginPost(context: Context): Promise<Response> {
   try {
     requireOrigin(context.request);
     const { form } = await readForm(context.request);
-    const token = login(text(form, 'username'), text(form, 'password'), identity(context));
-    return redirect('/admin/', sessionCookie(token, false, secureCookie(context.request)));
+    const outcome = login(text(form, 'username'), text(form, 'password'), identity(context));
+    const secure = secureCookie(context.request);
+    if (outcome.kind === 'session') return redirect('/admin/', [sessionCookie(outcome.token, false, secure), challengeCookie()]);
+    // 口令通过但需要第二步：不签发会话，只发挑战凭据（HttpOnly + Path=/）。
+    const target = outcome.purpose === 'enroll' ? '/admin/login/enroll/' : '/admin/login/totp/';
+    return redirect(target, [challengeCookie(outcome.token), sessionCookie('', true, secure)]);
+  } catch (error) { return errorResponse(context.request, error); }
+}
+
+/** 第二步：挑战 + TOTP/恢复码 → 最终会话。失败保留挑战 Cookie 以便重试。 */
+export async function totpPost(context: Context): Promise<Response> {
+  try {
+    requireOrigin(context.request);
+    const { form } = await readForm(context.request);
+    const challenge = challengeTokenFrom(context.request) ?? '';
+    const result = verifyLoginChallenge(challenge, text(form, 'code'), identity(context));
+    return redirect('/admin/', [sessionCookie(result.token, false, secureCookie(context.request)), challengeCookie()]);
+  } catch (error) { return errorResponse(context.request, error); }
+}
+
+function recoveryCodesPage(codes: string[]): string {
+  const items = codes.map((code) => `<li><code>${escape(code)}</code></li>`).join('');
+  return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex, nofollow"><title>保存恢复码</title><main style="max-width:44rem;margin:4rem auto;padding:1rem;font:18px/1.7 system-ui"><h1>双因素认证已启用</h1><p>下面 10 个恢复码只显示这一次。请离线保存（打印或密码管理器），每个只能用一次。</p><ul style="columns:2;list-style:none;padding:0;font:20px/2 ui-monospace,monospace">${items}</ul><p><a href="/admin/">我已保存，进入后台</a></p><p style="color:#52675d;font-size:14px">设备丢失时可用恢复码登录，或由另一位管理员重置。</p></main></html>`;
+}
+
+/** 注册确认：只接受 6 位验证码；成功时一次性展示恢复码并签最终会话。 */
+export async function enrollPost(context: Context): Promise<Response> {
+  try {
+    requireOrigin(context.request);
+    const { form } = await readForm(context.request);
+    const challenge = challengeTokenFrom(context.request) ?? '';
+    const result = confirmEnrollment(challenge, text(form, 'code'), identity(context));
+    const headers = new Headers({ ...privateHeaders, 'Content-Type': 'text/html; charset=utf-8' });
+    headers.set('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+    headers.append('Set-Cookie', sessionCookie(result.token, false, secureCookie(context.request)));
+    headers.append('Set-Cookie', challengeCookie());
+    return new Response(recoveryCodesPage(result.recoveryCodes), { status: 200, headers });
   } catch (error) { return errorResponse(context.request, error); }
 }
 export async function logoutPost(context: Context): Promise<Response> {
@@ -254,7 +352,7 @@ export async function logoutPost(context: Context): Promise<Response> {
     const { form } = await readForm(context.request);
     requireCsrf(context.request, text(form, 'csrf'));
     logout(context.request);
-    return redirect('/admin/login/', sessionCookie('', true, secureCookie(context.request)));
+    return redirect('/admin/login/', [sessionCookie('', true, secureCookie(context.request)), challengeCookie()]);
   } catch (error) { return errorResponse(context.request, error); }
 }
 export async function reportsPost(context: Context): Promise<Response> {

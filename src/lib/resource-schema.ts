@@ -12,12 +12,15 @@ export const ResourceSchema = z.object({
   license: text, eligibility: text, caveat: text,
   steps: z.array(text.max(1000)).min(1).max(10), status: z.enum(['review', 'verified']),
   checkedAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
-  image: z.string().regex(/^\/images\/[a-zA-Z0-9._-]+$/).optional(), imageAlt: z.string().max(300).optional(),
+  image: z.string().regex(/^(?:\/images\/[a-zA-Z0-9._-]+|\/media\/[a-f0-9]{64}\.webp)$/, '图片必须是站内文件：/images/ 下的构建资源或已上传的 /media/ 媒体').optional(),
+  imageAlt: z.string().trim().max(300).optional(),
   details: z.string().max(20000).optional(),
   access: z.enum(['open', 'student-verification', 'campus-network', 'application', 'conditional', 'unknown']).optional(),
   imageRights: z.enum(['confirmed', 'unconfirmed']).optional(),
   imageCredit: z.string().max(300).optional(),
 }).superRefine((resource, ctx) => {
   if (resource.status === 'verified' && (!resource.checkedAt || Number.isNaN(Date.parse(resource.checkedAt)))) ctx.addIssue({ code: 'custom', message: '已核对条目必须填写有效核对日期' });
+  // 图片必须有替代文本：缺图占位与屏幕阅读器都依赖它。
+  if (resource.image && !resource.imageAlt) ctx.addIssue({ code: 'custom', path: ['imageAlt'], message: '设置图片时必须填写图片说明（alt）' });
 });
 export type Resource = z.infer<typeof ResourceSchema>;

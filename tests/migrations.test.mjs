@@ -28,7 +28,7 @@ test('existing 007 databases upgrade in place and keep users and reports', async
   const store = await import('../src/server/store.ts');
   try {
     database();
-    assert.equal(store.schemaVersion(), '008-user-version');
+    assert.equal(store.schemaVersion(), migrations.at(-1).id, '升级到当前最新迁移');
     const admin = store.listUsers().find((entry) => entry.username === 'legacy-admin');
     assert.ok(admin, '升级不能丢失账户');
     assert.equal(admin.role, 'admin');
@@ -38,6 +38,38 @@ test('existing 007 databases upgrade in place and keep users and reports', async
     assert.equal(store.listReports()[0]?.title, '升级前的反馈');
   } finally {
     closeDatabase();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('迁移可幂等重跑，且允许“先装 010、后补 009”的升级顺序', async () => {
+  const { applyMigrations } = await import('../src/server/migrations.ts');
+  const directory = mkdtempSync(join(tmpdir(), 'sj-migration-order-'));
+  const path = join(directory, 'out-of-order.sqlite');
+  const db = new DatabaseSync(path);
+  try {
+    db.exec('CREATE TABLE schema_migrations (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL)');
+    // 模拟一次只发布了 010 的旧版本：001–008 与 010 已应用，009 尚未存在。
+    const subset = migrations.filter((migration) => migration.id !== '009-media-library');
+    for (const migration of subset) {
+      db.exec('BEGIN IMMEDIATE');
+      migration.up(db);
+      db.prepare('INSERT INTO schema_migrations (id,applied_at) VALUES (?,?)').run(migration.id, new Date().toISOString());
+      db.exec('COMMIT');
+    }
+    const applied = applyMigrations(db);
+    assert.deepEqual(applied, ['009-media-library'], '只补装缺失的 009，不重复执行 010');
+    const tables = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((row) => row.name));
+    for (const table of ['media', 'media_tombstones', 'media_operations', 'media_store_guard', 'login_challenges', 'recovery_codes']) {
+      assert.ok(tables.has(table), `缺少表 ${table}`);
+    }
+    const users = new Set(db.prepare('PRAGMA table_info(users)').all().map((row) => row.name));
+    for (const column of ['auth_version', 'totp_secret', 'totp_confirmed_at', 'totp_last_step']) assert.ok(users.has(column), `users 缺少 ${column}`);
+    assert.deepEqual(applyMigrations(db), [], '再次运行不再应用任何迁移');
+    const ids = db.prepare('SELECT id FROM schema_migrations ORDER BY id').all().map((row) => String(row.id));
+    assert.deepEqual(ids, migrations.map((migration) => migration.id), '迁移记录不重复、不丢号');
+  } finally {
+    db.close();
     rmSync(directory, { recursive: true, force: true });
   }
 });

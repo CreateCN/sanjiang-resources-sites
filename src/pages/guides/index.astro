@@ -1,7 +1,7 @@
 ---
 import Layout from '../../layouts/Layout.astro';
 import { getPublishedGuides } from '../../lib/guides';
-import { renderInlineMarkdown } from '../../lib/markdown';
+import { renderMediaInline } from '../../lib/media-render';
 const guides = getPublishedGuides();
 const origin = (process.env.SITE_URL ?? Astro.url.origin).replace(/\/$/, '');
 const jsonLd = [{ '@context': 'https://schema.org', '@type': 'CollectionPage', name: '使用指南', url: `${origin}/guides/`, inLanguage: 'zh-CN' }];
@@ -13,6 +13,6 @@ const jsonLd = [{ '@context': 'https://schema.org', '@type': 'CollectionPage', n
     <p class="page-lead">这里不重复工具介绍，而是把一次真实的课程任务拆开：先做什么、用哪个入口、哪些条件要先确认。</p>
     {guides.length === 0
       ? <section class="empty-page" style="margin-top:32px"><h2 style="font-size:22px">指南还在整理中</h2><p>维护者会陆续补充写作、编程、设计与课程学习的用法说明。你可以先浏览资源目录，或推荐想看的题目。</p><div class="form-actions"><a class="portal-button" href="/#catalog">浏览资源目录</a><a class="text-link" href="/feedback/">推荐指南题目</a></div></section>
-      : <div class="guide-list">{guides.map((guide) => <a class="guide-row" href={`/guides/${guide.slug}/`}><div><h2>{guide.title}</h2>{guide.summary && <p set:html={renderInlineMarkdown(guide.summary)} />}</div><span aria-hidden="true">↗</span></a>)}</div>}
+      : <div class="guide-list">{guides.map((guide) => <a class="guide-row" href={`/guides/${guide.slug}/`}><div><h2>{guide.title}</h2>{guide.summary && <p set:html={renderMediaInline(guide.summary)} />}</div><span aria-hidden="true">↗</span></a>)}</div>}
   </div>
 </Layout>

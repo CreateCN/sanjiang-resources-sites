@@ -3,7 +3,7 @@ import Layout from '../../layouts/Layout.astro';
 import { getPublishedResources, getCategories } from '../../lib/catalog';
 import { getPublishedGuides } from '../../lib/guides';
 import { getSettings } from '../../server/settings';
-import { renderInlineMarkdown } from '../../lib/markdown';
+import { renderMediaInline } from '../../lib/media-render';
 import { accessLabel } from '../../lib/access';
 import { freshness } from '../../lib/freshness';
 const categories = getCategories().filter((category) => category.id !== 'all');
@@ -35,7 +35,7 @@ const jsonLd = [
       <h2 id="scenario-resources">资源（{resources.length}）</h2>
       {resources.length === 0
         ? <p class="muted">这个场景还没有已发布资源，可以先去 <a class="text-link" href="/#catalog">资源目录</a> 看看。</p>
-        : <div class="related-list">{resources.map((resource) => { const state = freshness(resource); const stale = resource.status === 'verified' && state.overdue; return <a class="related-link scenario-resource" href={`/resources/${resource.id}/`}><span><strong>{resource.title}</strong><span class="scenario-resource-summary" set:html={renderInlineMarkdown(resource.summary)} /></span><span class="guide-resource-meta"><span class="access-chip">{accessLabel(resource.access)}</span>{resource.cost}{stale && <span class="state-flag">核对已过期</span>} <span aria-hidden="true">↗</span></span></a>; })}</div>}
+        : <div class="related-list">{resources.map((resource) => { const state = freshness(resource); const stale = resource.status === 'verified' && state.overdue; return <a class="related-link scenario-resource" href={`/resources/${resource.id}/`}><span><strong>{resource.title}</strong><span class="scenario-resource-summary" set:html={renderMediaInline(resource.summary)} /></span><span class="guide-resource-meta"><span class="access-chip">{accessLabel(resource.access)}</span>{resource.cost}{stale && <span class="state-flag">核对已过期</span>} <span aria-hidden="true">↗</span></span></a>; })}</div>}
     </section>
     {guides.length > 0 && <section class="scenario-section" aria-labelledby="scenario-guides"><h2 id="scenario-guides">相关指南</h2><div class="related-list">{guides.map((guide) => <a class="related-link" href={`/guides/${guide.slug}/`}><span>{guide.title}</span><span aria-hidden="true">↗</span></a>)}</div></section>}
     <section class="scenario-section" aria-labelledby="scenario-other"><h2 id="scenario-other">换个场景</h2><div class="scenario-shelf">{others.map((entry) => { const other = settings.scenarios[entry.id] ?? { task: entry.name, detail: '', glyph: '用' }; return <a class="scenario-link" href={`/scenarios/${entry.id}/`}><span class="scenario-word" aria-hidden="true">{other.glyph}</span><strong>{other.task}</strong><span>{other.detail || entry.name}</span></a>; })}</div></section>

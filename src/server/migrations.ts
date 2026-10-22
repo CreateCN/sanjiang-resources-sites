@@ -143,4 +143,124 @@ export const migrations: Migration[] = [
       if (!hasColumn(db, 'users', 'version')) db.exec('ALTER TABLE users ADD COLUMN version INTEGER NOT NULL DEFAULT 1');
     },
   },
+  {
+    // 图片上传/媒体库。文件本体在 MEDIA_DIR，这里只登记不可变文件组的账目与状态。
+    // 下架（deleted_at）与 purging 是两件事：下架保留文件供历史修订引用，purging 表示
+    // 已开始物理删除并拒绝一切新引用。tombstones 让"删除过的摘要"不会被普通上传复活。
+    id: '009-media-library',
+    up: (db) => {
+      db.exec(`CREATE TABLE IF NOT EXISTS media (
+        id TEXT PRIMARY KEY,
+        version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
+        state TEXT NOT NULL DEFAULT 'ready' CHECK(state IN ('ready','purging')),
+        bytes INTEGER NOT NULL CHECK(bytes > 0),
+        total_bytes INTEGER NOT NULL CHECK(total_bytes > 0),
+        width INTEGER NOT NULL,
+        height INTEGER NOT NULL,
+        variants TEXT NOT NULL,
+        encoding_version TEXT NOT NULL,
+        source_name TEXT NOT NULL DEFAULT '',
+        uploaded_by TEXT NOT NULL,
+        rights TEXT NOT NULL DEFAULT 'unconfirmed' CHECK(rights IN ('confirmed','unconfirmed')),
+        credit TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        deleted_at TEXT,
+        deleted_by TEXT,
+        deleted_reason TEXT NOT NULL DEFAULT ''
+      )`);
+      db.exec('CREATE INDEX IF NOT EXISTS media_created ON media(created_at DESC)');
+      db.exec('CREATE INDEX IF NOT EXISTS media_state ON media(state, deleted_at)');
+
+      db.exec(`CREATE TABLE IF NOT EXISTS media_tombstones (
+        id TEXT PRIMARY KEY,
+        last_version INTEGER NOT NULL,
+        purged_at TEXT NOT NULL,
+        reason TEXT NOT NULL DEFAULT '',
+        actor TEXT NOT NULL
+      )`);
+
+      db.exec(`CREATE TABLE IF NOT EXISTS media_operations (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL CHECK(kind IN ('upload','purge','reconcile')),
+        media_id TEXT,
+        phase TEXT NOT NULL,
+        reserved_bytes INTEGER NOT NULL DEFAULT 0 CHECK(reserved_bytes >= 0),
+        owner TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        failure TEXT NOT NULL DEFAULT ''
+      )`);
+      db.exec('CREATE INDEX IF NOT EXISTS media_operations_created ON media_operations(created_at DESC)');
+
+      db.exec(`CREATE TABLE IF NOT EXISTS media_store_guard (
+        id INTEGER PRIMARY KEY CHECK(id = 1),
+        operation_id TEXT,
+        updated_at INTEGER NOT NULL
+      )`);
+      db.exec("INSERT OR IGNORE INTO media_store_guard (id, operation_id, updated_at) VALUES (1, NULL, 0)");
+    },
+  },
+  {
+    // 双因素认证。auth_version 是"凭据代次"：挑战与最终事务都绑定它，
+    // 改密/改角色/启停因子等动作递增它，使旧挑战与旧会话同时失效。
+    // 用户状态只有两种正常形态：secret+confirmed 都为空（未启用）或都有值（已启用）；
+    // 只有一半属于异常，登录必须 fail-closed，不能降级为口令登录。
+    id: '010-totp-2fa',
+    up: (db) => {
+      if (!hasColumn(db, 'users', 'auth_version')) db.exec('ALTER TABLE users ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 1');
+      if (!hasColumn(db, 'users', 'totp_secret')) db.exec('ALTER TABLE users ADD COLUMN totp_secret TEXT');
+      if (!hasColumn(db, 'users', 'totp_confirmed_at')) db.exec('ALTER TABLE users ADD COLUMN totp_confirmed_at TEXT');
+      if (!hasColumn(db, 'users', 'totp_last_step')) db.exec('ALTER TABLE users ADD COLUMN totp_last_step INTEGER');
+      db.exec("UPDATE users SET auth_version = 1 WHERE auth_version IS NULL OR auth_version < 1");
+      db.exec(`CREATE TABLE IF NOT EXISTS login_challenges (
+        token_hash TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        auth_version INTEGER NOT NULL,
+        purpose TEXT NOT NULL CHECK(purpose IN ('login','enroll')),
+        client_hash TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0 CHECK(attempts BETWEEN 0 AND 5),
+        pending_secret TEXT,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        consumed_at INTEGER,
+        CHECK(expires_at > created_at),
+        CHECK((purpose = 'enroll' AND pending_secret IS NOT NULL)
+           OR (purpose = 'login' AND pending_secret IS NULL))
+      )`);
+      db.exec('CREATE INDEX IF NOT EXISTS login_challenges_user ON login_challenges(user_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS login_challenges_expiry ON login_challenges(expires_at)');
+      db.exec(`CREATE TABLE IF NOT EXISTS recovery_codes (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        code_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        used_at TEXT,
+        PRIMARY KEY(user_id, code_hash)
+      )`);
+    },
+  },
 ];
+
+/**
+ * 在给定连接上按序应用未执行的迁移，返回本次应用的 id 列表。
+ * 单一实现，供 `src/server/db.ts` 与离线恢复脚本共用：恢复脚本必须在暂存副本上
+ * 跑完迁移与认证净化，验证通过后才允许替换目标库。
+ */
+export function applyMigrations(db: DatabaseSync): string[] {
+  db.exec('CREATE TABLE IF NOT EXISTS schema_migrations (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL)');
+  const applied = new Set(db.prepare('SELECT id FROM schema_migrations').all().map((row) => String(row.id)));
+  const done: string[] = [];
+  for (const migration of migrations) {
+    if (applied.has(migration.id)) continue;
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      migration.up(db);
+      db.prepare('INSERT INTO schema_migrations (id,applied_at) VALUES (?,?)').run(migration.id, new Date().toISOString());
+      db.exec('COMMIT');
+      done.push(migration.id);
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+  return done;
+}

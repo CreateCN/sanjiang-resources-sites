@@ -1,0 +1,44 @@
+---
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import { getSession } from '../../server/auth';
+import { countCurrentReferences } from '../../server/media-references';
+import { listMedia, mediaView, pendingOperations, usage, verifyBundle } from '../../server/media';
+const session = getSession(Astro.request);
+if (!session) return Astro.redirect('/admin/login/');
+if (session.user.role !== 'admin') return Astro.redirect('/admin/');
+const rows = listMedia();
+const totals = usage();
+const pending = pendingOperations();
+const formatBytes = (bytes: number) => bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MiB` : `${Math.max(1, Math.round(bytes / 1024))} KiB`;
+const quotaRatio = Math.min(100, Math.round((totals.totalBytes + totals.reservedBytes) / totals.quotaBytes * 100));
+---
+<AdminLayout title="媒体库" session={session}>
+  <div class="notice"><strong>图片是共享资产。</strong><p>上传入口在资源编辑页。这里负责全局下架、恢复与彻底删除；三者都需要目标版本号与审计。下架后旧 URL 的新请求立即返回 404，但已经下载的副本无法收回。</p></div>
+  {pending.length > 0 && <div class="notice"><strong>存在未结算的媒体操作，上传已暂停。</strong><p>请停止 app 与所有媒体写入者后运行 <code>node scripts/reconcile-media.mjs --yes</code> 完成离线对账；不要按超时或 PID 自行清除占位。</p></div>}
+  <section class="panel"><h2>容量</h2>
+    <p>已结算 {formatBytes(totals.totalBytes)} · 未结算预留 {formatBytes(totals.reservedBytes)} · 配额 {formatBytes(totals.quotaBytes)}（{quotaRatio}%）</p>
+    <p class="muted">下架不释放配额；只有物理删除并对账完成后才释放。磁盘还需保留 128 MiB 余量。</p>
+  </section>
+  <section class="panel"><h2>已登记媒体（{rows.length}）</h2>
+    {rows.length === 0
+      ? <p class="empty">还没有上传过图片。到资源编辑页上传第一张。</p>
+      : <div class="table-wrap"><table><thead><tr><th>预览</th><th>标识与尺寸</th><th>状态</th><th>引用</th><th>操作</th></tr></thead><tbody>
+        {rows.map((row) => {
+          const view = mediaView(row);
+          const refs = countCurrentReferences(row.id);
+          const intact = verifyBundle(row.id);
+          return <tr>
+            <td>{row.deleted_at ? <span class="muted">已下架</span> : <img src={view.src} alt="" width="96" height="64" style="object-fit:cover" loading="lazy" />}</td>
+            <td><code>{row.id.slice(0, 12)}…</code><br/><span class="muted">{view.width}×{view.height} · {formatBytes(row.total_bytes)} · v{row.version}</span></td>
+            <td>{row.state === 'purging' ? <span class="badge">删除中</span> : row.deleted_at ? <span class="badge">已下架</span> : <span class="badge published">可用</span>}{!intact.ok && <p class="error">文件组校验失败：{intact.reason}</p>}</td>
+            <td>{refs === 0 ? <span class="muted">无当前引用</span> : `${refs} 处`}{row.deleted_at && <p class="muted">历史修订与回收站引用仍被保护</p>}</td>
+            <td>
+              {!row.deleted_at && <form action="/api/manage/" method="post" data-admin-form><input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="delete-media"/><input type="hidden" name="id" value={row.id}/><input type="hidden" name="version" value={row.version}/><div class="inline-form"><div class="field"><label for={`reason-${row.id}`}>下架原因</label><input id={`reason-${row.id}`} name="reason" maxlength="200" minlength="2" required/></div><button type="submit" class="danger">全局下架</button></div><p role="status" aria-live="polite"></p></form>}
+              {row.deleted_at && row.state === 'ready' && <form action="/api/manage/" method="post" data-admin-form><input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="restore-media"/><input type="hidden" name="id" value={row.id}/><input type="hidden" name="version" value={row.version}/><div class="inline-form"><div class="field"><label for={`restore-${row.id}`}>恢复理由</label><input id={`restore-${row.id}`} name="reason" maxlength="200" minlength="2" required/></div><button type="submit">恢复上架</button></div><p role="status" aria-live="polite"></p></form>}
+              {row.deleted_at && row.state === 'ready' && <form action="/api/manage/" method="post" data-admin-form data-confirm="彻底删除会移除文件且不可恢复；仅在没有当前与历史引用时允许。确认继续？"><input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="purge-media"/><input type="hidden" name="id" value={row.id}/><input type="hidden" name="version" value={row.version}/><button type="submit" class="danger">彻底删除</button><p role="status" aria-live="polite"></p></form>}
+            </td>
+          </tr>;
+        })}
+      </tbody></table></div>}
+  </section>
+</AdminLayout>

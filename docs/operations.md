@@ -18,6 +18,54 @@
 原始图片、署名、许可和下架入口保留。增加或替换截图后需要重新构建，不能只更新数据库路径。
 移除图片时也应移除原图并重新构建干净镜像，避免旧变体继续提供访问。
 
+## 运行时媒体（上传图片）
+
+除构建期截图外，管理员/编辑者可以在资源编辑页上传图片。它们不写入 `public/`，而是落在
+`MEDIA_DIR`（默认 `./data/media`，容器内 `/app/data/media`）的不可变文件组：
+
+```text
+media/objects/<sha256>/{master.webp,320.webp,...,manifest.json}
+media/staging/<operation-id>/bundle/     # 上传中的暂存，失败只清理自己的目录
+media/quarantine/                        # 离线对账移出的未提交对象
+```
+
+- `/media/<sha256>.webp` 由中间件直接服务：**每次请求**都查库确认 `state=ready` 且未下架，
+  所有响应（含 404/HEAD）都是 `Cache-Control: no-store`。不要在 Nginx 用 `alias` 直出，
+  也不要让 CDN 缓存该路径。
+- 上传是全局独占操作：同一时刻只允许一个媒体写操作（上传/下架/恢复/彻底删除）。
+  占位忙时返回 503，等对账或前一个操作结束再试。
+- 配额 `MEDIA_QUOTA_BYTES` 统计主图 + 变体 + 清单 + 下架文件 + 未结算预留；物理删除完成
+  后才释放。落盘前还要求磁盘至少保留 `MEDIA_MIN_FREE_BYTES`。
+
+### 离线对账
+
+```bash
+npm run media:reconcile                 # 只报告
+npm run media:reconcile -- --yes --clear-guard
+```
+
+先停止 app、maintenance 与所有手动媒体任务。工具会核对操作记录与文件哈希：已提交资产只校验，
+未提交对象移入 `quarantine/`，孤儿对象同样隔离；存在哈希/缺失问题时保持上传暂停并输出可操作
+错误。**不会**按超时或 PID 自动抢占占位——`--clear-guard` 代表你已确认没有写入者。
+
+### 站点级备份与恢复
+
+```bash
+npm run site:backup
+npm run site:restore -- --backup ./backups/site-<stamp>-<rand> --yes
+```
+
+批次目录包含 `site.sqlite`、`media/objects/**`、`manifest.json` 与最后的 `COMPLETE` 标记；
+备份前要求媒体占位为空且所有对象哈希正确，否则拒绝标记成功。
+恢复在暂存位置完成校验、迁移与认证净化（清空会话/挑战/恢复码、递增 `auth_version`、
+抬升 TOTP 步数下限），再按日志切换 DB 与 `objects/`；中途失败会回滚并保留原目录。
+`npm run db:backup` 只是数据库诊断快照，不能用于含媒体的站点恢复。
+
+### 双因素认证密钥
+
+`TOTP_ENC_KEY` 与数据库分开保存：只恢复数据库而丢失密钥，所有账户都无法用 TOTP 登录。
+此时用 `npm run totp:reset -- <用户名> --reason "…" --yes` 离线重置后重新绑定。
+
 ## Docker Compose 定时任务
 
 ```bash
@@ -72,7 +120,7 @@ docker compose exec -T app node scripts/check-links.mjs --limit 50 --delay 500
 非 Docker 环境可以在进程管理器中运行 `npm run maintenance`，并配置相同环境变量。
 仓库提供运行配置，本地开发不会自动启动定时进程。
 
-## 数据库恢复
+## 数据库恢复（仅无媒体登记时）
 
 恢复是离线操作，不能用 `cp` 覆盖主库。先停止 `app`、`maintenance`（或本地 timer/cron）以及所有手动数据库脚本；Docker 还要确认没有其他容器挂载 `site-data` 卷。然后运行：
 

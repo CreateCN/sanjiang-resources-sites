@@ -1,6 +1,7 @@
 import { defineMiddleware } from 'astro:middleware';
 import { logRequest, newRequestId } from './server/log';
 import { withRequestCache } from './server/request-cache';
+import { isMediaPath, serveMediaRequest } from './server/media-http';
 
 /**
  * Baseline response headers. The site is server-rendered with inline styles and
@@ -30,7 +31,9 @@ export const onRequest = defineMiddleware(async (context, next) => {
   const startedAt = process.hrtime.bigint();
   let response: Response;
   try {
-    response = await withRequestCache(() => next());
+    // `/media/*` 在路由解析前直接处理：trailingSlash=always 会把带扩展名的路径
+    // 当成缺尾斜杠的页面路由，导致图片 URL 落到 404 页。
+    response = await withRequestCache(() => (isMediaPath(context.url.pathname) ? serveMediaRequest(context.request) : next()));
   } catch (error) {
     logRequest({ id, request: context.request, status: 500, startedAt });
     throw error;

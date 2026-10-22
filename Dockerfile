@@ -16,7 +16,8 @@ FROM node:24-bookworm-slim AS runtime
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=4321 \
-    DATABASE_PATH=/app/data/site.sqlite
+    DATABASE_PATH=/app/data/site.sqlite \
+    MEDIA_DIR=/app/data/media
 WORKDIR /app
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
@@ -24,7 +25,7 @@ COPY --from=build /app/package.json ./package.json
 # 管理员初始化 CLI 直接运行 TypeScript 源文件（Node 24 原生类型剥离），需要源码与 zod。
 COPY --from=build /app/src ./src
 COPY --from=build /app/scripts ./scripts
-RUN mkdir -p /app/data && chown -R node:node /app/data
+RUN mkdir -p /app/data/media && chown -R node:node /app/data
 USER node
 EXPOSE 4321
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \

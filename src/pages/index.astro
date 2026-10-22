@@ -2,7 +2,7 @@
 import Layout from '../layouts/Layout.astro';
 import ResourceImage from '../components/ResourceImage.astro';
 import { getPublishedResources, getCategories, categoryName } from '../lib/catalog';
-import { renderInlineMarkdown } from '../lib/markdown';
+import { renderMediaInline } from '../lib/media-render';
 import { accessLabel, PLATFORM_OPTIONS } from '../lib/access';
 import { freshness } from '../lib/freshness';
 import { listAnnouncements } from '../server/store';
@@ -67,7 +67,7 @@ const jsonLd = [
         <div class="directory-column-labels" aria-hidden="true"><span>资源与用途</span><span>费用与条件</span><span>资料状态</span></div>
         <div class="portal-resource-list" id="resource-list">
           {resources.map((resource) => <article class="portal-resource" data-resource data-category={resource.category} data-kind={resource.kind} data-platforms={resource.platforms.join(' ')} data-search={`${resource.title} ${resource.summary} ${resource.tags.join(' ')} ${categoryName(resource.category)} ${resource.kind} ${resource.platforms.join(' ')}`}>
-            <div class="portal-resource-description"><h3><a href={`/resources/${resource.id}/`}>{resource.title}<span aria-hidden="true">↗</span></a></h3><p set:html={renderInlineMarkdown(resource.summary)} /><div class="portal-resource-tags"><span>{categoryName(resource.category)}</span><span class="access-chip">{accessLabel(resource.access)}</span>{resource.tags.slice(0, 2).map((tag) => <span>{tag}</span>)}</div></div>
+            <div class="portal-resource-description"><h3><a href={`/resources/${resource.id}/`}>{resource.title}<span aria-hidden="true">↗</span></a></h3><p set:html={renderMediaInline(resource.summary)} /><div class="portal-resource-tags"><span>{categoryName(resource.category)}</span><span class="access-chip">{accessLabel(resource.access)}</span>{resource.tags.slice(0, 2).map((tag) => <span>{tag}</span>)}</div></div>
             <div class="portal-resource-cost"><strong>{resource.cost}</strong><span>{resource.kind}</span><a href={`/resources/${resource.id}/#conditions`}>查看使用条件</a></div>
             <div class="portal-resource-state"><span class:list={['portal-state', { 'is-review': resource.status !== 'verified', 'is-overdue': resource.status === 'verified' && freshnessById.get(resource.id)?.overdue }]}>{stateLabel(resource)}</span><span>{resource.status === 'verified' && freshnessById.get(resource.id)?.overdue ? `核对于 ${resource.checkedAt} · 建议使用前复核` : resource.checkedAt ?? '使用前请复核'}</span></div>
           </article>)}

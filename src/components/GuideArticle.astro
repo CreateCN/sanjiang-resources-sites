@@ -1,7 +1,7 @@
 ---
 import { findPublishedResource, findResourceLifecycle, categoryName } from '../lib/catalog';
 import { getPublishedGuides } from '../lib/guides';
-import { renderInlineMarkdown, renderMarkdown } from '../lib/markdown';
+import { renderMediaInline, renderMediaMarkdown } from '../lib/media-render';
 import type { Guide } from '../lib/guide-schema';
 interface Props { guide: Guide; preview?: boolean; }
 const { guide } = Astro.props;
@@ -16,8 +16,8 @@ const others = getPublishedGuides().filter((entry) => entry.slug !== guide.slug)
   <nav class="breadcrumbs" aria-label="面包屑"><a href="/">首页</a><span aria-hidden="true">/</span><a href="/guides/">使用指南</a><span aria-hidden="true">/</span><span aria-current="page">{guide.title}</span></nav>
   <article class="guide-article">
     <header><h1 class="page-title">{guide.title}</h1></header>
-    {guide.summary && <p class="page-lead" set:html={renderInlineMarkdown(guide.summary)} />}
-    <div class="markdown-body" set:html={renderMarkdown(guide.body)} />
+    {guide.summary && <p class="page-lead" set:html={renderMediaInline(guide.summary)} />}
+    <div class="markdown-body" set:html={renderMediaMarkdown(guide.body)} />
     {resources.length > 0 && <section class="guide-resources" aria-labelledby="guide-resources-title"><h2 id="guide-resources-title">文中提到的资源</h2><div class="related-list">{resources.map(({ resource, stopped }) => <a class="related-link" href={`/resources/${resource.id}/`}><span>{resource.title}{stopped && <span class="state-flag">已停用</span>}</span><span class="guide-resource-meta">{categoryName(resource.category)} · {stopped ? '已停止展示' : resource.status === 'verified' ? '官方信息已核对' : '资料待核对'} <span aria-hidden="true">↗</span></span></a>)}</div></section>}
     <div class="guide-actions"><a class="portal-button" href="/feedback/">反馈或补充</a><a class="text-link" href="/guides/">更多指南</a></div>
     {others.length > 0 && <section class="guide-more"><h2>继续读</h2><div class="related-list">{others.map((entry) => <a class="related-link" href={`/guides/${entry.slug}/`}><span>{entry.title}</span><span aria-hidden="true">↗</span></a>)}</div></section>}

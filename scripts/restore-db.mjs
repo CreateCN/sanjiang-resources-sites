@@ -22,6 +22,7 @@ import {
 } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
 import { migrations } from '../src/server/migrations.ts';
+import { prepareRestoredDatabase, assertRestoreCounts } from '../src/server/restore-prepare.ts';
 
 const REQUIRED_TABLES = {
   metadata: ['key', 'value'],
@@ -43,6 +44,8 @@ const KNOWN_MIGRATIONS = new Set(migrations.map((migration) => migration.id));
 const KNOWN_DB_PROCESSES = new Set([
   'entry.mjs', 'maintenance.mjs', 'backup-db.mjs', 'check-links.mjs',
   'cleanup-metrics.mjs', 'create-admin.mjs', 'restore-db.mjs', 'security-audit.mjs',
+  'reset-totp.mjs', 'set-totp-policy.mjs', 'reconcile-media.mjs',
+  'backup-site.mjs', 'restore-site.mjs', 'cleanup-media.mjs',
 ]);
 const args = process.argv.slice(2);
 function option(name) {
@@ -237,6 +240,9 @@ function main() {
     restoreOwnership(temp, owner);
     const copy = inspect(temp, '待写入副本');
     if (copy.schema !== source.schema || JSON.stringify(copy.counts) !== JSON.stringify(source.counts)) error('备份复制后内容不一致，已取消恢复');
+    const prepared = prepareRestoredDatabase(temp);
+    assertRestoreCounts(inspect(temp, '净化后的副本').counts, prepared, '净化后的副本');
+    result.authPurge = prepared.purge;
     preserved = preserve(databasePath);
     mutated = true;
     rmSync(`${databasePath}-wal`, { force: true });
@@ -246,11 +252,12 @@ function main() {
     chmodSync(databasePath, 0o600);
     restoreOwnership(databasePath, owner);
     const restored = inspect(databasePath, '恢复后的数据库');
-    if (JSON.stringify(restored.counts) !== JSON.stringify(source.counts)) error('恢复后的表计数与备份不一致');
+    assertRestoreCounts(restored.counts, prepared, '恢复后的数据库');
     result.status = 'restored';
     result.integrity = restored.integrity;
     result.schema = restored.schema;
     result.counts = restored.counts;
+    result.note = '恢复不保留任何认证证明：旧会话/挑战/恢复码已清除，auth_version 已递增，totp_last_step 已抬升；请先同步服务器时钟再让用户重新登录';
     result.preserved = preserved.directory;
     result.preservedConsistentSnapshot = preserved.consistent;
     result.preservedFiles = preserved.files.map((file) => basename(file));

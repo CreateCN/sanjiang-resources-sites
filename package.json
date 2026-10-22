@@ -32,12 +32,18 @@
     "precheck": "npm run images:build",
     "pretest": "npm run images:build",
     "maintenance": "node scripts/maintenance.mjs",
-    "metrics:clean": "node scripts/cleanup-metrics.mjs"
+    "metrics:clean": "node scripts/cleanup-metrics.mjs",
+    "totp:reset": "node scripts/reset-totp.mjs",
+    "totp:policy": "node scripts/set-totp-policy.mjs",
+    "media:reconcile": "node scripts/reconcile-media.mjs",
+    "site:backup": "node scripts/backup-site.mjs",
+    "site:restore": "node scripts/restore-site.mjs"
   },
   "dependencies": {
     "@astrojs/node": "^9.5.5",
     "astro": "^5.0.0",
     "markdown-it": "^14.3.3",
+    "qrcode": "1.5.4",
     "sharp": "0.34.5",
     "undici": "^8.12.3",
     "zod": "^3.24.0"
@@ -47,6 +53,8 @@
     "@playwright/test": "^1.56.0",
     "@types/markdown-it": "^14.2.0",
     "@types/node": "^24.19.2",
+    "@types/qrcode": "1.5.6",
+    "jsqr": "1.4.0",
     "typescript": "^5.7.0"
   }
 }

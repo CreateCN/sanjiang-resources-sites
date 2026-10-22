@@ -5,6 +5,7 @@ import { GuideSchema, type Guide } from './guide-schema.ts';
 import { createCategoryFromImport, findManagedGuide, findManagedResource, importGuide, importResource, listCategories, type EntityIdentity } from '../server/store.ts';
 import { exportSettings, getSettings, saveSettings, settingsFingerprint } from '../server/settings.ts';
 import { database } from '../server/db.ts';
+import { mediaIdsInPayload, unavailableMediaIds } from '../server/media-references.ts';
 import { fail } from '../server/security.ts';
 import { isReservedCategory, isReservedIdentifier, RESERVED_CATEGORY_MESSAGE, RESERVED_IDENTIFIER_MESSAGE } from './identifiers.ts';
 import type { User } from '../server/store.ts';
@@ -17,6 +18,8 @@ export const ImportPayloadSchema = z.object({
   guides: z.array(z.unknown()).max(200).optional(),
   // 导出包含首页编排；导入范围必须显式声明，否则设置会被 Zod 静默丢弃。
   settings: z.record(z.unknown()).optional(),
+  // 导出携带媒体元数据（不含二进制）。导入只做参考，实际可用性以目标库为准。
+  media: z.array(z.unknown()).max(5000).optional(),
 });
 export type ImportPayload = z.infer<typeof ImportPayloadSchema>;
 
@@ -29,14 +32,19 @@ export type ImportPayload = z.infer<typeof ImportPayloadSchema>;
 export interface ImportPlan {
   /** 预检内容摘要；提交内容与预检不一致时整批拒绝。 */
   digest: string;
-  /** 资源 ID → 预检时的身份；null 表示预检时该 ID 不存在。 */
-  resources: Record<string, EntityIdentity | null>;
-  /** 指南 slug → 预检时的身份；null 表示预检时不存在。 */
-  guides: Record<string, EntityIdentity | null>;
+  /** 资源 ID → 预检时的身份与缺失媒体；null 表示预检时该 ID 不存在。 */
+  resources: Record<string, (EntityIdentity & { missing: string[] }) | null>;
+  /** 指南 slug → 预检时的身份与缺失媒体；null 表示预检时不存在。 */
+  guides: Record<string, (EntityIdentity & { missing: string[] }) | null>;
   /** 预检时首页设置的摘要；文件不含设置时为 null。 */
   settings: string | null;
 }
-const PlanEntity = z.object({ version: z.number().int().min(1), uid: z.string().min(1).max(64) });
+const PlanEntity = z.object({
+  version: z.number().int().min(1),
+  uid: z.string().min(1).max(64),
+  // 预检时缺失/下架的媒体 ID：提交时必须一致，否则说明媒体状态在预检后变了。
+  missing: z.array(z.string().regex(/^[a-f0-9]{64}$/)).default([]),
+});
 const ImportPlanSchema = z.object({
   digest: z.string().regex(/^[a-f0-9]{64}$/),
   resources: z.record(PlanEntity.nullable()).default({}),
@@ -51,6 +59,8 @@ export interface ImportPreview {
   guides: ImportCounts;
   /** 文件中的首页设置摘要；null 表示文件不含设置。 */
   settings: { featuredResourceId: string; scenarios: number; changed: boolean; missingCategories: string[] } | null;
+  /** 引用到但目标库缺失/已下架的媒体；默认整条拒绝，勾选 dropMissingMedia 才移除。 */
+  media: { missing: string[]; entries: { kind: 'resource' | 'guide'; id: string; missing: string[] }[] };
   plan: ImportPlan;
 }
 
@@ -135,6 +145,7 @@ export function previewImport(input: unknown): ImportPreview {
     resources: { create: [], update: [], same: [], invalid: [] },
     guides: { create: [], update: [], same: [], invalid: [] },
     settings: settingsSummary(payload.settings, knownCategories),
+    media: { missing: [], entries: [] },
     plan: { digest: payloadDigest(payload), resources: {}, guides: {}, settings: payload.settings ? settingsFingerprint() : null },
   };
 
@@ -148,7 +159,13 @@ export function previewImport(input: unknown): ImportPreview {
       continue;
     }
     const current = findManagedResource(resource.id);
-    preview.plan.resources[resource.id] = identityOf(current);
+    const missing = unavailableMediaIds(mediaIdsInPayload('resource', resource));
+    const identity = identityOf(current);
+    preview.plan.resources[resource.id] = identity ? { ...identity, missing } : null;
+    if (missing.length > 0) {
+      preview.media.missing.push(...missing);
+      preview.media.entries.push({ kind: 'resource', id: resource.id, missing });
+    }
     if (current?.deletedAt) preview.resources.update.push(resource.id);
     else if (!current) preview.resources.create.push(resource.id);
     else if (JSON.stringify(current.draft) === JSON.stringify(resource)) preview.resources.same.push(resource.id);
@@ -163,7 +180,13 @@ export function previewImport(input: unknown): ImportPreview {
     const missing = guide.resources.filter((id) => !declaredResourceIds.has(id) && !findManagedResource(id));
     if (missing.length > 0) { preview.guides.invalid.push({ id: guide.slug, error: `关联资源不存在：${missing.join('、')}` }); continue; }
     const current = findManagedGuide(guide.slug);
-    preview.plan.guides[guide.slug] = identityOf(current);
+    const missingMedia = unavailableMediaIds(mediaIdsInPayload('guide', guide));
+    const guideIdentity = identityOf(current);
+    preview.plan.guides[guide.slug] = guideIdentity ? { ...guideIdentity, missing: missingMedia } : null;
+    if (missingMedia.length > 0) {
+      preview.media.missing.push(...missingMedia);
+      preview.media.entries.push({ kind: 'guide', id: guide.slug, missing: missingMedia });
+    }
     if (current?.deletedAt) preview.guides.update.push(guide.slug);
     else if (!current) preview.guides.create.push(guide.slug);
     else if (JSON.stringify(current.draft) === JSON.stringify(guide)) preview.guides.same.push(guide.slug);
@@ -185,8 +208,8 @@ function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : '导入失败';
 }
 
-interface ResourceItem { id: string; value: Resource; expected: EntityIdentity | null }
-interface GuideItem { id: string; value: Guide; expected: EntityIdentity | null }
+interface ResourceItem { id: string; value: Resource; expected: EntityIdentity | null; missing: string[] }
+interface GuideItem { id: string; value: Guide; expected: EntityIdentity | null; missing: string[] }
 
 function sameIdentity(current: EntityIdentity | null, expected: EntityIdentity | null): boolean {
   if (current === null || expected === null) return current === expected;
@@ -218,7 +241,13 @@ export function applyImport(actor: User, input: unknown, plan?: unknown, options
       result.errors.push({ id: resource.id, error: '预检已判定该条目无效（分类不存在或身份冲突），未导入；修正后重新预检' });
       continue;
     }
-    resourceItems.push({ id: resource.id, value: resource, expected });
+    const missing = unavailableMediaIds(mediaIdsInPayload('resource', resource));
+    const frozenMissing = (expected?.missing ?? []).slice().sort();
+    if (JSON.stringify(missing.slice().sort()) !== JSON.stringify(frozenMissing)) {
+      result.errors.push({ id: resource.id, error: '媒体可用性在预检后发生变化（图片被下架或恢复）；请重新预检后再导入' });
+      continue;
+    }
+    resourceItems.push({ id: resource.id, value: resource, expected, missing });
   }
   for (const raw of payload.guides ?? []) {
     const parsedGuide = GuideSchema.safeParse(unwrapEntry(raw).value);
@@ -230,7 +259,13 @@ export function applyImport(actor: User, input: unknown, plan?: unknown, options
       result.errors.push({ id: guide.slug, error: '预检已判定该条目无效（关联资源不存在或身份冲突），未导入；修正后重新预检' });
       continue;
     }
-    guideItems.push({ id: guide.slug, value: guide, expected });
+    const missing = unavailableMediaIds(mediaIdsInPayload('guide', guide));
+    const frozenMissing = (expected?.missing ?? []).slice().sort();
+    if (JSON.stringify(missing.slice().sort()) !== JSON.stringify(frozenMissing)) {
+      result.errors.push({ id: guide.slug, error: '媒体可用性在预检后发生变化（图片被下架或恢复）；请重新预检后再导入' });
+      continue;
+    }
+    guideItems.push({ id: guide.slug, value: guide, expected, missing });
   }
 
   // 2. 只读核对：预检后只要有一条被改过（含删除后同名重建）或设置被改过，整批取消。
@@ -267,6 +302,11 @@ export function applyImport(actor: User, input: unknown, plan?: unknown, options
   // 4. 逐条应用：每条都有自己的事务（含审计），"恢复 + 保存 + 版本记录 + 审计"要么全成，要么全不留痕。
   for (const item of resourceItems) {
     const wasDeleted = Boolean(findManagedResource(item.id)?.deletedAt);
+    if (item.missing.length > 0) {
+      // P0 只做"缺图即拒绝"：静默清空图片会悄悄改变内容；显式移除属于 P1。
+      result.errors.push({ id: item.id, error: `图片缺失或已下架（${item.missing.map((id) => `/media/${id}.webp`).join('、')}），未导入；请先恢复或替换图片后重新预检` });
+      continue;
+    }
     try {
       importResource(actor, item.value, item.expected);
       result.resources += 1;
@@ -275,6 +315,10 @@ export function applyImport(actor: User, input: unknown, plan?: unknown, options
   }
   for (const item of guideItems) {
     const wasDeleted = Boolean(findManagedGuide(item.id)?.deletedAt);
+    if (item.missing.length > 0) {
+      result.errors.push({ id: item.id, error: `图片缺失或已下架（${item.missing.map((id) => `/media/${id}.webp`).join('、')}），未导入；请先恢复或替换图片后重新预检` });
+      continue;
+    }
     try {
       importGuide(actor, item.value, item.expected);
       result.guides += 1;
@@ -315,5 +359,18 @@ export function exportPayload(): unknown {
     slug: String(row.slug), draft: JSON.parse(String(row.draft)), published: row.published ? JSON.parse(String(row.published)) : null,
     version: Number(row.version), updatedAt: String(row.updated_at), deletedAt: row.deleted_at ? String(row.deleted_at) : null,
   }));
-  return { schemaVersion: 1, exportedAt: new Date().toISOString(), categories: listCategories(), resources, guides, settings: exportSettings() };
+  // 媒体只导出元数据与完整性清单：二进制不在这里，导出不是完整备份（见 scripts/backup-site.mjs）。
+  const media = database().prepare('SELECT * FROM media ORDER BY created_at').all().map((row) => ({
+    id: String(row.id),
+    width: Number(row.width),
+    height: Number(row.height),
+    bytes: Number(row.bytes),
+    totalBytes: Number(row.total_bytes),
+    encodingVersion: String(row.encoding_version),
+    variants: JSON.parse(String(row.variants)),
+    rights: String(row.rights),
+    credit: String(row.credit),
+    deletedAt: row.deleted_at ? String(row.deleted_at) : null,
+  }));
+  return { schemaVersion: 2, exportedAt: new Date().toISOString(), categories: listCategories(), resources, guides, media, settings: exportSettings() };
 }

@@ -41,8 +41,14 @@ function context(path, fields = {}, { token, origin = 'http://localhost', addres
     body: new URLSearchParams(fields),
   }), clientAddress: address };
 }
+function directLogin(user = admin) {
+  const outcome = auth.login(user.username, PASSWORD, `session-${user.id}-${Math.random().toString(36).slice(2)}`);
+  // 这些用例都使用未启用双因素的账户且 TOTP_REQUIRED_FOR=off，因此必须是单步会话。
+  if (outcome.kind !== 'session') throw new Error(`unexpected challenge: ${outcome.purpose}`);
+  return outcome.token;
+}
 function session(user = admin) {
-  const token = auth.login(user.username, PASSWORD, `session-${user.id}`);
+  const token = directLogin(user);
   const request = new Request('http://localhost/admin/', { headers: { Cookie: `${auth.SESSION_COOKIE}=${token}` } });
   return { token, request, ...auth.getSession(request) };
 }
@@ -311,7 +317,7 @@ test('form input limits, JSON errors, configured Origin, and health expose minim
   const healthBody = await health.json();
   assert.equal(healthBody.status, 'ok');
   assert.equal(healthBody.db, 'ok');
-  assert.match(String(healthBody.schema), /^00\d/);
+  assert.match(String(healthBody.schema), /^0\d{2}-[a-z0-9-]+$/);
   assert.equal(typeof healthBody.uptime, 'number');
   assert.equal(health.headers.get('cache-control'), 'no-store');
 });
@@ -652,7 +658,8 @@ test('import preview and apply restore drafts, categories and guides', () => {
   const exported = importer.exportPayload();
   assert.ok(Array.isArray(exported.resources) && exported.resources.length > 12);
   assert.ok(exported.categories.some((category) => category.id === 'career'));
-  assert.equal(exported.schemaVersion, 1);
+  assert.equal(exported.schemaVersion, 2, '导出升到 v2：包含媒体元数据（不含二进制）');
+  assert.ok(Array.isArray(exported.media), '导出必须带媒体清单字段');
 });
 
 test('request-scoped reads reuse results and publication invalidates them immediately', () => {
