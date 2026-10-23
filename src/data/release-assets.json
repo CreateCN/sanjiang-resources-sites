@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "defaultAllowed": [
+    "/images/gimp.png",
+    "/images/libreoffice-interface.png"
+  ],
+  "legacyUnconfirmed": [
+    "/images/zotero-interface.png",
+    "/images/obs-interface.png",
+    "/images/vlc-interface.jpg"
+  ],
+  "compatibilityEnv": "INCLUDE_LEGACY_ASSETS",
+  "note": "默认发行只包含 CREDITS 中许可明确的系统素材；旧截图仅在部署者显式选择兼容构建时进入产物。"
+}

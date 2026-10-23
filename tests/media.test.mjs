@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, readdirSync, existsSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import sharp from 'sharp';
+import { seedFixture } from './fixtures/content.ts';
 
 const root = mkdtempSync(join(tmpdir(), 'sj-media-'));
 let sequence = 0;
@@ -16,6 +17,9 @@ delete process.env.MEDIA_MIN_FREE_BYTES;
 const store = await import('../src/server/store.ts');
 const media = await import('../src/server/media.ts');
 const refs = await import('../src/server/media-references.ts');
+const siteConfig = await import('../src/server/site-config.ts');
+const sponsors = await import('../src/server/sponsors.ts');
+const { DEFAULT_BRANDING } = await import('../src/lib/site-config.ts');
 const { database, closeDatabase } = await import('../src/server/db.ts');
 
 const PASSWORD = 'media-test-password-2026!';
@@ -31,6 +35,7 @@ beforeEach(async () => {
   delete process.env.MEDIA_MIN_FREE_BYTES;
   admin = store.createInitialAdmin('operator', PASSWORD);
   editor = store.createUser(admin, 'editor', PASSWORD, 'editor');
+  seedFixture(database());
   await import('node:fs').then(({ mkdirSync }) => mkdirSync(process.env.MEDIA_DIR, { recursive: true, mode: 0o700 }));
 });
 after(() => {
@@ -62,6 +67,11 @@ const upload = (bytes, overrides = {}) => media.ingestUpload(editor, { bytes, na
 
 function objectFiles(id) {
   return readdirSync(join(media.objectsDir(), id)).sort();
+}
+
+function brandingInput(overrides = {}) {
+  const { schemaVersion, version, ...rest } = DEFAULT_BRANDING;
+  return { ...rest, ...overrides };
 }
 
 function resourceWith(image, extra = {}) {
@@ -224,6 +234,51 @@ test('引用保护：结构化字段、Markdown、指南、历史修订与回收
   const error = throwsStatus(() => media.purgeMedia(admin, view.id, media.findMedia(view.id).version), 409, /仍被引用/);
   assert.match(error.message, /资源|指南|修订/);
   assert.ok(existsSync(join(media.objectsDir(), view.id)));
+});
+
+test('品牌配置的 Logo/favicon/分享图是独立引用来源，解除后才能 purge', async () => {
+  const view = await upload(await png(800, 800));
+  siteConfig.saveBranding(admin, brandingInput({ logoMediaId: view.id, shareImageMediaId: view.id }), siteConfig.getBrandingAdminView().version ?? 0);
+  const references = refs.scanMediaReferences(view.id);
+  const brandingRef = references.find((reference) => reference.kind === 'branding');
+  assert.ok(brandingRef, '品牌引用必须出现在引用列表');
+  assert.deepEqual([...brandingRef.locations].sort(), ['Logo', '分享图']);
+  assert.equal(refs.countCurrentReferences(view.id), 1, '品牌引用计入当前引用数');
+  assert.ok(refs.collectReferencedMediaIds(database()).has(view.id), '离线扫描与在线扫描必须使用同一规则');
+
+  media.deleteMedia(admin, view.id, media.findMedia(view.id).version, '准备替换');
+  const error = throwsStatus(() => media.purgeMedia(admin, view.id, media.findMedia(view.id).version), 409, /仍被引用/);
+  assert.match(error.message, /站点品牌配置/);
+  media.restoreMedia(admin, view.id, media.findMedia(view.id).version, '保留');
+
+  const saved = siteConfig.getBranding();
+  siteConfig.saveBranding(admin, brandingInput({ logoMediaId: null, shareImageMediaId: null }), saved.version);
+  media.deleteMedia(admin, view.id, media.findMedia(view.id).version, '不再使用');
+  media.purgeMedia(admin, view.id, media.findMedia(view.id).version);
+  assert.equal(media.findMedia(view.id), undefined);
+});
+
+test('赞助图片（含停用/过期）同样阻止 purge，移除赞助后才能删除', async () => {
+  const view = await upload(await png(800, 800));
+  const sponsor = sponsors.createSponsor(admin, {
+    title: '媒体引用赞助', body: '停用也必须保护图片。', sponsorName: '测试赞助方',
+    mediaId: view.id, imageAlt: '赞助图', targetUrl: 'https://sponsor.example.com/learn',
+    placement: 'home-sidebar', enabled: false, startsAt: null, endsAt: null,
+  });
+  const references = refs.scanMediaReferences(view.id);
+  assert.ok(references.some((reference) => reference.kind === 'sponsor'), '停用赞助也必须在引用列表');
+  assert.equal(refs.countCurrentReferences(view.id), 1);
+  assert.ok(refs.collectReferencedMediaIds(database()).has(view.id), '离线扫描覆盖赞助');
+
+  media.deleteMedia(admin, view.id, media.findMedia(view.id).version, '准备替换');
+  const error = throwsStatus(() => media.purgeMedia(admin, view.id, media.findMedia(view.id).version), 409, /仍被引用/);
+  assert.match(error.message, /赞助「媒体引用赞助」/);
+  media.restoreMedia(admin, view.id, media.findMedia(view.id).version, '保留');
+
+  sponsors.deleteSponsor(admin, sponsor.id, sponsor.version);
+  media.deleteMedia(admin, view.id, media.findMedia(view.id).version, '不再使用');
+  media.purgeMedia(admin, view.id, media.findMedia(view.id).version);
+  assert.equal(media.findMedia(view.id), undefined);
 });
 
 test('无引用时可彻底删除并留下墓碑；同图不能再次上传', async () => {

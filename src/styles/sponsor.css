@@ -1,0 +1,38 @@
+/* 静态赞助位：本地图片/纯文本，不使用浮层或第三方脚本。 */
+.sponsor-slot {
+  display: block;
+  border: 1px solid var(--portal-soft, #e7eee5);
+  background: var(--portal-softest, #eff3eb);
+  padding: 16px 18px;
+  margin-top: 26px;
+}
+.sponsor-catalog {
+  margin: 0 0 26px;
+  border-left: 4px solid var(--portal-green, #245c42);
+  padding: 18px 20px;
+}
+.sponsor-label {
+  display: inline-block;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--portal-muted, #52685a);
+  border: 1px solid var(--portal-soft, #e7eee5);
+  padding: 1px 6px;
+  background: #fff;
+}
+.sponsor-media { display: block; margin-top: 10px; }
+.sponsor-media img { width: 100%; height: auto; max-height: 180px; object-fit: cover; }
+.sponsor-title { display: block; margin-top: 10px; font-size: 17px; line-height: 1.4; }
+.sponsor-body { margin-top: 6px; font-size: 14px; color: var(--portal-muted, #52685a); }
+.sponsor-byline { margin-top: 8px; font-size: 12px; color: var(--portal-muted, #52685a); }
+.sponsor-host { word-break: break-all; }
+.sponsor-link { display: inline-block; margin-top: 10px; font-size: 14px; color: var(--portal-green, #245c42); text-decoration: underline; text-underline-offset: 3px; }
+.sponsor-preview-placeholder { border: 1px dashed var(--portal-line, #c8d4cb); background: #fff; padding: 14px 16px; margin-bottom: 16px; color: var(--portal-muted, #52685a); }
+.sponsor-preview-placeholder strong { display: block; color: #7a3f25; margin-top: 6px; }
+.sponsor-preview-placeholder p { margin-top: 4px; font-size: 13px; }
+.sponsor-preview-glyph { display: inline-grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--portal-line, #c8d4cb); font-weight: 700; }
+.sponsor-slot a:focus-visible { outline: 3px solid var(--portal-green, #245c42); outline-offset: 3px; }
+@media (max-width: 760px) {
+  .sponsor-catalog { margin-inline: 0; }
+  .sponsor-media img { max-height: 200px; }
+}

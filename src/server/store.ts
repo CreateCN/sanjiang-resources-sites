@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { ResourceSchema, type Resource } from '../lib/resource-schema.ts';
+import { projectScope } from '../lib/resource-scope.ts';
 import { GuideSchema, type Guide } from '../lib/guide-schema.ts';
 import { database, transaction } from './db.ts';
 import { audit, fail, hashPassword } from './security.ts';
@@ -35,8 +36,13 @@ function writeVersionTombstone(db: ReturnType<typeof database>, kind: RevisionKi
   db.prepare(`INSERT INTO entity_versions (entity_kind,entity_id,version) VALUES (?,?,?)
     ON CONFLICT(entity_kind,entity_id) DO UPDATE SET version=excluded.version`).run(kind, id, version);
 }
+/** 旧快照可能没有 scope：读取时投影为 unknown，不改写原始行。 */
+function storedResource(json: string): Resource {
+  const raw = JSON.parse(json) as Record<string, unknown>;
+  return { ...raw, scope: projectScope(raw.scope) } as unknown as Resource;
+}
 function managed(row: Row): ManagedResource {
-  return { id: String(row.id), uid: row.uid === null || row.uid === undefined ? '' : String(row.uid), draft: JSON.parse(String(row.draft)), published: row.published ? JSON.parse(String(row.published)) : null, version: Number(row.version), updatedAt: String(row.updated_at), deletedAt: row.deleted_at ? String(row.deleted_at) : null, lifecycle: lifecycleOf(row) };
+  return { id: String(row.id), uid: row.uid === null || row.uid === undefined ? '' : String(row.uid), draft: storedResource(String(row.draft)), published: row.published ? storedResource(String(row.published)) : null, version: Number(row.version), updatedAt: String(row.updated_at), deletedAt: row.deleted_at ? String(row.deleted_at) : null, lifecycle: lifecycleOf(row) };
 }
 function lifecycleOf(row: Row): ResourceLifecycle {
   return {
@@ -47,16 +53,16 @@ function lifecycleOf(row: Row): ResourceLifecycle {
 }
 /** 公开目录只含仍在展示的条目；停用条目仍可通过 findPublishedResource + lifecycle 打开解释页。 */
 export function getPublishedResources(): Resource[] {
-  return requestMemo('published-resources', () => database().prepare('SELECT published FROM resources WHERE published IS NOT NULL AND deleted_at IS NULL AND discontinued_at IS NULL ORDER BY rowid').all().map((row) => JSON.parse(String(row.published))));
+  return requestMemo('published-resources', () => database().prepare('SELECT published FROM resources WHERE published IS NOT NULL AND deleted_at IS NULL AND discontinued_at IS NULL ORDER BY rowid').all().map((row) => storedResource(String(row.published))));
 }
 /** 含停用条目的公开快照：指南关联、替代资源校验需要看到"已停用但仍有解释页"的条目。 */
 export function listPublishedResourcesIncludingDiscontinued(): Resource[] {
-  return requestMemo('published-resources-all', () => database().prepare('SELECT published FROM resources WHERE published IS NOT NULL AND deleted_at IS NULL ORDER BY rowid').all().map((row) => JSON.parse(String(row.published))));
+  return requestMemo('published-resources-all', () => database().prepare('SELECT published FROM resources WHERE published IS NOT NULL AND deleted_at IS NULL ORDER BY rowid').all().map((row) => storedResource(String(row.published))));
 }
 export function findPublishedResource(id: string): Resource | undefined {
   return requestMemo(`published-resource:${id}`, () => {
     const row = database().prepare('SELECT published FROM resources WHERE id=? AND published IS NOT NULL AND deleted_at IS NULL').get(id);
-    return row ? JSON.parse(String(row.published)) : undefined;
+    return row ? storedResource(String(row.published)) : undefined;
   });
 }
 /** 停用信息：与内容快照无关，永远读当前行。 */

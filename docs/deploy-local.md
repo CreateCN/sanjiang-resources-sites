@@ -11,7 +11,7 @@
 
 | 项 | 要求 |
 |---|---|
-| Node.js | **24.x 推荐**（`engines` 要求 ≥22.12；管理 CLI 依赖原生 TypeScript 剥离，22.18+ 才稳定） |
+| Node.js | **24.x**（`engines` 要求 ≥24；管理 CLI 直接执行 TypeScript，依赖原生类型剥离） |
 | 操作系统 | 任意 Linux（示例用 Debian/Ubuntu 路径），需要 systemd |
 | 反向代理 | Nginx（或 Caddy），负责 TLS 与边缘限流 |
 | CDN（可选） | 用 CDN 时，源站必须做白名单与真实 IP 还原，见 [边缘防护](edge-cdn-hardening.md) |
@@ -61,6 +61,8 @@ HOST=127.0.0.1
 PORT=4321
 SITE_URL=https://res.example.edu
 TRUST_PROXY=1
+SITE_INIT_MODE=empty
+SITE_INIT_NAME=你的实例名称
 DATABASE_PATH=/srv/sanjiang/data/site.sqlite
 BACKUP_DIR=/var/backups/sanjiang
 BACKUP_KEEP=7
@@ -74,9 +76,18 @@ sudo chmod 640 /etc/sanjiang/sanjiang.env
 | `HOST` | **必须** `127.0.0.1`：只让本机反向代理访问，不要 `0.0.0.0` |
 | `SITE_URL` | 与浏览器地址完全一致（协议+域名[+端口]）；决定 canonical、Origin 校验与 Cookie `Secure` |
 | `TRUST_PROXY` | 有反向代理时 `1`；**仅在应用直连且只服务本机单用户**时才设 `0`（否则所有访客共享一个限流桶） |
+| `SITE_INIT_MODE` / `SITE_INIT_NAME` | 只对新库生效：`empty`（默认）或 `demo`；名称同时冻结为 TOTP issuer |
 | `DATABASE_PATH` / `BACKUP_DIR` / `BACKUP_KEEP` | 与容器版语义相同 |
 
-## 5. 创建第一个管理员
+## 5. 初始化与创建第一个管理员
+
+默认 Empty；需要 Demo 时，在第一次启动服务前以运行用户执行（详细规则见 [初始化](initialization.md)）：
+
+```bash
+cd /srv/sanjiang
+sudo -u sanjiang env DATABASE_PATH=/srv/sanjiang/data/site.sqlite \
+  node scripts/init-site.mjs --mode demo --name "示例站"
+```
 
 ```bash
 cd /srv/sanjiang

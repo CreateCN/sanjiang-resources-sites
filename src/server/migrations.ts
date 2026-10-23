@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
+import { AUTH_ISSUER_METADATA_KEY, BRANDING_SETTINGS_KEY, LEGACY_AUTH_ISSUER, LEGACY_BRANDING } from '../lib/site-config.ts';
 
 export interface Migration {
   id: string;
@@ -238,7 +239,74 @@ export const migrations: Migration[] = [
       )`);
     },
   },
+  {
+    // 实例品牌与冻结 issuer。只补缺失键：旧站升级继续显示原品牌，
+    // 已在 settings 中存在的值（包括损坏值）一律不覆盖，交给后台显式修复。
+    // 新库此时还没有 seeded/业务数据，迁移保持沉默，由初始化流程写入品牌。
+    id: '011-instance-configuration',
+    up: (db) => {
+      const legacy = Boolean(db.prepare("SELECT 1 FROM metadata WHERE key='seeded'").get())
+        || Boolean(db.prepare('SELECT 1 FROM users LIMIT 1').get())
+        || Boolean(db.prepare('SELECT 1 FROM resources LIMIT 1').get());
+      if (!legacy) return;
+      if (!db.prepare('SELECT 1 FROM settings WHERE key=?').get(BRANDING_SETTINGS_KEY)) {
+        db.prepare('INSERT INTO settings (key,value) VALUES (?,?)').run(BRANDING_SETTINGS_KEY, JSON.stringify(LEGACY_BRANDING));
+      }
+      if (!db.prepare('SELECT 1 FROM metadata WHERE key=?').get(AUTH_ISSUER_METADATA_KEY)) {
+        db.prepare('INSERT INTO metadata (key,value) VALUES (?,?)').run(AUTH_ISSUER_METADATA_KEY, LEGACY_AUTH_ISSUER);
+      }
+    },
+  },
+  {
+    // 静态赞助位。广告默认关闭；media_id 使用 RESTRICT，避免赞助图片被物理删除后
+    // 留下指向空文件的链接。时间区间在服务层规范化为 UTC，数据库只做基本顺序约束。
+    id: '012-sponsors',
+    up: (db) => {
+      db.exec(`CREATE TABLE IF NOT EXISTS sponsors (
+        id TEXT PRIMARY KEY,
+        version INTEGER NOT NULL DEFAULT 1 CHECK(version >= 1),
+        title TEXT NOT NULL,
+        body TEXT NOT NULL DEFAULT '',
+        sponsor_name TEXT NOT NULL,
+        media_id TEXT REFERENCES media(id) ON DELETE RESTRICT,
+        image_alt TEXT NOT NULL DEFAULT '',
+        target_url TEXT NOT NULL CHECK(length(target_url) <= 2048),
+        placement TEXT NOT NULL CHECK(placement IN ('home-sidebar','catalog-promotion')),
+        enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+        starts_at TEXT,
+        ends_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        updated_by TEXT NOT NULL,
+        CHECK(starts_at IS NULL OR ends_at IS NULL OR starts_at < ends_at),
+        CHECK((media_id IS NULL AND image_alt = '') OR (media_id IS NOT NULL AND length(trim(image_alt)) BETWEEN 1 AND 300))
+      )`);
+      db.exec('CREATE INDEX IF NOT EXISTS sponsors_placement ON sponsors(placement, enabled, starts_at, ends_at)');
+    },
+  },
 ];
+
+export class UnknownMigrationError extends Error {
+  constructor(ids: string[]) {
+    super(`数据库包含当前程序不认识的迁移：${ids.join('、')}。请升级程序或使用对应版本恢复；本次未做任何修改`);
+    this.name = 'UnknownMigrationError';
+  }
+}
+
+/**
+ * 兼容检查必须发生在改写、迁移未知库之前。
+ * 只要 schema_migrations 里有当前代码不知道的 id，就拒绝继续；三个数据库入口
+ * （应用启动、restore-db、restore-site）都经过 applyMigrations，因此共用这一判断。
+ */
+export function assertKnownMigrations(db: DatabaseSync): void {
+  const table = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get();
+  if (!table) return;
+  const known = new Set(migrations.map((migration) => migration.id));
+  const unknown = db.prepare('SELECT id FROM schema_migrations ORDER BY id').all()
+    .map((row) => String(row.id)).filter((id) => !known.has(id));
+  if (unknown.length > 0) throw new UnknownMigrationError(unknown);
+}
 
 /**
  * 在给定连接上按序应用未执行的迁移，返回本次应用的 id 列表。
@@ -246,13 +314,18 @@ export const migrations: Migration[] = [
  * 跑完迁移与认证净化，验证通过后才允许替换目标库。
  */
 export function applyMigrations(db: DatabaseSync): string[] {
+  assertKnownMigrations(db);
   db.exec('CREATE TABLE IF NOT EXISTS schema_migrations (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL)');
-  const applied = new Set(db.prepare('SELECT id FROM schema_migrations').all().map((row) => String(row.id)));
   const done: string[] = [];
   for (const migration of migrations) {
-    if (applied.has(migration.id)) continue;
+    // 每个迁移在自己的写事务里重新确认一次：两个进程同时启动时，
+    // 后拿到锁的进程必须看到前一个进程刚提交的记录，而不是启动时的快照。
     db.exec('BEGIN IMMEDIATE');
     try {
+      if (db.prepare('SELECT 1 FROM schema_migrations WHERE id=?').get(migration.id)) {
+        db.exec('COMMIT');
+        continue;
+      }
       migration.up(db);
       db.prepare('INSERT INTO schema_migrations (id,applied_at) VALUES (?,?)').run(migration.id, new Date().toISOString());
       db.exec('COMMIT');

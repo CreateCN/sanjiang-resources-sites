@@ -1,0 +1,20 @@
+---
+import '../styles/sponsor.css';
+import type { PublicSponsor } from '../server/sponsors';
+interface Props { sponsor: PublicSponsor; variant?: 'sidebar' | 'catalog'; }
+const { sponsor, variant = 'sidebar' } = Astro.props;
+const imageWidth = sponsor.imageWidth && sponsor.imageWidth > 0 ? sponsor.imageWidth : undefined;
+const imageHeight = sponsor.imageHeight && sponsor.imageHeight > 0 ? sponsor.imageHeight : undefined;
+---
+<aside class:list={['sponsor-slot', `sponsor-${variant}`]} aria-label="广告 · 赞助">
+  <span class="sponsor-label">广告 · 赞助</span>
+  {sponsor.imageSrc && (
+    <a class="sponsor-media" href={sponsor.targetUrl} target="_blank" rel="sponsored noopener noreferrer" tabindex="-1" aria-hidden="true">
+      <img src={sponsor.imageSrc} alt={sponsor.imageAlt} width={imageWidth} height={imageHeight} loading="lazy" decoding="async" />
+    </a>
+  )}
+  <strong class="sponsor-title">{sponsor.title}</strong>
+  {sponsor.body && <p class="sponsor-body">{sponsor.body}</p>}
+  <p class="sponsor-byline">{sponsor.sponsorName}<span aria-hidden="true"> · </span><span class="sponsor-host">{sponsor.targetHostname}</span></p>
+  <a class="sponsor-link" href={sponsor.targetUrl} target="_blank" rel="sponsored noopener noreferrer">了解赞助方 <span aria-hidden="true">↗</span></a>
+</aside>

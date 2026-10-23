@@ -7,6 +7,10 @@ import { accessLabel, PLATFORM_OPTIONS } from '../lib/access';
 import { freshness } from '../lib/freshness';
 import { listAnnouncements } from '../server/store';
 import { getSettings } from '../server/settings';
+import { getPublicSiteConfig, getSiteOrigin } from '../server/site-config';
+import { scopeShortLabel } from '../lib/resource-scope';
+import SponsorSlot from '../components/SponsorSlot.astro';
+import { getActiveSponsors } from '../server/sponsors';
 const resources = getPublishedResources();
 const categories = getCategories();
 const topics = categories.filter((category) => category.id !== 'all');
@@ -28,11 +32,16 @@ const pictured = resources.filter((resource) => resource.image).slice(0, 4);
 const kinds = [...new Set(resources.map((resource) => resource.kind))];
 const verifiedCount = resources.filter((resource) => resource.status === 'verified').length;
 const lastChecked = resources.map((resource) => resource.checkedAt).filter(Boolean).sort().at(-1);
-const origin = (process.env.SITE_URL ?? Astro.url.origin).replace(/\/$/, '');
+const site = getPublicSiteConfig();
+const activeSponsors = getActiveSponsors();
+const sidebarSponsor = activeSponsors.find((sponsor) => sponsor.placement === 'home-sidebar');
+const promotionSponsor = activeSponsors.find((sponsor) => sponsor.placement === 'catalog-promotion');
+const origin = getSiteOrigin(Astro.url);
 const jsonLd = [
-  { '@context': 'https://schema.org', '@type': 'WebSite', name: '三江资源', url: origin, description: '面向三江学院学生的开源工具、开放课程与免费学习资源目录。' },
-  { '@context': 'https://schema.org', '@type': 'ItemList', name: '学习资源目录', numberOfItems: resources.length,
-    itemListElement: resources.slice(0, 12).map((resource, index) => ({ '@type': 'ListItem', position: index + 1, name: resource.title, url: `${origin}/resources/${resource.id}/` })) },
+  { '@context': 'https://schema.org', '@type': 'WebSite', name: site.name, url: origin, description: site.description },
+  // 空站不输出空的 ItemList：0 项列表既没有语义，也会让结构化数据校验报警告。
+  ...(resources.length > 0 ? [{ '@context': 'https://schema.org', '@type': 'ItemList', name: '学习资源目录', numberOfItems: resources.length,
+    itemListElement: resources.slice(0, 12).map((resource, index) => ({ '@type': 'ListItem', position: index + 1, name: resource.title, url: `${origin}/resources/${resource.id}/` })) }] : []),
 ];
 ---
 <Layout title="为学习，找到好工具" jsonLd={jsonLd}>
@@ -45,11 +54,12 @@ const jsonLd = [
       </nav>
       <div class="sidebar-links"><a href="#featured">精选工具</a><a href="/about/#verification">核验与使用条件</a></div>
       <div class="sidebar-note"><span class="note-leaf" aria-hidden="true">书</span><strong>免费，也要看条件</strong><p>开源、免费层与学生权益不同；校内可用性以官方说明为准。</p><a href="/about/">了解收录标准</a></div>
+      {sidebarSponsor && <SponsorSlot sponsor={sidebarSponsor} variant="sidebar" />}
     </aside>
 
     <div class="portal-main">
       <section class="portal-search-section" aria-labelledby="home-title">
-        <div class="portal-intro"><div><h1 id="home-title">为学习，找到好工具。</h1><p>为三江同学整理开源工具、公开课程与学生资源。</p></div><a class="intro-about" href="/about/">先看使用条件 <span aria-hidden="true">↗</span></a></div>
+        <div class="portal-intro"><div><h1 id="home-title">为学习，找到好工具。</h1><p>{site.description}</p></div><a class="intro-about" href="/about/">先看使用条件 <span aria-hidden="true">↗</span></a></div>
         <form class="portal-search" role="search" action="/#catalog" method="get" id="resource-search">
           <label class="portal-sr-only" for="search">搜索资源名称、用途或关键词</label>
           <div class="portal-search-box"><svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none"><circle cx="10.5" cy="10.5" r="6.5" stroke="currentColor" stroke-width="1.8"/><path d="m16 16 5 5" stroke="currentColor" stroke-width="1.8"/></svg><input id="search" name="q" type="search" autocomplete="off" placeholder="搜索工具或任务，例如：论文、Python、录屏" /><button type="submit">查找资源</button></div>
@@ -62,16 +72,22 @@ const jsonLd = [
         {topics.map((category) => { const copy = topicCopy[category.id]; return <a class="scenario-link" href={`/scenarios/${category.id}/`}><span class="scenario-word" aria-hidden="true">{copy?.glyph ?? '用'}</span><strong>{copy?.task ?? category.name}</strong><span>{copy?.detail ?? category.name}</span></a>; })}
       </div></section>
 
+      {promotionSponsor && <SponsorSlot sponsor={promotionSponsor} variant="catalog" />}
+
       <section class="portal-catalog" id="catalog" aria-labelledby="directory-title">
         <div class="portal-section-heading"><div class="directory-title-row"><h2 id="directory-title">资源目录</h2><span class="directory-count" id="result-count" role="status" aria-live="polite" aria-atomic="true">共 {resources.length} 项</span></div><div class="directory-controls"><label class="portal-sr-only" for="portal-kind">资源类型</label><select id="portal-kind"><option value="all">所有类型</option>{kinds.map((kind) => <option value={kind}>{kind}</option>)}</select><select id="portal-platform"><option value="all">所有平台</option>{PLATFORM_OPTIONS.map((platform) => <option value={platform}>{platform}</option>)}</select><button type="button" id="reset-search" class="portal-clear">重置筛选</button></div></div>
         <div class="directory-column-labels" aria-hidden="true"><span>资源与用途</span><span>费用与条件</span><span>资料状态</span></div>
         <div class="portal-resource-list" id="resource-list">
           {resources.map((resource) => <article class="portal-resource" data-resource data-category={resource.category} data-kind={resource.kind} data-platforms={resource.platforms.join(' ')} data-search={`${resource.title} ${resource.summary} ${resource.tags.join(' ')} ${categoryName(resource.category)} ${resource.kind} ${resource.platforms.join(' ')}`}>
             <div class="portal-resource-description"><h3><a href={`/resources/${resource.id}/`}>{resource.title}<span aria-hidden="true">↗</span></a></h3><p set:html={renderMediaInline(resource.summary)} /><div class="portal-resource-tags"><span>{categoryName(resource.category)}</span><span class="access-chip">{accessLabel(resource.access)}</span>{resource.tags.slice(0, 2).map((tag) => <span>{tag}</span>)}</div></div>
-            <div class="portal-resource-cost"><strong>{resource.cost}</strong><span>{resource.kind}</span><a href={`/resources/${resource.id}/#conditions`}>查看使用条件</a></div>
+            <div class="portal-resource-cost"><strong>{resource.cost}</strong><span>{resource.kind}</span><span class="scope-chip">{scopeShortLabel(resource.scope)}</span><a href={`/resources/${resource.id}/#conditions`}>查看使用条件</a></div>
             <div class="portal-resource-state"><span class:list={['portal-state', { 'is-review': resource.status !== 'verified', 'is-overdue': resource.status === 'verified' && freshnessById.get(resource.id)?.overdue }]}>{stateLabel(resource)}</span><span>{resource.status === 'verified' && freshnessById.get(resource.id)?.overdue ? `核对于 ${resource.checkedAt} · 建议使用前复核` : resource.checkedAt ?? '使用前请复核'}</span></div>
           </article>)}
-          <div class="portal-empty" id="empty-state" hidden><h3>没有找到匹配的资源</h3><p>换一个用途关键词，或清除分类和类型限制再试试。</p><button class="portal-button" type="button" id="empty-reset">查看全部资源</button><a href="/feedback/">推荐一个资源</a></div>
+          <div class="portal-empty" id="empty-state" hidden={resources.length > 0}>
+            {resources.length === 0
+              ? <><h3>这个站点还没有公开资源</h3><p>维护者发布内容后会出现在这里。你可以先阅读收录说明，或推荐一个想看的资源。</p><a class="portal-button" href="/about/">了解收录标准</a><a href="/feedback/">推荐一个资源</a></>
+              : <><h3>没有找到匹配的资源</h3><p>换一个用途关键词，或清除分类和类型限制再试试。</p><button class="portal-button" type="button" id="empty-reset">查看全部资源</button><a href="/feedback/">推荐一个资源</a></>}
+          </div>
         </div>
         <div class="directory-footnote"><p>资料核对不等于软件实测、校园资格验证或永久免费承诺。</p><a href="/about/#verification">如何理解状态</a></div>
       </section>

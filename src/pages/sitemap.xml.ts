@@ -2,11 +2,12 @@ import type { APIRoute } from 'astro';
 import { getPublishedResources } from '../lib/catalog';
 import { getPublishedGuides } from '../lib/guides';
 import { getCategories } from '../lib/catalog';
+import { getSiteOrigin } from '../server/site-config';
 
 export const prerender = false;
 
-export const GET: APIRoute = () => {
-  const origin = (process.env.SITE_URL ?? 'http://localhost:4321').replace(/\/$/, '');
+export const GET: APIRoute = ({ request }) => {
+  const origin = getSiteOrigin(new URL(request.url));
   const staticPages = ['/', '/guides/', '/updates/', '/about/', '/feedback/'];
   const entries: string[] = [];
   const today = new Date().toISOString().slice(0, 10);

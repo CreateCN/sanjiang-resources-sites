@@ -4,6 +4,7 @@ import ResourceDetail from '../../components/ResourceDetail.astro';
 import { findPublishedResource, findResourceLifecycle, categoryName } from '../../lib/catalog';
 import { isBotRequest } from '../../lib/bot';
 import { recordEvent } from '../../server/store';
+import { getSiteOrigin } from '../../server/site-config';
 const resource = findPublishedResource(Astro.params.id ?? '');
 if (!resource) { Astro.response.status = 404; return Astro.rewrite('/404'); }
 // 停用条目仍可访问：这一页就是它的解释页，旧链接与指南引用不该变成 404。
@@ -11,7 +12,7 @@ const lifecycle = findResourceLifecycle(resource.id);
 const discontinued = Boolean(lifecycle?.discontinuedAt);
 const replacement = lifecycle?.replacedBy ? findPublishedResource(lifecycle.replacedBy) : undefined;
 if (!isBotRequest(Astro.request) && !discontinued) recordEvent('resource_view', resource.id);
-const origin = (process.env.SITE_URL ?? Astro.url.origin).replace(/\/$/, '');
+const origin = getSiteOrigin(Astro.url);
 const jsonLd = [
   { '@context': 'https://schema.org', '@type': 'BreadcrumbList', itemListElement: [
     { '@type': 'ListItem', position: 1, name: '首页', item: `${origin}/` },

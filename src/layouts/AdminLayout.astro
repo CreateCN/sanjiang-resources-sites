@@ -2,18 +2,26 @@
 import '../styles/admin.css';
 import type { Session } from '../server/auth';
 import { noticeBoard } from '../lib/notices';
+import { deriveThemeTokens } from '../lib/site-config';
+import { getPublicSiteConfig, getBrandAssets } from '../server/site-config';
 import CommitVersion from '../components/CommitVersion.astro';
 interface Props { title: string; session?: Session; }
 const { title, session } = Astro.props;
+const site = getPublicSiteConfig();
+const assets = getBrandAssets();
+const theme = deriveThemeTokens(site.accentColor);
+const themeStyle = `--green:${theme.accent};--green-hover:${theme.accentHover};--surface:${theme.soft}`;
+// Astro 对 <title> 的表达式边界会拆开相邻静态文本，先拼成单个字符串再输出。
+const pageTitle = `${title} · ${site.name}管理`;
 const path = Astro.url.pathname;
 const notices = session ? noticeBoard() : undefined;
 Astro.response.headers.set('Cache-Control', 'no-store');
 Astro.response.headers.set('X-Robots-Tag', 'noindex, nofollow');
-const links = [{url:'/admin/',name:'工作概览'}, {url:'/admin/notices/',name:`公告${notices && notices.count > 0 ? ` (${notices.count})` : ''}`}, {url:'/admin/resources/',name:'资源管理'}, {url:'/admin/guides/',name:'指南管理'}, {url:'/admin/reviews/',name:'复核队列'}, {url:'/admin/reports/',name:'反馈处理'}, {url:'/admin/security/',name:'账户安全'}, ...(session?.user.role === 'admin' ? [{url:'/admin/metrics/',name:'数据概览'}, {url:'/admin/maintenance/',name:'维护状态'}, {url:'/admin/settings/',name:'首页编排'}, {url:'/admin/media/',name:'媒体库'}, {url:'/admin/import/',name:'导入导出'}, {url:'/admin/categories/',name:'分类管理'}, {url:'/admin/users/',name:'人员与权限'}, {url:'/admin/trash/',name:'回收站'}, {url:'/admin/audit/',name:'操作记录'}] : [])];
+const links = [{url:'/admin/',name:'工作概览'}, {url:'/admin/notices/',name:`公告${notices && notices.count > 0 ? ` (${notices.count})` : ''}`}, {url:'/admin/resources/',name:'资源管理'}, {url:'/admin/guides/',name:'指南管理'}, {url:'/admin/reviews/',name:'复核队列'}, {url:'/admin/reports/',name:'反馈处理'}, {url:'/admin/security/',name:'账户安全'}, ...(session?.user.role === 'admin' ? [{url:'/admin/metrics/',name:'数据概览'}, {url:'/admin/maintenance/',name:'维护状态'}, {url:'/admin/settings/',name:'站点与首页'}, {url:'/admin/media/',name:'媒体库'}, {url:'/admin/sponsors/',name:'赞助位'}, {url:'/admin/import/',name:'导入导出'}, {url:'/admin/categories/',name:'分类管理'}, {url:'/admin/users/',name:'人员与权限'}, {url:'/admin/trash/',name:'回收站'}, {url:'/admin/audit/',name:'操作记录'}] : [])];
 ---
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><meta name="robots" content="noindex,nofollow"/><title>{title} · 三江资源管理</title><link rel="icon" href="/favicon.svg"/></head><body>
+<!doctype html><html lang="zh-CN" style={themeStyle}><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><meta name="robots" content="noindex,nofollow"/><meta name="theme-color" content={site.accentColor}/><title>{pageTitle}</title><link rel="icon" type={assets.faviconType} href={assets.faviconUrl}/></head><body>
 <a href="#admin-main" class="skip">跳到主要内容</a>
-<header class="admin-header"><a class="admin-brand" href="/admin/">三江资源 <span>管理工作台</span></a><div><a href="/admin/notices/" class="notice-bell">公告{notices && notices.count > 0 ? ` · ${notices.count}` : ''}</a><a href="/" target="_blank" rel="noopener noreferrer">查看前台 ↗</a>{session && <form action="/api/logout/" method="post"><input type="hidden" name="csrf" value={session.csrfToken}/><button>退出登录</button></form>}</div></header>
+<header class="admin-header"><a class="admin-brand" href="/admin/">{site.name} <span>管理工作台</span></a><div><a href="/admin/notices/" class="notice-bell">公告{notices && notices.count > 0 ? ` · ${notices.count}` : ''}</a><a href="/" target="_blank" rel="noopener noreferrer">查看前台 ↗</a>{session && <form action="/api/logout/" method="post"><input type="hidden" name="csrf" value={session.csrfToken}/><button>退出登录</button></form>}</div></header>
 <div class:list={['admin-shell', { 'no-sidebar': !session }]}>{session && <aside class="admin-sidebar"><div class="account"><strong>{session.user.username}</strong><span>{session.user.role === 'admin' ? '管理员' : '内容编辑者'}</span></div><nav aria-label="后台导航">{links.map((link) => <a href={link.url} aria-current={(link.url === '/admin/' ? path === link.url : path.startsWith(link.url)) ? 'page' : undefined}>{link.name}</a>)}</nav><p class="sidebar-note">草稿不会自动公开。<br/>发布与权限变更仅限管理员。</p></aside>}<main id="admin-main"><div class="admin-title"><h1>{title}</h1>{session && <span class="role-label">{session.user.role === 'admin' ? '发布与管理权限' : '草稿编辑与反馈处理'}</span>}</div><slot/></main></div>
 <script>
   for (const form of document.querySelectorAll<HTMLFormElement>('form[data-admin-form]')) {
@@ -43,5 +51,10 @@ const links = [{url:'/admin/',name:'工作概览'}, {url:'/admin/notices/',name:
     });
   }
 </script>
-<footer class="admin-version-footer"><CommitVersion /></footer>
+{site.showProjectAttribution && <footer class="admin-version-footer"><CommitVersion /></footer>}
+<style is:global>
+  /* 强调色自定义后，主按钮 hover 必须跟着派生色走；危险/次要按钮保留各自语义色。 */
+  body button:hover:not(.danger):not(.secondary),
+  body .button:hover:not(.danger):not(.secondary) { background: var(--green-hover); }
+</style>
 </body></html>

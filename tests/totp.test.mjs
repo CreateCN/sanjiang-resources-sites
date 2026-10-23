@@ -148,6 +148,16 @@ test('otpauth URI encodes issuer/label/parameters exactly as specified', () => {
   assert.equal(decodeURIComponent(new URL(awkward).pathname.slice(1)), '三江资源:a b&c=d/中文');
 });
 
+test('显式传入的实例 issuer 同时出现在标签与 query，并支持特殊字符', async () => {
+  const issuer = '星河 & 学习 "站"';
+  const uri = buildOtpauthUri('a b&c=d/中文', 'GEZDGNBVGY3TQOJQ', issuer);
+  const parsed = new URL(uri);
+  assert.equal(parsed.searchParams.get('issuer'), issuer);
+  assert.equal(decodeURIComponent(parsed.pathname.slice(1)), `${issuer}:a b&c=d/中文`);
+  const { text } = await decodeQr(uri);
+  assert.equal(text, uri, '二维码必须编码同一个 issuer');
+});
+
 async function decodeQr(uri) {
   const svg = await renderOtpauthSvg(uri);
   assert.match(svg, /^<svg[\s>]/, '必须是 SVG');

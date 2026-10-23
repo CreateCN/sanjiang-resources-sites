@@ -43,12 +43,17 @@
 | ✅ | 草稿整页预览 | 登录后按真实前台样式预览，`noindex`、不写快照、不计浏览 | `src/pages/admin/preview/` |
 | ✅ | 未保存输入备份 | 每次加载生成独立归属键（`window.open` 带 opener 也不会共用），兼容旧格式键并自动迁移；保存只清理自己的（或内容完全相同的）备份；多份分歧备份可逐份查看/恢复，最新备份与服务器相同不遮挡更早内容 | `src/scripts/draft-recovery.ts` |
 | ✅ | 回收站 | 软删除；前台/sitemap 立即消失；恢复为草稿；彻底删除清历史；资源仍被指南草稿或公开快照引用时拒绝彻底删除并列出指南，已有悬空关联必须在编辑页显式勾选移除 | `src/pages/admin/trash.astro`、`src/server/store.ts` |
-| ✅ | 导入导出 | 导出版本 2：草稿/发布快照/分类/设置 + 媒体元数据（不含二进制）；导入**必须**先预检，计划冻结条目身份（版本 + uid）、内容摘要、缺失媒体清单与设置摘要，期间改动则整批取消；缺图默认逐条拒绝，显式勾选“移除缺失图片”才保留 alt 并移除引用；失败条目与原因保留在结果页（最近 20 次）；只写草稿 | `src/lib/importer.ts` |
+| ✅ | 实例初始化 | 新库默认 Empty（一个综合分类、0 资源）；显式 Demo 只含 2 条通用示例并显示演示横幅；`site:init` 支持 `--mode/--name/--adopt`；有业务数据但缺标记的库拒绝自动写入。旧库只迁移，不灌种子 | `src/server/initialization.ts`、`scripts/init-site.mjs` |
+| ✅ | 实例品牌 / 主题 | 后台修改名称、简介、页脚、声明、Logo/favicon/分享图、强调色与归属开关；媒体校验与回退、对比度校验、派生 hover/浅色；TOTP issuer 按实例冻结 | `src/server/site-config.ts`、`src/pages/admin/settings.astro` |
+| ✅ | 适用范围 scope | `unknown/global/institutions`；与 access 独立；旧快照兼容投影；草稿/公开隔离；编辑器、历史差异/恢复、目录、场景、详情、导入导出全链路；原 12 条待人工审核 | `src/lib/resource-scope.ts`、`src/server/store.ts` |
+| ✅ | 备份恢复可靠性 | 三个 DB 入口共用未知迁移拒绝；manifest 记录软件/Commit/迁移；暂存迁移+净化后核对业务数量与摘要；品牌/设置完整性；切换失败自动回滚；硬中断有阶段日志与离线恢复步骤 | `scripts/restore-site.mjs`、`src/server/restore-verify.ts` |
+| ✅ | 导入导出 | 导出版本 3：草稿/发布快照/分类/设置 + 媒体元数据（不含二进制）+ 安全品牌投影；可导入无版本/v1/v2 旧文件，未来版本写入前拒绝。导入**必须**先预检：计划冻结条目身份（版本 + uid）、归一化内容摘要、缺失媒体、首页设置指纹与品牌指纹/图片状态，期间改动整批取消；首页设置与品牌分别勾选、默认不选；缺图默认逐条拒绝；失败条目与原因保留在结果页（最近 20 次）；只写草稿 | `src/lib/importer.ts` |
 | ✅ | 首页编排 | 精选资源与场景文案存 `settings` 表，管理员可改，保存即时生效；精选候选与服务端校验都只接受仍在公开目录（已发布、未删除、未停用）的资源，配置不可用时不再静默换成其他资源 | `src/pages/admin/settings.astro` |
 | ✅ | 分类管理 | 稳定 ID；`all` 是保留标识（前台虚拟书架），导入同样拒绝；被草稿或发布快照引用时禁止删除 | `src/pages/admin/categories.astro` |
 | ✅ | 图片授权状态 | 资源记录 `imageRights` 与 `imageCredit`，未确认时前台提示 | `src/lib/resource-schema.ts` |
-| ◻ | 内容冲刺 | 目前 12 条资源、0 篇指南；计划先补 5 篇任务指南与 10 条资源（非代码功能） | — |
+| ◻ | 内容冲刺 | 新站默认 Empty；Demo 仅 2 条示例、0 篇指南。部署者需替换为实际核对内容，另行规划任务指南与资源扩充（非代码功能） | — |
 | ✅ | 图片上传 / 媒体库（P0） | 编辑页上传本地 PNG/JPEG/WebP（≤5 MiB），服务端按 magic bytes + 解码校验、按 EXIF 方向旋转后重编码 WebP、剥离 EXIF/GPS/XMP/ICC，生成 320/640/960/1280/1920 变体与哈希清单；内容寻址不可变文件组、失败只清理自己的暂存、跨进程操作占位与容量预留；`/media/` 每次请求实时查库、全部 `no-store`；管理员可下架/恢复/彻底删除（彻底删除需无任何引用并留墓碑）；编辑页"移除"只解除草稿关联 | `src/server/media.ts`、`src/server/media-http.ts`、`src/server/media-references.ts`、`src/pages/admin/media.astro` |
+| ✅ | 静态赞助（P2） | 后台赞助 CRUD/启停/删除与总开关；固定“广告 · 赞助”标签；只展示本地图片或纯文本，不加载第三方脚本/像素/广告 Cookie；外链 `rel="sponsored noopener noreferrer"`，不进入资源外跳统计；目录推广独立于资源列表与 ItemList；关闭/空/过期/缺图不渲染容器；外链显示 hostname | `src/pages/admin/sponsors/`、`src/components/SponsorSlot.astro`、`src/server/sponsors.ts` |
 | ◻ | 媒体库列表增强 / 在线裁剪 | P1：媒体选择器、自动 GC 任务、跨环境登记；在线裁剪、滤镜与公开上传未实现 | — |
 | ◻ | 定时发布 | 只有手动发布；无计划发布时间 | — |
 
@@ -79,19 +84,19 @@
 |---|---|---|---|
 | ✅ | 数据库迁移 | `schema_migrations` + 顺序迁移；旧库自动补齐列 | `src/server/migrations.ts` |
 | ✅ | 数据库备份 | `VACUUM INTO` + 完整性校验 + 权限 0600 + 保留份数；只是诊断快照，不是媒体站点备份 | `scripts/backup-db.mjs` |
-| ✅ | 站点备份 / 恢复（P0） | `site:backup`：先要求无未结算媒体操作与完整对象，再生成 DB 快照 + 全部对象 + 哈希清单，最后写 `COMPLETE`；`site:restore`：暂存校验、迁移 + 认证净化、按日志切换并可回滚，缺文件/哈希不符拒绝 | `scripts/backup-site.mjs`、`scripts/restore-site.mjs`、`src/server/restore-prepare.ts` |
+| ✅ | 站点备份 / 恢复（P0） | `site:backup`：先要求无未结算媒体操作与完整对象，再生成 DB 快照 + 全部对象 + 哈希清单，最后写 `COMPLETE`；`site:restore`：暂存校验、迁移 + 认证净化、按日志切换并可回滚。回退使用 `VACUUM INTO` 独立一致性快照（包含原库匹配的已提交 WAL），核对原业务、媒体与完整性后才记录 `rollback-verified`；缺文件/哈希不符/未知迁移拒绝 | `scripts/backup-site.mjs`、`scripts/restore-site.mjs`、`src/server/restore-prepare.ts` |
 | ✅ | 媒体离线对账 | 默认 dry-run；未提交对象隔离、占位需显式 `--clear-guard`、哈希不符保持上传暂停 | `scripts/reconcile-media.mjs` |
 | ✅ | 恢复流程 | 离线恢复工具：校验备份完整性/必要表/schema → 保全当前主库与 sidecar → 删除旧 WAL/SHM → 原子替换 → 复查完整性与计数；失败回滚并保留诊断；文档明确 app、maintenance、定时任务和手动脚本全部离线 | `scripts/restore-db.mjs`、`README.md` |
 | ✅ | 健康检查 | `/api/health/` 查 `SELECT 1`，返回状态、DB、迁移版本、运行时长 | `src/server/http.ts` |
 | ✅ | 结构化日志 | 每请求一行 JSON（request id、方法、路径、状态、耗时），不记查询串/IP/UA | `src/server/log.ts` |
 | ✅ | CI | Node 24：check → test → build → 生产服务器冒烟 | `.github/workflows/ci.yml` |
-| ✅ | 测试覆盖 | `npm test` 120 项（内容/后端/Markdown/链接检查/备份/恢复/迁移）、后台端到端 28 项、浏览器 9 项；浏览器测试依赖本机 Chrome | `tests/` |
-| ◻ | 定时链接检查 / 定时备份 | 脚本已就绪，但未内置调度；需外部 cron 或 DSH 自动化 | — |
+| ✅ | 测试覆盖 | `npm test` 268 项（内容/后端/Markdown/链接检查/备份/恢复/WAL 回滚/迁移）、后台端到端 36 项、公开浏览器 10 项；CI 另跑实例隔离、容器冒烟与默认/兼容素材验收，浏览器测试依赖 Chromium | `tests/` |
+| ✅ | 定时维护与状态页 | Compose 的 `maintenance` 容器（或宿主机 systemd timer/cron）按 UTC 配置执行数据库诊断备份、链接检查和指标清理；每 30 秒写心跳，`/admin/maintenance/` 只读展示进程状态、任务阶段、退出码、下次计划与异常链接，页面本身不启动任务；单任务超时 15 分钟，失败 15 分钟后重试，租约防止重复执行 | `scripts/maintenance.mjs`、`src/server/maintenance-status.ts`、`src/pages/admin/maintenance.astro` |
 | ◻ | 监控与告警 | 无 uptime 监控、错误聚合或告警通道 | — |
 | ◻ | 日志轮转与集中收集 | 日志写 stdout，轮转交给 Docker/宿主 | — |
 | ◻ | 缓存 / CDN | 公开页仍 `Cache-Control: no-store`；未做 ETag、短缓存或内容失效 | — |
 | ◻ | 严格 CSP | 当前无第三方脚本，未配置完整内容安全策略 | — |
-| ◻ | 多机 / 高可用 | 单机 SQLite + 单容器；无读写分离或多节点方案 | — |
+| ◻ | 多机 / 高可用 | 单机 SQLite + app/maintenance 两个进程（可同机容器）；无读写分离或多节点方案 | — |
 
 ## 安全与隐私
 
@@ -109,7 +114,7 @@
 
 未实现或已知限制：
 
-- 无完整 CSP；无 2FA。
+- 未配置完整 CSP（当前为 Report-Only）；2FA 已实现，但强制策略默认关闭。
 - 审计日志可被拥有数据库文件的人直接修改，单机 SQLite 不提供防篡改。
 - 备份未加密；文件含密码哈希与反馈正文，必须放在仓库外。
 - 链接检查不解包重定向内容，仅校验 URL 与状态码；403/429 不代表资源不可用。

@@ -1,0 +1,61 @@
+---
+import AdminLayout from '../../../layouts/AdminLayout.astro';
+import SponsorSlot from '../../../components/SponsorSlot.astro';
+import { getSession } from '../../../server/auth';
+import { findSponsor, sponsorPreview } from '../../../server/sponsors';
+import { listMedia, type MediaRow } from '../../../server/media';
+import { SPONSOR_PLACEMENTS, SPONSOR_PLACEMENT_LABELS } from '../../../lib/sponsor-schema';
+const session = getSession(Astro.request);
+if (!session) return Astro.redirect('/admin/login/');
+if (session.user.role !== 'admin') return Astro.redirect('/admin/');
+const id = Astro.params.id ?? 'new';
+const isNew = id === 'new';
+const sponsor = isNew ? undefined : findSponsor(id);
+if (!isNew && !sponsor) return Astro.redirect('/admin/sponsors/');
+const mediaRows = listMedia();
+const preview = sponsor ? sponsorPreview(sponsor) : undefined;
+const selectedMedia = sponsor?.mediaId ?? '';
+const toLocalInput = (iso: string | null | undefined) => iso ? new Date(iso).toLocaleString('sv-SE', { timeZone: 'Asia/Shanghai' }).slice(0, 16).replace(' ', 'T') : '';
+const mediaLabel = (row: MediaRow) => {
+  const state = row.state !== 'ready' ? ' · 删除中' : row.deleted_at ? ' · 已下架' : '';
+  const credit = (row.credit || '未署名').slice(0, 32);
+  return `${row.source_name || '图片'} · ${row.width}×${row.height} · ${credit}${state} · ${row.id.slice(0, 10)}…`;
+};
+---
+<AdminLayout title={isNew ? '新增赞助' : `编辑赞助：${sponsor?.title ?? ''}`} session={session}>
+  <div class="section-links"><a href="/admin/sponsors/">返回赞助列表</a></div>
+  <div class="notice"><strong>保存后不会立即上线。</strong><p>条目默认停用；总开关、单项启用、时间窗与图片可用性同时满足才会展示。时间按北京时间（Asia/Shanghai）输入，保存为 UTC。外链只做静态跳转，不抓取页面。</p></div>
+  <div class="form-grid">
+    <form class="panel" action="/api/manage/" method="post" data-admin-form>
+      <input type="hidden" name="csrf" value={session.csrfToken}/>
+      <input type="hidden" name="action" value="save-sponsor"/>
+      {sponsor && <input type="hidden" name="id" value={sponsor.id}/>}
+      {sponsor && <input type="hidden" name="version" value={sponsor.version}/>}
+      <div class="form-grid">
+        <div class="field"><label for="title">标题</label><input id="title" name="title" value={sponsor?.title ?? ''} maxlength="100" required/><small>1–100 字，纯文本。</small></div>
+        <div class="field"><label for="sponsorName">赞助方</label><input id="sponsorName" name="sponsorName" value={sponsor?.sponsorName ?? ''} maxlength="100" required/><small>公开展示的赞助方名称。</small></div>
+        <div class="field full"><label for="body">说明</label><textarea id="body" name="body" maxlength="300">{sponsor?.body ?? ''}</textarea><small>0–300 字；不写联系方式或承诺。</small></div>
+        <div class="field full"><label for="targetUrl">目标链接</label><input id="targetUrl" name="targetUrl" type="url" value={sponsor?.targetUrl ?? ''} maxlength="2048" placeholder="https://sponsor.example.com/" required/><small>只接受公开 HTTPS；不能是本机、内网或保留 IP。前台显示 hostname。</small></div>
+        <div class="field"><label for="placement">展示位置</label><select id="placement" name="placement">{SPONSOR_PLACEMENTS.map((placement) => <option value={placement} selected={sponsor?.placement === placement}>{SPONSOR_PLACEMENT_LABELS[placement]}</option>)}</select></div>
+        <div class="field"><label class="checkbox"><input type="checkbox" name="enabled" value="1" checked={sponsor?.enabled ?? false}/> 启用此赞助</label><small>同一位置同一时间只能有一个启用项。</small></div>
+        <div class="field"><label for="startsAt">开始时间（北京时间，可空）</label><input id="startsAt" name="startsAt" type="datetime-local" value={toLocalInput(sponsor?.startsAt)}/></div>
+        <div class="field"><label for="endsAt">结束时间（北京时间，可空）</label><input id="endsAt" name="endsAt" type="datetime-local" value={toLocalInput(sponsor?.endsAt)}/><small>开始包含、结束排除；两者都空表示长期。</small></div>
+        <div class="field full"><label for="mediaId">图片（可选）</label><select id="mediaId" name="mediaId"><option value="">不使用图片（纯文本卡片）</option>{mediaRows.map((row) => <option value={row.id} selected={selectedMedia === row.id}>{mediaLabel(row)}</option>)}</select><small>只接受已确认授权、未下架且有署名的媒体；下架后该赞助停止展示。</small></div>
+        <div class="field full"><label for="imageAlt">图片说明（alt）</label><input id="imageAlt" name="imageAlt" value={sponsor?.imageAlt ?? ''} maxlength="300"/><small>使用图片时必填。</small></div>
+      </div>
+      <div class="actions"><button type="submit">{isNew ? '创建赞助（默认停用）' : '保存赞助'}</button><a class="button secondary" href="/admin/sponsors/">取消</a></div>
+      <p role="status" aria-live="polite"></p>
+    </form>
+    {preview && <section class="panel"><h2>当前预览</h2><p class="muted">预览按已保存内容渲染；未保存的修改不会出现在这里。</p>
+      {sponsor?.mediaId && preview.imageState === 'unavailable' && <div class="sponsor-preview-placeholder" role="group" aria-label={`赞助图片不可用。替代文本：${sponsor.imageAlt || '未填写'}`}>
+        <span class="sponsor-preview-glyph" aria-hidden="true">图</span>
+        <strong>图片已下架或不可用</strong>
+        <p>{preview.imageProblem}</p>
+        <p>替代文本：{sponsor.imageAlt || '未填写'}</p>
+        <p class="muted">预览不会自动恢复图片；请到媒体库恢复或替换后再保存。</p>
+      </div>}
+      <div style="max-width:360px"><SponsorSlot sponsor={preview} variant={preview.placement === 'catalog-promotion' ? 'catalog' : 'sidebar'} /></div>
+    </section>}
+  </div>
+  {sponsor && <section class="panel"><h2>删除</h2><p class="muted">删除会解除图片引用并写审计；总开关与列表不受影响。</p><form action="/api/manage/" method="post" data-admin-form data-confirm="删除赞助会解除图片引用；确认继续？"><input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="delete-sponsor"/><input type="hidden" name="id" value={sponsor.id}/><input type="hidden" name="version" value={sponsor.version}/><button class="danger" type="submit">删除赞助</button><p role="status" aria-live="polite"></p></form></section>}
+</AdminLayout>

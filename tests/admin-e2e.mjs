@@ -12,8 +12,11 @@ import { launchTestBrowser } from './browser-harness.mjs';
 import sharp from 'sharp';
 import jsQR from 'jsqr';
 import * as totp from '../src/server/totp.ts';
+import { seedFixture } from './fixtures/content.ts';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
+// 这些用例依赖固定资源/分类；新库默认 Empty，使用显式测试夹具而不是 Demo 内容。
+process.env.SITE_INIT_MODE = 'empty';
 const dir = mkdtempSync(join(tmpdir(), 'sj-e2e-'));
 const port = 4400 + Math.floor(Math.random() * 300);
 const base = `http://127.0.0.1:${port}`;
@@ -36,6 +39,8 @@ before(async () => {
     encoding: 'utf8',
   });
   assert.equal(seeded.status, 0, seeded.stderr);
+  const fixtureDb = new DatabaseSync(dbPath);
+  try { fixtureDb.exec('PRAGMA busy_timeout=5000'); seedFixture(fixtureDb); } finally { fixtureDb.close(); }
   server = spawn(process.execPath, ['dist/server/entry.mjs'], {
     cwd: root,
     env: {
@@ -116,6 +121,33 @@ test('管理员保存草稿后前台不可见，发布后可见，撤回后消�
 
   await Promise.all([page.waitForSelector('button:has-text("发布当前草稿")'), page.getByRole('button', { name: '撤回公开版本' }).click()]);
   assert.equal((await fetch(`${base}/resources/e2e-tool/`)).status, 404, '撤回后前台不应展示');
+  await page.close();
+});
+
+test('适用范围：编辑器序列化 scope，草稿不改公开快照，发布后前台生效', async () => {
+  const page = await browser.newPage();
+  page.on('dialog', (dialog) => dialog.accept());
+  await login(page, 'rootadmin', 'root-password-123');
+  await page.goto(`${base}/admin/resources/vlc/`);
+  const before = await (await fetch(`${base}/resources/vlc/`)).text();
+  assert.match(before, /适用范围待确认，请查阅资格说明/, '旧公开快照按 unknown 展示');
+
+  assert.equal(await page.locator('#scope-institutions-field').isVisible(), false, '默认 unknown 时机构输入隐藏');
+  await page.locator('#scope-type').selectOption('institutions');
+  assert.equal(await page.locator('#scope-institutions-field').isVisible(), true, '选择机构范围后输入可见');
+  await page.locator('#scope-institutions').fill('示例大学，第二学院');
+  await Promise.all([page.waitForEvent('domcontentloaded'), page.getByRole('button', { name: '保存草稿' }).click()]);
+  assert.equal(await page.locator('#scope-type').inputValue(), 'institutions', '编辑器回填已保存的 scope');
+  const afterDraft = await (await fetch(`${base}/resources/vlc/`)).text();
+  assert.match(afterDraft, /适用范围待确认/, '草稿范围变化不能进入公开快照');
+  await page.goto(`${base}/admin/preview/resources/vlc/`);
+  assert.match(await page.locator('body').innerText(), /仅限：示例大学、第二学院/, '草稿预览显示新的范围');
+  await page.goto(`${base}/admin/resources/vlc/`);
+
+  await Promise.all([page.waitForEvent('domcontentloaded'), page.getByRole('button', { name: '发布当前草稿' }).click()]);
+  const published = await (await fetch(`${base}/resources/vlc/`)).text();
+  assert.match(published, /仅限：示例大学、第二学院/, '发布后展示机构范围');
+  assert.doesNotMatch(published, /适用范围待确认/);
   await page.close();
 });
 
@@ -439,6 +471,167 @@ test('首页编排保存后影响首页与场景落地页', async () => {
   await page.close();
 });
 
+test('赞助位：默认关闭、创建启用、目录推广独立、关闭后无空位', async () => {
+  const page = await browser.newPage();
+  page.on('dialog', (dialog) => dialog.accept());
+  await login(page, 'rootadmin', 'root-password-123');
+  await page.goto(`${base}/admin/sponsors/`);
+  const toggle = page.locator('input[name=enabled]');
+  assert.equal(await toggle.isChecked(), false, '总开关默认关闭');
+  assert.match(await page.locator('body').innerText(), /只展示本地图片或纯文本/);
+
+  async function create(title, placement) {
+    await page.goto(`${base}/admin/sponsors/new/`);
+    await page.locator('#title').fill(title);
+    await page.locator('#sponsorName').fill('测试赞助方');
+    await page.locator('#body').fill('用于端到端测试的静态赞助。');
+    await page.locator('#targetUrl').fill('https://sponsor.example.com/learn');
+    await page.locator('#placement').selectOption(placement);
+    await page.locator('input[name=enabled]').check();
+    await Promise.all([page.waitForURL(`${base}/admin/sponsors/`), page.getByRole('button', { name: '创建赞助（默认停用）' }).click()]);
+  }
+  await create('测试侧栏赞助', 'home-sidebar');
+  await create('测试目录赞助', 'catalog-promotion');
+
+  // 编辑页带已保存内容的预览；修改后保存回列表。
+  await page.getByRole('link', { name: '测试侧栏赞助' }).click();
+  assert.equal(await page.locator('.sponsor-slot').count(), 1, '编辑页必须提供赞助预览');
+  await page.locator('#title').fill('测试侧栏赞助（改）');
+  await Promise.all([page.waitForURL(`${base}/admin/sponsors/`), page.getByRole('button', { name: '保存赞助' }).click()]);
+  assert.match(await page.locator('body').innerText(), /测试侧栏赞助（改）/);
+
+  // 总开关仍关闭：前台不渲染任何容器。
+  let html = await (await fetch(`${base}/`)).text();
+  // 样式表始终包含 .sponsor-slot；这里断言 DOM 容器不存在。
+  assert.doesNotMatch(html, /class="sponsor-slot/);
+
+  await page.locator('input[name=enabled]').check();
+  await Promise.all([page.waitForEvent('domcontentloaded'), page.getByRole('button', { name: '保存总开关' }).click()]);
+  html = await (await fetch(`${base}/`)).text();
+  assert.match(html, /测试侧栏赞助（改）/);
+  assert.match(html, /测试目录赞助/);
+  assert.match(html, /rel="sponsored noopener noreferrer"/);
+  assert.doesNotMatch(html, /data-outbound[^>]*sponsor/, '赞助外链不进入资源外跳统计');
+  assert.match(html, /"numberOfItems":12/, '赞助不进入资源 ItemList');
+  assert.doesNotMatch(html, /"@type":"ItemList"[^<]*测试侧栏赞助/, '赞助不能进入结构化数据');
+
+  await page.goto(`${base}/`);
+  assert.equal(await page.locator('.portal-sidebar .sponsor-sidebar').count(), 1, '侧栏赞助在现有 aside 内');
+  assert.equal(await page.locator('.sponsor-catalog').count(), 1);
+  assert.equal(await page.locator('#resource-list .sponsor-slot').count(), 0, '目录赞助不在资源列表内');
+  assert.equal(await page.locator('.sponsor-slot[data-resource]').count(), 0, '赞助不能带 data-resource');
+  assert.equal(await page.locator('#result-count').textContent(), '共 12 项', '赞助不改变资源数量');
+  const rel = await page.locator('.sponsor-link').first().getAttribute('rel');
+  assert.match(String(rel), /sponsored/);
+  assert.match(String(rel), /noopener/);
+  assert.equal(await page.locator('.sponsor-link[data-outbound]').count(), 0);
+
+  // 关闭总开关后容器与空位都不存在。
+  await page.goto(`${base}/admin/sponsors/`);
+  await page.locator('input[name=enabled]').uncheck();
+  await Promise.all([page.waitForEvent('domcontentloaded'), page.getByRole('button', { name: '保存总开关' }).click()]);
+  const closed = await (await fetch(`${base}/`)).text();
+  assert.doesNotMatch(closed, /class="sponsor-slot/);
+
+  // 删除只影响该条赞助与图片引用。
+  const row = page.locator('tr', { hasText: '测试目录赞助' });
+  await Promise.all([page.waitForEvent('domcontentloaded'), row.getByRole('button', { name: '删除' }).click()]);
+  assert.doesNotMatch(await page.locator('body').innerText(), /测试目录赞助/);
+  await page.close();
+});
+
+test('赞助文案按纯文本输出，HTML 不执行', async () => {
+  const page = await browser.newPage();
+  page.on('dialog', (dialog) => dialog.accept());
+  await login(page, 'rootadmin', 'root-password-123');
+  await page.goto(`${base}/admin/sponsors/`);
+  if (await page.getByRole('link', { name: '测试侧栏赞助（改）' }).count() === 0) {
+    // 单独运行本用例时自建一条赞助，避免依赖前一个测试的数据。
+    await page.goto(`${base}/admin/sponsors/new/`);
+    await page.locator('#title').fill('测试侧栏赞助（改）');
+    await page.locator('#sponsorName').fill('测试赞助方');
+    await page.locator('#targetUrl').fill('https://sponsor.example.com/learn');
+    await page.locator('input[name=enabled]').check();
+    await Promise.all([page.waitForURL(`${base}/admin/sponsors/`), page.getByRole('button', { name: '创建赞助（默认停用）' }).click()]);
+  }
+  await page.locator('input[name=enabled]').check();
+  await Promise.all([page.waitForEvent('domcontentloaded'), page.getByRole('button', { name: '保存总开关' }).click()]);
+  await page.getByRole('link', { name: '测试侧栏赞助（改）' }).click();
+  const title = '<script>window.__sponsorXss=1</script>';
+  const body = '<img src=x onerror="window.__sponsorXss=2">';
+  await page.locator('#title').fill(title);
+  await page.locator('#body').fill(body);
+  await Promise.all([page.waitForURL(`${base}/admin/sponsors/`), page.getByRole('button', { name: '保存赞助' }).click()]);
+
+  await page.goto(`${base}/`);
+  assert.equal(await page.evaluate(() => window.__sponsorXss), undefined, '赞助文案不能执行脚本');
+  assert.equal(await page.locator('.sponsor-title').first().textContent(), title, '标题保留原始文本');
+  const html = await page.content();
+  assert.match(html, /&lt;script&gt;window\.__sponsorXss=1&lt;\/script&gt;/);
+  assert.match(html, /&lt;img src=x onerror=/);
+  assert.doesNotMatch(html, /<script>window\.__sponsorXss/);
+
+  await page.goto(`${base}/admin/sponsors/`);
+  await page.locator('input[name=enabled]').uncheck();
+  await Promise.all([page.waitForEvent('domcontentloaded'), page.getByRole('button', { name: '保存总开关' }).click()]);
+  await page.close();
+});
+
+test('赞助预览遵守媒体下架状态：不输出 404 图片，恢复后恢复预览', async () => {
+  const page = await browser.newPage();
+  page.on('dialog', (dialog) => dialog.accept());
+  await login(page, 'rootadmin', 'root-password-123');
+  const png = await sharp({ create: { width: 900, height: 600, channels: 3, background: '#446655' } }).png().toBuffer();
+  await page.goto(`${base}/admin/resources/new/`);
+  await page.locator('#image-rights').selectOption('confirmed');
+  await page.locator('#image-credit').fill('预览测试 / CC0');
+  await page.setInputFiles('#media-file', { name: 'preview.png', mimeType: 'image/png', buffer: png });
+  await page.getByRole('button', { name: '上传并填入' }).click();
+  await page.waitForFunction(() => document.querySelector('.media-status')?.textContent?.includes('已上传'));
+  const src = await page.locator('[data-field="image"]').inputValue();
+  const mediaId = src.slice('/media/'.length, -'.webp'.length);
+
+  await page.goto(`${base}/admin/sponsors/new/`);
+  await page.locator('#title').fill('图片赞助预览');
+  await page.locator('#sponsorName').fill('预览赞助方');
+  await page.locator('#targetUrl').fill('https://sponsor.example.com/preview');
+  await page.locator('#placement').selectOption('catalog-promotion');
+  await page.locator('#mediaId').selectOption(mediaId);
+  await page.locator('#imageAlt').fill('赞助图片替代文本');
+  await page.locator('input[name=enabled]').check();
+  await Promise.all([page.waitForURL(`${base}/admin/sponsors/`), page.getByRole('button', { name: '创建赞助（默认停用）' }).click()]);
+
+  await page.getByRole('link', { name: '图片赞助预览' }).click();
+  assert.equal(await page.locator(`.sponsor-slot img[src*="/media/${mediaId}.webp"]`).count(), 1, '可用图片正常预览');
+
+  await page.goto(`${base}/admin/media/`);
+  const downRow = page.locator('tr', { hasText: mediaId.slice(0, 12) });
+  await downRow.locator('input[name=reason]').fill('预览下架测试');
+  await downRow.getByRole('button', { name: '全局下架' }).click();
+  await page.waitForFunction((id) => [...document.querySelectorAll('tr')].some((row) => row.textContent?.includes(String(id).slice(0, 12)) && row.textContent.includes('已下架')), mediaId);
+
+  await page.goto(`${base}/admin/sponsors/`);
+  await page.getByRole('link', { name: '图片赞助预览' }).click();
+  assert.equal(await page.locator(`.sponsor-slot img[src*="/media/${mediaId}.webp"]`).count(), 0, '下架后不能输出已知 404 图片');
+  const placeholder = page.locator('.sponsor-preview-placeholder');
+  assert.equal(await placeholder.count(), 1, '下架后必须显示占位说明');
+  assert.match(await placeholder.innerText(), /图片已下架/);
+  assert.match(await placeholder.innerText(), /赞助图片替代文本/);
+  assert.match(String(await placeholder.getAttribute('aria-label')), /赞助图片替代文本/);
+
+  await page.goto(`${base}/admin/media/`);
+  const restoreRow = page.locator('tr', { hasText: mediaId.slice(0, 12) });
+  await restoreRow.locator('input[name=reason]').fill('预览恢复测试');
+  await restoreRow.getByRole('button', { name: '恢复上架' }).click();
+  await page.waitForFunction((id) => [...document.querySelectorAll('tr')].some((row) => row.textContent?.includes(String(id).slice(0, 12)) && !row.textContent.includes('已下架')), mediaId);
+
+  await page.goto(`${base}/admin/sponsors/`);
+  await page.getByRole('link', { name: '图片赞助预览' }).click();
+  assert.equal(await page.locator(`.sponsor-slot img[src*="/media/${mediaId}.webp"]`).count(), 1, '恢复后预览恢复');
+  assert.equal(await page.locator('.sponsor-preview-placeholder').count(), 0);
+  await page.close();
+});
+
 test('导出 JSON、导入预检与导入应用', async () => {
   const anonymous = await fetch(`${base}/api/export/`);
   assert.equal(anonymous.status, 401);
@@ -447,8 +640,23 @@ test('导出 JSON、导入预检与导入应用', async () => {
   const exported = await page.request.get(`${base}/api/export/`);
   assert.equal(exported.status(), 200);
   const payload = await exported.json();
-  assert.equal(payload.schemaVersion, 2, '导出升级为 v2：带媒体元数据');
+  assert.equal(payload.schemaVersion, 3, '导出升级为 v3：带媒体元数据与品牌投影');
+  assert.equal(typeof payload.branding?.name, 'string');
   assert.ok(payload.resources.length >= 12);
+
+  // v3 导出预检：版本、品牌与首页分别显示，两个恢复开关默认都不勾选。
+  await page.goto(`${base}/admin/import/`);
+  await page.locator('#payload').fill(JSON.stringify(payload));
+  await page.getByRole('button', { name: '预检' }).click();
+  await page.waitForSelector('#preview-result:not([hidden])');
+  const previewText = String(await page.locator('#preview-body').textContent());
+  assert.match(previewText, /文件版本 v3/);
+  assert.match(previewText, /品牌设置/);
+  assert.match(previewText, /首页设置/);
+  assert.equal(await page.locator('#restore-branding-row').isVisible(), true);
+  assert.equal(await page.locator('input[name=restoreBranding]').isChecked(), false, '品牌默认不恢复');
+  assert.equal(await page.locator('#restore-settings-row').isVisible(), true);
+  assert.equal(await page.locator('input[name=restoreSettings]').isChecked(), false, '首页默认不恢复');
 
   const resource = {
     id: 'imported-demo', title: '导入示例工具', summary: '通过导入创建的草稿。', category: 'writing', kind: '开源工具', cost: '免费',
@@ -749,13 +957,20 @@ test('最新备份等于服务器内容时不遮挡更早的分歧备份', async
 
 const TOTP_KEY = Buffer.alloc(32, 9).toString('base64url');
 
-async function decodeQrFromPage(page) {
+function readFrozenIssuer(path) {
+  const db = new DatabaseSync(path, { readOnly: true });
+  try { return String(db.prepare("SELECT value FROM metadata WHERE key='auth_issuer'").get().value); }
+  finally { db.close(); }
+}
+
+async function decodeQrFromPage(page, expectedIssuer) {
   const svg = await page.locator('.totp-qr svg').evaluate((element) => element.outerHTML);
   const { data, info } = await sharp(Buffer.from(svg)).resize(480, 480).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   const decoded = jsQR(new Uint8ClampedArray(data), info.width, info.height);
   assert.ok(decoded, '页面上的二维码必须可以被独立解码');
   const uri = new URL(decoded.data);
-  assert.equal(uri.searchParams.get('issuer'), '三江资源');
+  assert.equal(uri.searchParams.get('issuer'), expectedIssuer, '二维码 issuer 必须与实例冻结值一致');
+  assert.ok(decodeURIComponent(uri.pathname.slice(1)).startsWith(`${expectedIssuer}:`), '标签必须使用同一 issuer');
   return { secret: uri.searchParams.get('secret'), uri: decoded.data };
 }
 
@@ -796,10 +1011,10 @@ test('TOTP：真实二维码绑定、Cookie 传递、恢复码登录与一次性
   assert.equal(challengeCookie.sameSite, 'Strict');
   // 自愿启用时本来就有会话；"口令通过后不得残留会话"的断言在下面的登录流程里验证。
 
-  const { secret } = await decodeQrFromPage(page);
+  const { secret } = await decodeQrFromPage(page, readFrozenIssuer(dbPath));
   // 刷新复用同一 secret，不生成新秘密。
   await page.reload();
-  const again = await decodeQrFromPage(page);
+  const again = await decodeQrFromPage(page, readFrozenIssuer(dbPath));
   assert.equal(again.secret, secret, '刷新必须复用同一秘密');
 
   // 2) 未提交验证码 / 错误验证码都不能启用。
@@ -819,7 +1034,7 @@ test('TOTP：真实二维码绑定、Cookie 传递、恢复码登录与一次性
 
   // 3) 正确验证码（来自解码出的 secret）才完成绑定，并一次性展示恢复码。
   await page.goto(`${base}/admin/login/enroll/`);
-  const fresh = await decodeQrFromPage(page);
+  const fresh = await decodeQrFromPage(page, readFrozenIssuer(dbPath));
   const code = totp.hotp(totp.base32Decode(fresh.secret), totp.currentStep() + 1);
   await page.locator('#code').fill(code);
   await Promise.all([
@@ -908,7 +1123,7 @@ test('TOTP：管理员重置他人双因素后，对方回到口令登录', asyn
     editorPage.waitForURL(`${base}/admin/login/enroll/`),
     editorPage.getByRole('button', { name: '开始绑定' }).click(),
   ]);
-  const { secret } = await decodeQrFromPage(editorPage);
+  const { secret } = await decodeQrFromPage(editorPage, readFrozenIssuer(dbPath));
   await editorPage.locator('#code').fill(totp.hotp(totp.base32Decode(secret), totp.currentStep() + 1));
   await Promise.all([editorPage.waitForLoadState('load'), editorPage.getByRole('button', { name: '确认并启用' }).click()]);
   await Promise.all([editorPage.waitForURL(`${base}/admin/`), editorPage.getByRole('link', { name: '我已保存，进入后台' }).click()]);
@@ -994,7 +1209,7 @@ test('TOTP：强制策略下未启用管理员登录即进入注册，完成绑�
     assert.equal(new URL(page.url()).pathname, '/admin/login/', '未完成注册不能进入后台');
 
     await page.goto(`${forcedBase}/admin/login/enroll/`);
-    const { secret } = await decodeQrFromPage(page);
+    const { secret } = await decodeQrFromPage(page, readFrozenIssuer(forcedDb));
     await page.locator('#code').fill(totp.hotp(totp.base32Decode(secret), totp.currentStep() + 1));
     await Promise.all([page.waitForLoadState('load'), page.getByRole('button', { name: '确认并启用' }).click()]);
     assert.match(await page.locator('body').innerText(), /恢复码/);
@@ -1059,7 +1274,9 @@ test('媒体：编辑器上传→回填→保存→发布→变体显示；下�
   await page.goto(`${base}/admin/resources/media-demo/`);
   page.once('dialog', (dialog) => dialog.accept());
   await page.getByRole('button', { name: '发布当前草稿' }).click();
-  await page.waitForURL(`${base}/admin/resources/media-demo/`);
+  // 同 URL 的 waitForURL 会立即返回；必须等到发布后的界面状态，否则后面的 goto 会被
+  // 仍未完成的提交导航打断（表现为 "navigation interrupted"）。
+  await page.waitForSelector('button:has-text("撤回公开版本")');
 
   const detail = await (await fetch(`${base}/resources/media-demo/`)).text();
   assert.match(detail, new RegExp(`/media/${mediaId}\\.webp`));

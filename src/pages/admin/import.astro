@@ -10,6 +10,7 @@ const guides = Astro.url.searchParams.get('guides');
 const categories = Astro.url.searchParams.get('categories');
 const restored = Astro.url.searchParams.get('restored');
 const settingsRestored = Astro.url.searchParams.get('settings');
+const brandingRestored = Astro.url.searchParams.get('branding');
 const errors = Astro.url.searchParams.get('errors');
 const runParam = Number(Astro.url.searchParams.get('run') ?? '');
 const run = Number.isSafeInteger(runParam) && runParam > 0 ? findImportRun(runParam) : undefined;
@@ -19,8 +20,8 @@ const runErrors = (() => {
 })();
 ---
 <AdminLayout title="导入导出" session={session}>
-  <div class="notice"><strong>导入只恢复草稿，不会改公开版本。</strong><p>导出包含草稿、发布快照、分类、媒体元数据与首页设置（不含图片二进制）；导入会校验每一条资源/指南，缺失分类自动创建。首页设置只有在勾选后才会恢复。发布仍需在编辑页逐条确认。导出的 JSON 可直接导回（自动识别导出结构）；导出中含有的回收站条目，导入后会恢复为草稿。导出文件含草稿，请妥善保管。</p></div>
-  {imported !== null && <div class="notice" role="status"><strong>导入完成</strong><p>资源 {imported} 条，指南 {guides} 篇，新建分类 {categories} 个，恢复回收站条目 {restored ?? 0} 条，首页设置{settingsRestored === '1' ? '已恢复' : '未恢复'}，失败 {errors} 条。</p></div>}
+  <div class="notice"><strong>导入只恢复草稿，不会改公开版本。</strong><p>导出为 v3：包含草稿、发布快照、分类、媒体元数据、首页设置与实例品牌（不含图片二进制、账户、密钥或部署环境）；可导入无版本、v1、v2 旧文件，未来版本会在写入前拒绝。导入会校验每一条资源/指南，缺失分类自动创建。首页设置与品牌只有在勾选后才会恢复，默认不选。发布仍需在编辑页逐条确认。导出中含有的回收站条目，导入后会恢复为草稿。导出文件含草稿，请妥善保管。</p></div>
+  {imported !== null && <div class="notice" role="status"><strong>导入完成</strong><p>资源 {imported} 条，指南 {guides} 篇，新建分类 {categories} 个，恢复回收站条目 {restored ?? 0} 条，首页设置{settingsRestored === '1' ? '已恢复' : '未恢复'}，品牌设置{brandingRestored === '1' ? '已恢复' : '未恢复'}，失败 {errors} 条。</p></div>}
   {runErrors.length > 0 && <section class="panel" role="status"><h2>这次导入的失败条目</h2><p class="muted">共 {runErrors.length} 条；修正后重新预检即可再次导入。结果保留最近 20 次。</p><ul>{runErrors.map((item) => <li><strong>{item.id}</strong>：{item.error}</li>)}</ul></section>}
   <section class="panel"><h2>导出</h2><p>下载 JSON 备份，可用于迁移或批量编辑前的留档。</p><div class="actions"><a class="button" href="/api/export/">下载内容 JSON</a><span class="muted">仅管理员；文件不进仓库。</span></div></section>
   <form class="panel" action="/api/manage/" method="post" data-admin-form id="import-form">
@@ -29,7 +30,8 @@ const runErrors = (() => {
     <input type="hidden" name="plan" id="import-plan" value=""/>
     <h2>导入</h2><p>粘贴导出的 JSON（或同结构文件）。必须先预检：预检会记录每个条目当时的版本，若期间有人保存过，导入会整体取消并要求重新预检。</p>
     <div class="field"><label for="payload">JSON 内容</label><textarea id="payload" name="payload" required rows="12" style="min-height:260px;font-family:monospace;font-size:13px" placeholder='{"schemaVersion":1,"resources":[],"guides":[]}'></textarea></div>
-    <label class="checkbox" id="restore-settings-row" hidden><input type="checkbox" name="restoreSettings" value="1" checked/> 同时恢复文件中的首页精选与场景文案</label>
+    <label class="checkbox" id="restore-settings-row" hidden><input type="checkbox" name="restoreSettings" value="1"/> 同时恢复文件中的首页精选与场景文案（默认不选）</label>
+    <label class="checkbox" id="restore-branding-row" hidden><input type="checkbox" name="restoreBranding" value="1"/> 同时恢复文件中的实例品牌（默认不选）</label>
     <div class="actions"><button type="button" class="secondary" id="preview-import">预检</button><button type="submit" id="apply-import">确认导入草稿</button></div>
     <p role="status" aria-live="polite"></p>
   </form>
@@ -41,6 +43,8 @@ const runErrors = (() => {
   const payload = document.querySelector<HTMLTextAreaElement>('#payload');
   const planField = document.querySelector<HTMLInputElement>('#import-plan');
   const settingsRow = document.querySelector<HTMLElement>('#restore-settings-row');
+  const brandingRow = document.querySelector<HTMLElement>('#restore-branding-row');
+  const brandingCheckbox = brandingRow?.querySelector<HTMLInputElement>('input[name=restoreBranding]');
   const panel = document.querySelector<HTMLElement>('#preview-result');
   const body = document.querySelector<HTMLElement>('#preview-body');
   const form = document.querySelector<HTMLFormElement>('#import-form');
@@ -108,6 +112,34 @@ const runErrors = (() => {
         fragment.append(list);
         return fragment;
       };
+      type BrandingInfo = {
+        present: boolean; valid: boolean; error: string | null; name: string | null; version: number | null;
+        changed: boolean; media: { id: string; field: string; available: boolean }[];
+      };
+      const brandingPart = (value: BrandingInfo | null | undefined): DocumentFragment => {
+        const fragment = document.createDocumentFragment();
+        fragment.append(heading('品牌设置'));
+        if (!value?.present) {
+          fragment.append(paragraph('文件不含品牌设置；导入不会改动站点名称、主题色或品牌素材。'));
+          return fragment;
+        }
+        if (!value.valid) {
+          fragment.append(paragraph(`文件中的品牌设置无效：${value.error ?? '结构不完整'}。不能恢复品牌，内容仍可单独导入。`));
+          return fragment;
+        }
+        const unavailable = value.media.filter((item) => !item.available);
+        fragment.append(paragraph(`名称 ${value.name ?? '（空）'}（文件版本 v${value.version ?? '?'}）。${value.changed ? '与当前品牌不同，勾选下面的选项后会在导入结束时恢复。' : '与当前品牌内容相同，无需恢复。'}`));
+        if (unavailable.length > 0) {
+          const list = document.createElement('ul');
+          for (const item of unavailable) {
+            const row = document.createElement('li');
+            row.textContent = `${item.field}：/media/${item.id}.webp 当前不可用（已下架、授权未确认或尺寸不足）`;
+            list.append(row);
+          }
+          fragment.append(paragraph('品牌引用的图片当前不可用；直接恢复会在导入结束时失败，请先在媒体库处理。'), list);
+        }
+        return fragment;
+      };
       const settingsPart = (): DocumentFragment => {
         const fragment = document.createDocumentFragment();
         fragment.append(heading('首页设置'));
@@ -118,9 +150,18 @@ const runErrors = (() => {
           : `文件含首页设置：精选 ${value.featuredResourceId || '（空）'}，场景文案 ${value.scenarios} 条。${missing.length ? `其中 ${missing.length} 条对应分类已删除（${missing.join('、')}），恢复时会跳过。` : ''}${value.changed ? '勾选下面的选项后会在导入结束时恢复。' : '与当前设置相同，无需恢复。'}`));
         return fragment;
       };
+      const versionInfo = result.version as { value: number; legacy: boolean } | undefined;
+      const bodyNodes: Node[] = [
+        paragraph(versionInfo
+          ? (versionInfo.legacy
+            ? '文件没有 schemaVersion：按旧格式兼容读取，缺失的字段会使用安全默认值。'
+            : `文件版本 v${versionInfo.value}${versionInfo.value < 3 ? '（旧版兼容读取）' : ''}`)
+          : '文件版本未知。'),
+        paragraph(`新建分类：${result.categories.create.length}${result.categories.invalid.length ? ` · 无效分类：${result.categories.invalid.length}` : ''}`),
+      ];
       if (body) {
         body.replaceChildren(
-          paragraph(`新建分类：${result.categories.create.length}${result.categories.invalid.length ? ` · 无效分类：${result.categories.invalid.length}` : ''}`),
+          ...bodyNodes,
           ...(result.categories.invalid.length ? [(() => {
             const list = document.createElement('ul');
             for (const item of result.categories.invalid as Entry[]) {
@@ -136,10 +177,17 @@ const runErrors = (() => {
           renderPart('指南', result.guides),
           mediaPart(),
           settingsPart(),
+          brandingPart(result.branding as BrandingInfo | null | undefined),
         );
       }
       if (planField) planField.value = JSON.stringify(result.plan);
       if (settingsRow) settingsRow.hidden = !result.settings;
+      const brandingInfo = result.branding as BrandingInfo | null | undefined;
+      if (brandingRow) brandingRow.hidden = !brandingInfo?.present;
+      if (brandingCheckbox) {
+        brandingCheckbox.disabled = !brandingInfo?.valid;
+        if (!brandingInfo?.valid) brandingCheckbox.checked = false;
+      }
       if (panel) panel.hidden = false;
       setStatus('预检完成，确认后再点“确认导入草稿”。');
     } catch (error) { setStatus(error instanceof Error ? error.message : '预检失败'); }

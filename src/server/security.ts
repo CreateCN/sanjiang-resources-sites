@@ -1,6 +1,7 @@
 import { randomBytes, scryptSync, timingSafeEqual, createHash } from 'node:crypto';
 import { isIP } from 'node:net';
 import { database, transaction } from './db.ts';
+import { SiteConfigError, resolveRequestOrigin } from './deployment-config.ts';
 
 export class HttpError extends Error {
   status: number;
@@ -128,19 +129,14 @@ export function clientIdentity(request: Request, clientAddress?: string): string
 
 export function requireOrigin(request: Request): void {
   const origin = request.headers.get('origin');
-  const url = new URL(request.url);
-  const host = request.headers.get('host');
+  // 期望 origin 只有一个来源：SITE_URL（生产必须配置），开发环境才允许请求回退。
+  // 配置异常按 503 处理，不能伪装成来源校验失败去误导部署者。
   let expected: string;
-  if (process.env.SITE_URL) {
-    expected = new URL(process.env.SITE_URL).origin;
-  } else if (host && url.hostname === 'localhost' && !url.port) {
-    // The Node adapter rebuilds the URL as bare `localhost` when host validation
-    // is not configured; the browser-set Host header is the reliable origin here.
-    // X-Forwarded-Proto is only honoured for the scheme: it cannot widen the host.
-    const protocol = request.headers.get('x-forwarded-proto') === 'https' ? 'https' : url.protocol.replace(':', '');
-    expected = `${protocol}://${host}`;
-  } else {
-    expected = url.origin;
+  try {
+    expected = resolveRequestOrigin(request);
+  } catch (error) {
+    if (error instanceof SiteConfigError) fail(503, '站点地址配置异常，请联系维护者');
+    throw error;
   }
   if (!origin || origin !== expected) fail(403, '请求来源验证失败，请从本站页面提交');
   const fetchSite = request.headers.get('sec-fetch-site');

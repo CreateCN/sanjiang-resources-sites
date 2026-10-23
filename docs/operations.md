@@ -59,12 +59,57 @@ npm run site:restore -- --backup ./backups/site-<stamp>-<rand> --yes
 备份前要求媒体占位为空且所有对象哈希正确，否则拒绝标记成功。
 恢复在暂存位置完成校验、迁移与认证净化（清空会话/挑战/恢复码、递增 `auth_version`、
 抬升 TOTP 步数下限），再按日志切换 DB 与 `objects/`；中途失败会回滚并保留原目录。
+
+清单记录软件版本、提交、迁移列表与业务计数；缺少这些可选字段的旧批次仍可读取。
+恢复前先拒绝当前程序不认识的迁移；迁移与净化都在暂存副本完成，并核对分类、资源两份快照、
+指南、用户、历史、审计、设置、媒体与赞助的数量和内容摘要——除迁移元数据、认证净化和一条
+`restore-purge` 审计外，业务摘要必须完全不变。
 `npm run db:backup` 只是数据库诊断快照，不能用于含媒体的站点恢复。
+
+**切换阶段与硬中断恢复**：日志 `site-restore-<stamp>.log.json` 会逐阶段写入
+`phases`、`preserved.database` 与 `preserved.objects`。`preserved.database` 是
+`VACUUM INTO` 生成的独立一致性快照，已经包含原库匹配的已提交 WAL；保全目录中不再
+另存可与之混用的 `site.sqlite-wal/-shm`。进程被强制终止时：
+
+1. 先停止 app、maintenance 与所有写者，不要直接再次运行恢复；
+2. 读日志确认最后阶段：
+   - 只到 `verify-backup`、`stage`、`prepare` 或 `objects-installed`：数据库切换尚未开始，
+     原主库内容未被替换（SQLite 可能在生成一致性快照时 checkpoint WAL）。若对象已经切换，
+     删除当前 `media/objects`，把日志里的
+     `preserved.objects`（`objects.restore-*`）改名回 `media/objects`；
+   - 已到 `db-swap-started` 或 `swap`：sidecar 可能已清理，主库可能已替换。不要寻找或复用
+     旧 sidecar；删除目标 `site.sqlite-wal/-shm`，把 `preserved.database` 复制回
+     `site.sqlite`，再按上一条恢复媒体；
+   - 日志没有 `preserved.database`：恢复前不存在原库。删除候选主库与 sidecar，按实际情况
+     恢复旧媒体；不要记录为“已还原原库”。
+3. 对写回的主库执行 `PRAGMA integrity_check`，并用原业务计数、媒体哈希和
+   `preserved.businessDigest` 核对；自动回滚只有在这些检查通过后才记录 `rollback-verified`。
+4. 恢复后重新运行 `site:backup` 校验对象哈希，再启动一个实例确认登录与媒体可用。
+
+工具不会自动处理硬中断；上述步骤必须由维护者执行并记录。硬中断后不要手工拼接
+`preserved.database` 与任何旧 WAL/SHM。
 
 ### 双因素认证密钥
 
 `TOTP_ENC_KEY` 与数据库分开保存：只恢复数据库而丢失密钥，所有账户都无法用 TOTP 登录。
 此时用 `npm run totp:reset -- <用户名> --reason "…" --yes` 离线重置后重新绑定。
+
+### 本地/测试实例的维护进程
+
+Web 应用不会自动启动维护进程。本地、systemd 或临时测试实例需要单独运行：
+
+```bash
+DATABASE_PATH=./data/site.sqlite \
+MEDIA_DIR=./data/media \
+BACKUP_DIR=./backups \
+npm run maintenance
+```
+
+维护进程每 30 秒写入 `${DATABASE_PATH}.maintenance.sqlite` 的心跳（可用
+`MAINTENANCE_STATE_PATH` 覆盖），并执行到期任务。只启动 app 时，
+`/admin/maintenance/` 会显示“尚未发现维护进程”和“暂无记录”，这是状态查询页的正常结果，
+页面本身不会创建状态文件或启动任务。Docker Compose 会启动独立的 `maintenance` 容器，
+不需要再手工运行此命令。
 
 ## Docker Compose 定时任务
 
@@ -108,6 +153,8 @@ Compose 默认启动 `app` 与 `maintenance` 两个容器，使用同一镜像�
 宿主机挂载目录必须允许容器内 `node` 用户（UID 1000）写入；启动前检查目录权限。
 备份在独立子进程中运行，不会直接阻塞 Web 进程的事件循环，但仍消耗磁盘与数据库资源。
 备份文件权限为 `0600`，包含密码哈希和反馈；生产环境应另行安排异机副本与恢复演练。
+**定时任务的备份只是数据库诊断快照**，不含媒体二进制，不能保证 DB 与媒体同批一致。完整灾备必须
+停写后运行 `site:backup`，步骤见 [升级与回滚](upgrade.md) 与 [Docker 部署](deploy-docker.md) §7。
 
 停止定时任务：`docker compose stop maintenance`。手动备份和检查入口仍可使用：
 

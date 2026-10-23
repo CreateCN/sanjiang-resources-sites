@@ -1,0 +1,206 @@
+name: Release
+
+# 受控发行：只有推送 vX.Y.Z / vX.Y.Z-rc.N 标签才自动发布；
+# workflow_dispatch 默认 dry-run（不推送镜像、不创建 Release），供审查与演练。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '已存在的发行标签（vX.Y.Z 或 vX.Y.Z-rc.N）'
+        required: true
+        type: string
+      push_image:
+        description: '推送镜像到 GHCR（需要 packages:write）'
+        required: true
+        type: boolean
+        default: false
+      create_release:
+        description: '创建 GitHub Release（必须先 push_image）'
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ github.event_name == 'push' && github.ref_name || github.event.inputs.tag }}
+  PUSH_IMAGE: ${{ github.event_name == 'push' || github.event.inputs.push_image == 'true' }}
+
+jobs:
+  verify:
+    name: Verify tag, version and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      commit: ${{ steps.meta.outputs.commit }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Validate tag, version and commit
+        id: meta
+        run: |
+          set -euo pipefail
+          node scripts/release-check.mjs "$TAG" > release-meta.json
+          COMMIT="$(git rev-parse HEAD)"
+          if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$COMMIT" != "$GITHUB_SHA" ]; then
+            echo "checkout 提交 $COMMIT 与 GITHUB_SHA $GITHUB_SHA 不一致" >&2
+            exit 2
+          fi
+          if [ "$(git rev-parse "$TAG^{commit}")" != "$COMMIT" ]; then
+            echo "标签 $TAG 没有指向当前提交 $COMMIT" >&2
+            exit 2
+          fi
+          VERSION="$(node scripts/release-metadata.mjs field release-meta.json version)"
+          node scripts/release-metadata.mjs tag release-meta.json "$COMMIT"
+          echo "commit=$COMMIT" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+      - name: Require same-commit CI success
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ steps.meta.outputs.commit }}
+        run: |
+          set -euo pipefail
+          COUNT="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$COMMIT&status=completed&per_page=100" --jq '[.workflow_runs[] | select(.conclusion == "success")] | length')"
+          if [ "$COUNT" -lt 1 ]; then
+            echo "提交 $COMMIT 没有成功的 ci.yml 运行；先完成同提交 CI" >&2
+            exit 2
+          fi
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-meta
+          path: release-meta.json
+          if-no-files-found: error
+
+  image:
+    name: Build, verify and optionally push image
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+      pushed: ${{ steps.meta.outputs.pushed }}
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      COMMIT: ${{ needs.verify.outputs.commit }}
+      PUSH_IMAGE: ${{ github.event_name == 'push' || github.event.inputs.push_image == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+      - name: Check release assets before build
+        run: node scripts/check-release-assets.mjs
+      - name: Build image for the verified commit
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}:$VERSION"
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          docker build \
+            --platform linux/amd64 \
+            --build-arg VERSION="$VERSION" \
+            --build-arg COMMIT_SHA="$COMMIT" \
+            --build-arg SOURCE_URL="https://github.com/$GITHUB_REPOSITORY" \
+            -t "$IMAGE" .
+          bash scripts/verify-image.sh "$IMAGE" "$VERSION" "$COMMIT"
+      - name: Push image
+        id: push
+        if: ${{ github.event_name == 'push' || github.event.inputs.push_image == 'true' }}
+        run: |
+          set -euo pipefail
+          echo "${{ github.token }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker push "$IMAGE"
+          DIGEST="$(docker buildx imagetools inspect "$IMAGE" --format '{{.Manifest.Digest}}')"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "DIGEST=$DIGEST" >> "$GITHUB_ENV"
+      - name: Write traceable metadata
+        id: meta
+        run: |
+          set -euo pipefail
+          DIGEST="${DIGEST:-}"
+          if [ "$PUSH_IMAGE" = "true" ] && [ -z "$DIGEST" ]; then
+            echo "已推送但未取得 digest，拒绝继续" >&2
+            exit 2
+          fi
+          PUSHED=false
+          if [ "$PUSH_IMAGE" = "true" ]; then PUSHED=true; fi
+          node scripts/release-metadata.mjs image release-image.json "$TAG" "$VERSION" "$COMMIT" "$IMAGE" "${DIGEST:-}" "$PUSHED" "linux/amd64"
+          echo "pushed=$PUSHED" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-image
+          path: release-image.json
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: [verify, image]
+    if: ${{ github.event_name == 'push' || github.event.inputs.create_release == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.verify.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-image
+      - name: Check release assets before Release
+        run: node scripts/check-release-assets.mjs
+      - name: Guard release preconditions
+        run: |
+          set -euo pipefail
+          PUSHED="$(node scripts/release-metadata.mjs field release-image.json pushed)"
+          DIGEST="$(node scripts/release-metadata.mjs field release-image.json digest)"
+          if [ "$PUSHED" != "true" ] || [ -z "$DIGEST" ]; then
+            echo "只有已推送并取得 digest 的镜像才能创建 Release" >&2
+            exit 2
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在；不覆盖不可变发行" >&2
+            exit 2
+          fi
+      - name: Write release notes
+        run: |
+          set -euo pipefail
+          node scripts/release-metadata.mjs notes release-image.json release-notes.md
+      - name: Create release
+        run: |
+          set -euo pipefail
+          PRERELEASE=""
+          if printf '%s' "$VERSION" | grep -q -- '-rc\.'; then PRERELEASE="--prerelease"; fi
+          gh release create "$TAG" \
+            --verify-tag \
+            --title "Sanjiang Resources $TAG" \
+            --notes-file release-notes.md \
+            $PRERELEASE \
+            compose.release.yml \
+            .env.release.example \
+            release-image.json

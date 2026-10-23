@@ -4,6 +4,7 @@ import { guidesForResource } from '../lib/guides';
 import { renderMediaInline, renderMediaMarkdown } from '../lib/media-render';
 import { freshness, freshnessNote } from '../lib/freshness';
 import { accessLabel, accessHint } from '../lib/access';
+import { scopeLabel, scopeHint, scopeShortLabel } from '../lib/resource-scope';
 import ResourceImage from './ResourceImage.astro';
 interface Props {
   resource: import('../lib/resource-schema').Resource;
@@ -31,12 +32,12 @@ const imageUnconfirmed = Boolean(resource.image && resource.imageRights !== 'con
     <div>
       <section class="detail-head">
         <h1>{resource.title}</h1>
-        <div class="detail-tags"><span>{categoryName(resource.category)}</span><span>{resource.kind}</span><span class="access-chip">{accessLabel(resource.access)}</span>{resource.tags.map((tag) => <span>{tag}</span>)}</div>
+        <div class="detail-tags"><span>{categoryName(resource.category)}</span><span>{resource.kind}</span><span class="access-chip">{accessLabel(resource.access)}</span><span class="scope-chip">{scopeShortLabel(resource.scope)}</span>{resource.tags.map((tag) => <span>{tag}</span>)}</div>
         <p class="detail-summary" set:html={renderMediaInline(resource.summary)} />
       </section>
       <div class="detail-body">
         <nav class="detail-nav" aria-label="本页目录"><a href="#conditions">使用条件</a>{resource.details && <a href="#details">详细说明</a>}<a href="#start">如何开始</a><a href="#verification">核验说明</a><a href="#report">问题反馈</a></nav>
-        <section id="conditions"><h2>先看看是否适合你</h2><dl class="facts"><div><dt>使用门槛</dt><dd>{accessLabel(resource.access)}：{accessHint(resource.access)}</dd></div><div><dt>费用与许可</dt><dd set:html={renderMediaInline(resource.license)} /></div><div><dt>设备与平台</dt><dd>{resource.platforms.join('、')}</dd></div><div><dt>资格与身份要求</dt><dd set:html={renderMediaInline(resource.eligibility)} /></div><div><dt>需要注意</dt><dd set:html={renderMediaInline(resource.caveat)} /></div></dl></section>
+        <section id="conditions"><h2>先看看是否适合你</h2><dl class="facts"><div><dt>使用门槛</dt><dd>{accessLabel(resource.access)}：{accessHint(resource.access)}</dd></div><div><dt>适用范围</dt><dd>{scopeLabel(resource.scope)}<span class="muted"> {scopeHint(resource.scope)}</span></dd></div><div><dt>费用与许可</dt><dd set:html={renderMediaInline(resource.license)} /></div><div><dt>设备与平台</dt><dd>{resource.platforms.join('、')}</dd></div><div><dt>资格与身份要求</dt><dd set:html={renderMediaInline(resource.eligibility)} /></div><div><dt>需要注意</dt><dd set:html={renderMediaInline(resource.caveat)} /></div></dl></section>
         {resource.details && <section id="details"><h2>详细说明</h2><div class="markdown-body" set:html={renderMediaMarkdown(resource.details)} /></section>}
         {resource.image && <figure class="screenshot"><ResourceImage src={resource.image} alt={resource.imageAlt ?? `${resource.title} 官方界面`} />
           {imageUnconfirmed && <p class="image-flag">网络图片，来源与授权未确认；如有侵权请联系管理员处理。</p>}

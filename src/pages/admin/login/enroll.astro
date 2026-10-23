@@ -14,7 +14,7 @@ const grouped = view.secret.replace(/(.{4})/g, '$1 ').trim();
 <AdminLayout title="绑定验证器">
   <section class="panel login-panel">
     <h2>用验证器扫码，然后输入它显示的 6 位验证码</h2>
-    <p class="muted">绑定对象：<strong>{view.username}</strong>（三江资源）。二维码由服务器生成，只在本页显示，不保存、不缓存、不上传。</p>
+    <p class="muted">绑定对象：<strong>{view.username}</strong>（{view.issuer}）。二维码由服务器生成，只在本页显示，不保存、不缓存、不上传。</p>
     {view.svg
       ? <div class="totp-qr" aria-label="两步验证二维码" set:html={view.svg} />
       : <p class="error" role="status">{view.qrError ?? '二维码暂时无法生成'}</p>}

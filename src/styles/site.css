@@ -160,6 +160,19 @@ a:hover {
   font-weight: 700;
   line-height: 1;
 }
+.portal-demo-banner {
+  background: #f6ecd6;
+  color: #6b4f16;
+  padding: 10px var(--portal-gutter);
+  text-align: center;
+  font-size: 14px;
+}
+.portal-brand-logo {
+  width: auto;
+  height: 44px;
+  max-width: 160px;
+  object-fit: contain;
+}
 .portal-brand strong {
   display: block;
   font-size: 24px;
@@ -1344,6 +1357,7 @@ a:hover {
 .image-note{margin-top:16px;font-size:13px;color:var(--portal-muted);line-height:1.8}
 .image-note a{margin-left:10px;color:var(--portal-green);text-decoration:underline;text-underline-offset:4px}
 .access-chip{color:var(--portal-green);font-size:13px;background:var(--portal-soft);padding:2px 8px}
+.scope-chip{color:var(--portal-muted);font-size:13px;background:var(--portal-softest);border:1px solid var(--portal-soft);padding:1px 7px}
 .directory-controls{flex-wrap:wrap}
 .preview-bar{background:#f6ecd6;color:#6b4f16;padding:10px var(--portal-gutter);font-size:13px;text-align:center;border-bottom:1px solid #eadcbc}
 .scenario-head{display:flex;gap:18px;align-items:flex-start;margin-bottom:30px}

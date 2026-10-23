@@ -10,18 +10,23 @@
   },
   "type": "module",
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=24.0.0"
   },
   "scripts": {
     "dev": "ASTRO_TELEMETRY_DISABLED=1 astro dev --host 0.0.0.0",
     "build": "ASTRO_TELEMETRY_DISABLED=1 astro check && ASTRO_TELEMETRY_DISABLED=1 astro build",
+    "postbuild": "node scripts/prune-release-assets.mjs",
     "preview": "ASTRO_TELEMETRY_DISABLED=1 astro preview --host 0.0.0.0",
     "start": "node ./dist/server/entry.mjs",
     "check": "ASTRO_TELEMETRY_DISABLED=1 astro check",
     "db:admin": "node scripts/create-admin.mjs",
+    "site:init": "node scripts/init-site.mjs",
     "test": "node --test tests/*.test.mjs",
+    "test:seed": "node tests/fixtures/seed-site.mjs",
     "test:browser": "node --test tests/browser.mjs",
     "test:admin": "node --test tests/admin-e2e.mjs",
+    "test:instances": "node --test tests/instances.mjs",
+    "test:assets": "bash scripts/legacy-assets-smoke.sh",
     "test:server": "node --test tests/server.test.mjs",
     "db:backup": "node scripts/backup-db.mjs",
     "db:restore": "node scripts/restore-db.mjs",
@@ -37,7 +42,10 @@
     "totp:policy": "node scripts/set-totp-policy.mjs",
     "media:reconcile": "node scripts/reconcile-media.mjs",
     "site:backup": "node scripts/backup-site.mjs",
-    "site:restore": "node scripts/restore-site.mjs"
+    "site:restore": "node scripts/restore-site.mjs",
+    "image:build": "bash scripts/build-image.sh",
+    "release:check": "node scripts/release-check.mjs",
+    "rehearsal:upgrade": "bash scripts/upgrade-rehearsal.sh"
   },
   "dependencies": {
     "@astrojs/node": "^9.5.5",

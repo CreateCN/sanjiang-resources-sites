@@ -2,11 +2,13 @@
 import Layout from '../../layouts/Layout.astro';
 import { getPublishedGuides } from '../../lib/guides';
 import { renderMediaInline } from '../../lib/media-render';
+import { getPublicSiteConfig, getSiteOrigin } from '../../server/site-config';
 const guides = getPublishedGuides();
-const origin = (process.env.SITE_URL ?? Astro.url.origin).replace(/\/$/, '');
+const site = getPublicSiteConfig();
+const origin = getSiteOrigin(Astro.url);
 const jsonLd = [{ '@context': 'https://schema.org', '@type': 'CollectionPage', name: '使用指南', url: `${origin}/guides/`, inLanguage: 'zh-CN' }];
 ---
-<Layout title="使用指南" jsonLd={jsonLd} description="为三江同学整理的工具使用指南：从课程报告到代码协作，讲清怎么开始、先看哪些条件。">
+<Layout title="使用指南" jsonLd={jsonLd} description={`${site.name}的使用指南：从具体任务出发，讲清怎么开始、先确认哪些使用条件。`}>
   <div class="page-shell portal-container">
     <nav class="breadcrumbs" aria-label="面包屑"><a href="/">首页</a><span aria-hidden="true">/</span><span aria-current="page">使用指南</span></nav>
     <h1 class="page-title">从任务出发的用法说明。</h1>

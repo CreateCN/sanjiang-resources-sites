@@ -4,10 +4,11 @@ import GuideArticle from '../../components/GuideArticle.astro';
 import { findPublishedGuide } from '../../lib/guides';
 import { isBotRequest } from '../../lib/bot';
 import { recordEvent } from '../../server/store';
+import { getSiteOrigin } from '../../server/site-config';
 const guide = findPublishedGuide(Astro.params.slug ?? '');
 if (!guide) { Astro.response.status = 404; return Astro.rewrite('/404'); }
 if (!isBotRequest(Astro.request)) recordEvent('guide_view', guide.slug);
-const origin = (process.env.SITE_URL ?? Astro.url.origin).replace(/\/$/, '');
+const origin = getSiteOrigin(Astro.url);
 const jsonLd = [
   { '@context': 'https://schema.org', '@type': 'BreadcrumbList', itemListElement: [
     { '@type': 'ListItem', position: 1, name: '首页', item: `${origin}/` },

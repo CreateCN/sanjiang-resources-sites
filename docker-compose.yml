@@ -10,6 +10,7 @@ services:
       context: .
       args:
         COMMIT_SHA: ${COMMIT_SHA:-}
+        INCLUDE_LEGACY_ASSETS: ${INCLUDE_LEGACY_ASSETS:-0}
     image: sanjiang-resources:latest
     restart: unless-stopped
     logging: *logging
@@ -21,6 +22,9 @@ services:
       # 应用只在本机代理后面暴露：信任代理写入的单值 X-Forwarded-For，按访客限流。
       # 若把 4321 直接暴露给公网，请改为 0。
       TRUST_PROXY: ${TRUST_PROXY:-1}
+      # 仅对新库生效；app 与 maintenance 必须使用同一取值，避免维护容器先启动时灌入不同模式。
+      SITE_INIT_MODE: ${SITE_INIT_MODE:-empty}
+      SITE_INIT_NAME: ${SITE_INIT_NAME:-三匠资源站}
       DATABASE_PATH: /app/data/site.sqlite
       MEDIA_DIR: /app/data/media
       MEDIA_QUOTA_BYTES: ${MEDIA_QUOTA_BYTES:-536870912}
@@ -49,6 +53,7 @@ services:
       context: .
       args:
         COMMIT_SHA: ${COMMIT_SHA:-}
+        INCLUDE_LEGACY_ASSETS: ${INCLUDE_LEGACY_ASSETS:-0}
     image: sanjiang-resources:latest
     restart: unless-stopped
     command: ["node", "scripts/maintenance.mjs"]
@@ -60,6 +65,8 @@ services:
         condition: service_healthy
     logging: *logging
     environment:
+      SITE_INIT_MODE: ${SITE_INIT_MODE:-empty}
+      SITE_INIT_NAME: ${SITE_INIT_NAME:-三匠资源站}
       DATABASE_PATH: /app/data/site.sqlite
       MEDIA_DIR: /app/data/media
       BACKUP_DIR: /app/backups

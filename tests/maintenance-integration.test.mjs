@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
 import { DatabaseSync } from 'node:sqlite';
+import { fixtureResources, seedFixture } from './fixtures/content.ts';
 
 test('维护进程实际执行备份与检查，记录结果并正常关闭', { timeout: 20000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'sj-maintenance-e2e-'));
@@ -20,6 +21,8 @@ test('维护进程实际执行备份与检查，记录结果并正常关闭', { 
     assert.ifError(seeded.error);
     assert.equal(seeded.status, 0, seeded.stderr);
     const source = new DatabaseSync(path);
+    source.exec('PRAGMA busy_timeout=5000');
+    seedFixture(source);
     // No external network in this integration test; content rows remain in the backup.
     source.exec('UPDATE resources SET published=NULL,published_category=NULL');
     source.exec("INSERT INTO events (day,name,target,count) VALUES ('2000-01-01','resource_view','expired',1)");
@@ -52,7 +55,7 @@ test('维护进程实际执行备份与检查，记录结果并正常关闭', { 
     const backup = new DatabaseSync(join(backupDir, files[0]));
     try {
       assert.equal(backup.prepare('PRAGMA integrity_check').get().integrity_check, 'ok');
-      assert.equal(backup.prepare('SELECT COUNT(*) AS n FROM resources').get().n, 12);
+      assert.equal(backup.prepare('SELECT COUNT(*) AS n FROM resources').get().n, fixtureResources.length);
       assert.equal(backup.prepare('SELECT COUNT(*) AS n FROM users').get().n, 1);
     } finally { backup.close(); }
     const state = new DatabaseSync(env.MAINTENANCE_STATE_PATH);

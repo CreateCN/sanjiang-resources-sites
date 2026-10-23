@@ -20,6 +20,8 @@ const account = await import('../src/server/account.ts');
 const totp = await import('../src/server/totp.ts');
 const http = await import('../src/server/http.ts');
 const { database, closeDatabase } = await import('../src/server/db.ts');
+const siteConfig = await import('../src/server/site-config.ts');
+const { DEFAULT_BRANDING } = await import('../src/lib/site-config.ts');
 
 const PASSWORD = 'totp-test-password-2026!';
 let admin;
@@ -257,7 +259,35 @@ test('并发：两个 enroll 挑战只有一个能安装因子，旧挑战不能
   assert.ok(verified.token, '保留下来的必须是第一个密钥');
 });
 
+test('issuer 按实例冻结：改品牌不改二维码，也不撤销会话或认证代次', async () => {
+  database().prepare("INSERT INTO metadata (key,value) VALUES ('auth_issuer','星河验证器') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
+  const token = directToken(admin);
+  const authVersionBefore = Number(database().prepare('SELECT auth_version FROM users WHERE id=?').get(admin.id).auth_version);
+  const { schemaVersion, version, ...rest } = DEFAULT_BRANDING;
+  siteConfig.saveBranding(admin, { ...rest, name: '改名后的站点', subtitle: '新副标题' }, siteConfig.getBrandingAdminView().version ?? 0);
+  assert.equal(Number(database().prepare('SELECT auth_version FROM users WHERE id=?').get(admin.id).auth_version), authVersionBefore, '改名不递增认证代次');
+  assert.ok(readSession(token), '改名不清会话');
+
+  process.env.TOTP_REQUIRED_FOR = 'admin';
+  const outcome = auth.login('operator', PASSWORD, 'issuer-client');
+  assert.equal(outcome.kind, 'challenge');
+  const view = await auth.enrollChallengeView(outcome.token, 'issuer-client');
+  assert.ok(view);
+  assert.equal(view.issuer, '星河验证器');
+  assert.equal(view.uri, totp.buildOtpauthUri('operator', view.secret, '星河验证器'));
+  const parsed = new URL(view.uri);
+  assert.equal(parsed.searchParams.get('issuer'), '星河验证器');
+  assert.equal(decodeURIComponent(parsed.pathname.slice(1)), '星河验证器:operator');
+  const { data, info } = await sharp(Buffer.from(view.svg)).resize(480, 480).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const decoded = jsQR(new Uint8ClampedArray(data), info.width, info.height);
+  assert.ok(decoded);
+  assert.equal(decoded.data, view.uri, '页面文案与二维码使用同一个冻结 issuer');
+  process.env.TOTP_REQUIRED_FOR = 'off';
+});
+
 test('注册二维码解码出的 secret 可以走真实 HTTP 接口完成绑定', async () => {
+  // 模拟旧实例：issuer 在初始化时冻结为改造前的展示名。
+  database().prepare("INSERT INTO metadata (key,value) VALUES ('auth_issuer','三江资源') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
   process.env.TOTP_REQUIRED_FOR = 'admin';
   const login = await http.loginPost(request('/api/login/', { username: 'operator', password: PASSWORD }, { address: '198.51.100.30' }));
   assert.equal(login.status, 303);

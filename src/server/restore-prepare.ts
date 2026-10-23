@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { applyMigrations } from './migrations.ts';
 import { currentStep, WINDOW } from './totp.ts';
+import { assertSettingsIntegrity, businessSummary, compareBusinessSummary } from './restore-verify.ts';
 
 /**
  * 恢复前的准备步骤（离线脚本共用）：
@@ -20,9 +21,14 @@ export interface PreparedRestore {
   purge: RestorePurge;
   counts: Record<string, number>;
   schema: string;
+  /** 迁移后与净化后的业务摘要；两者必须一致。 */
+  business: { digest: string; unchanged: true };
 }
 
-const TRACKED_TABLES = ['resources', 'guides', 'users', 'reports', 'revisions', 'sessions', 'login_challenges', 'recovery_codes'] as const;
+const TRACKED_TABLES = [
+  'categories', 'resources', 'guides', 'users', 'reports', 'revisions', 'settings', 'media', 'media_tombstones',
+  'sponsors', 'sessions', 'login_challenges', 'recovery_codes',
+] as const;
 
 function countAll(db: DatabaseSync): Record<string, number> {
   const counts: Record<string, number> = {};
@@ -50,6 +56,10 @@ export function prepareRestoredDatabase(path: string, options: { allowMedia?: bo
       if (holder?.operation_id) throw new Error('备份中存在未结算的媒体操作占位，不是一致性快照；请先对账并重新备份');
     }
 
+    // 设置/品牌必须在净化前能被当前 Schema 解析；媒体引用是否存在由站点恢复的引用扫描负责。
+    assertSettingsIntegrity(db);
+    const beforeBusiness = businessSummary(db);
+
     const lastStepFloor = currentStep() + WINDOW;
     db.exec('BEGIN IMMEDIATE');
     let purge: RestorePurge;
@@ -71,12 +81,18 @@ export function prepareRestoredDatabase(path: string, options: { allowMedia?: bo
 
     const integrity = db.prepare('PRAGMA integrity_check').all().map((row) => String(row.integrity_check));
     if (integrity.length !== 1 || integrity[0] !== 'ok') throw new Error(`净化后的数据库完整性检查失败：${integrity.join('；') || '无结果'}`);
+    // 认证净化只允许改认证字段与一条 restore-purge 审计；任何业务摘要变化都说明恢复过程不可信。
+    const afterBusiness = businessSummary(db);
+    const differences = compareBusinessSummary(beforeBusiness, afterBusiness);
+    if (differences.length > 0) {
+      throw new Error(`认证净化改动了业务数据，已取消恢复：${differences.join('；')}`);
+    }
     const counts = countAll(db);
     if (counts.sessions !== 0 || counts.login_challenges !== 0 || counts.recovery_codes !== 0) {
       throw new Error('认证净化未生效（仍存在会话/挑战/恢复码），已取消恢复');
     }
     const schema = String(db.prepare('SELECT id FROM schema_migrations ORDER BY id DESC LIMIT 1').get()?.id ?? '');
-    return { purge, counts, schema };
+    return { purge, counts, schema, business: { digest: beforeBusiness.digest, unchanged: true } };
   } finally {
     db.close();
   }

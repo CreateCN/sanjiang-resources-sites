@@ -5,7 +5,7 @@ import sharp from 'sharp';
 import manifest from '../src/data/image-variants.json' with { type: 'json' };
 
 test('所有本地截图均有真实的等比例 WebP，不放大原图且总体明显减小', async () => {
-  const { resources } = await import('../src/data/resources.ts');
+  const { fixtureResources: resources } = await import('./fixtures/content.ts');
   let originalBytes = 0;
   let optimizedBytes = 0;
   for (const resource of resources.filter((r) => r.image)) {
@@ -26,6 +26,24 @@ test('所有本地截图均有真实的等比例 WebP，不放大原图且总体
     optimizedBytes += (await stat(new URL(`../public${image.variants.at(-1).src}`, import.meta.url))).size;
   }
   assert.ok(optimizedBytes < originalBytes * 0.5, `${optimizedBytes} / ${originalBytes}`);
+});
+
+test('默认发行素材清单只含许可明确素材，旧截图不进入 manifest 或 optimized', async () => {
+  const { readdir, access } = await import('node:fs/promises');
+  const policy = JSON.parse(await readFile(new URL('../src/data/release-assets.json', import.meta.url), 'utf8'));
+  assert.deepEqual(new Set(Object.keys(manifest)), new Set(policy.defaultAllowed));
+  for (const legacy of policy.legacyUnconfirmed) {
+    assert.equal(manifest[legacy], undefined, `默认 manifest 不能包含 ${legacy}`);
+    await access(new URL(`../public${legacy}`, import.meta.url)); // 工作区原图保留
+  }
+  for (const allowed of policy.defaultAllowed) {
+    assert.ok(manifest[allowed], `缺少许可明确素材 ${allowed}`);
+  }
+  const optimized = await readdir(new URL('../public/images/optimized', import.meta.url));
+  for (const legacy of policy.legacyUnconfirmed) {
+    const base = legacy.split('/').at(-1).replace(/\.[^.]+$/u, '');
+    assert.equal(optimized.some((name) => name.startsWith(`${base}-`)), false, `默认 optimized 不能残留 ${legacy}`);
+  }
 });
 
 test('图片构建原地更新，不删除输出目录（否则开发服务器的静态索引会失效）', async () => {

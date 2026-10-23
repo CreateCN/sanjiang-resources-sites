@@ -1,3 +1,5 @@
+import { projectScope, scopeLabel } from './resource-scope.ts';
+
 export interface FieldChange {
   label: string;
   before: string;
@@ -24,6 +26,10 @@ const RESOURCE_LABELS: Record<string, string> = {
   image: '本地图片',
   imageAlt: '图片说明',
   details: '详细说明',
+  access: '使用门槛',
+  scope: '适用范围',
+  imageRights: '图片授权状态',
+  imageCredit: '图片署名与许可',
 };
 
 const GUIDE_LABELS: Record<string, string> = {
@@ -58,7 +64,8 @@ export function diffFields(kind: 'resource' | 'guide', current: unknown, older: 
     const a = left[key];
     const b = right[key];
     if (JSON.stringify(a ?? null) === JSON.stringify(b ?? null)) continue;
-    changes.push({ label: labels[key] ?? key, before: clip(toText(b)), after: clip(toText(a)) });
+    const format = (value: unknown) => key === 'scope' ? scopeLabel(projectScope(value)) : toText(value);
+    changes.push({ label: labels[key] ?? key, before: clip(format(b)), after: clip(format(a)) });
   }
   return changes;
 }

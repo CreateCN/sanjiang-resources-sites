@@ -21,6 +21,8 @@ jobs:
       - run: npm run check
       - run: npm test
       - run: npm run build
+      - name: Instance isolation (Empty + Demo, two servers)
+        run: npm run test:instances
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
       - name: Test admin workflows
@@ -29,7 +31,9 @@ jobs:
           TEST_ARTIFACTS_DIR: test-results/admin
       - name: Smoke test production server
         run: |
-          DATABASE_PATH="$PWD/.ci/site.sqlite" PORT=4321 HOST=127.0.0.1 SITE_URL=http://127.0.0.1:4321 node dist/server/entry.mjs &
+          # 浏览器测试使用显式夹具，不依赖 Demo 或新站默认内容。
+          DATABASE_PATH="$PWD/.ci/site.sqlite" SITE_INIT_MODE=empty node tests/fixtures/seed-site.mjs
+          DATABASE_PATH="$PWD/.ci/site.sqlite" PORT=4321 HOST=127.0.0.1 SITE_URL=http://127.0.0.1:4321 SITE_INIT_MODE=empty node dist/server/entry.mjs &
           server_pid=$!
           trap 'kill "$server_pid"' EXIT
           for i in $(seq 1 40); do curl -fsS http://127.0.0.1:4321/api/health/ >/dev/null && break; sleep 0.5; done
@@ -45,3 +49,15 @@ jobs:
           path: test-results/
           if-no-files-found: ignore
           retention-days: 7
+
+  container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      COMMIT_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Container install / isolation / backup / restore
+        run: bash scripts/container-smoke.sh
+      - name: Default vs compatibility static assets
+        run: bash scripts/legacy-assets-smoke.sh

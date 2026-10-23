@@ -20,7 +20,9 @@ const checkLabels: Record<string, string> = { ok: '可访问', warn: '需人工�
 const categories = listCategories();
 // 替代资源必须是仍在展示的已发布条目：停用后再选它会让解释页指向另一个死胡同。
 const alternatives = entry ? listManagedResources().filter((item) => item.published && !item.lifecycle.discontinuedAt && item.id !== entry.id) : [];
-const resource = entry?.draft ?? {id:'',title:'',summary:'',category:categories[0]?.id ?? '',kind:'开源工具',cost:'',platforms:['网页'],tags:[],url:'',sourceUrl:'',license:'',eligibility:'',caveat:'',steps:[''],status:'review',checkedAt:null,imageRights:'unconfirmed'};
+const resource = entry?.draft ?? {id:'',title:'',summary:'',category:categories[0]?.id ?? '',kind:'开源工具',cost:'',platforms:['网页'],tags:[],url:'',sourceUrl:'',license:'',eligibility:'',caveat:'',steps:[''],status:'review',checkedAt:null,scope:{type:'unknown'},imageRights:'unconfirmed'};
+const scope = resource.scope ?? { type: 'unknown' };
+const scopeInstitutions = scope.type === 'institutions' ? scope.institutions.join('，') : '';
 interface EditorField { key: string; name: string; help?: string; area?: boolean; optional?: boolean; type?: 'text' | 'url'; max?: number }
 const fields: EditorField[] = [
   {key:'id',name:'稳定 ID',help:'小写字母、数字和连字符；创建后不可更改。'}, {key:'title',name:'资源名称'},
@@ -45,6 +47,8 @@ const valueOf = (key: string) => { const value = (resource as unknown as Record<
       <div class="field"><label for="kind">资源类型</label><select id="kind" data-field="kind">{['开源工具','免费课程','学生权益','公共资源'].map((kind) => <option selected={kind === resource.kind}>{kind}</option>)}</select></div>
       <div class="field"><label for="verification">资料核验状态</label><select id="verification" data-field="status"><option value="review" selected={resource.status === 'review'}>资料待核对</option><option value="verified" selected={resource.status === 'verified'}>官方信息已核对</option></select><small>核对资料不代表校内实测或申请必定通过。</small></div>
       <div class="field"><label for="resource-access">使用门槛</label><select id="resource-access" data-field="access">{ACCESS_OPTIONS.map((option) => <option value={option.id} selected={(resource.access ?? 'unknown') === option.id}>{option.label}</option>)}</select><small>列表与详情会显示为固定标签，帮助学生在打开前判断是否需要认证或校园网。</small></div>
+      <div class="field"><label for="scope-type">适用范围</label><select id="scope-type"><option value="unknown" selected={scope.type === 'unknown'}>待确认（不当作通用）</option><option value="global" selected={scope.type === 'global'}>通用范围（不面向特定机构）</option><option value="institutions" selected={scope.type === 'institutions'}>仅限指定机构</option></select><small>与“使用门槛”相互独立；student-verification 不会自动变成通用范围。通用范围也不代表永久免费或没有地区限制。</small></div>
+      <div class="field" id="scope-institutions-field"><label for="scope-institutions">机构名称（1–20 个）</label><input id="scope-institutions" value={scopeInstitutions} maxlength="2000" /><small>用逗号或换行分隔；保存时去重，单个名称最多 100 字。仅作说明，不建立学校关系表。</small></div>
       <div class="field"><label for="image-rights">图片授权状态</label><select id="image-rights" data-field="imageRights"><option value="unconfirmed" selected={resource.imageRights !== 'confirmed'}>来源未确认（侵权联系删除）</option><option value="confirmed" selected={resource.imageRights === 'confirmed'}>已确认授权</option></select><small>来源未确认的截图会在前台标注“网络图片”并提供下架入口。</small></div>
       <div class="field"><label for="image-credit">图片署名与许可</label><input id="image-credit" data-field="imageCredit" value={valueOf('imageCredit')} maxlength="300" /><small>例如：作者 / 机构，许可协议。确认授权时请填写。</small></div>
       <div class="field"><label for="checked-at">核对日期</label><input id="checked-at" data-field="checkedAt" type="date" value={resource.checkedAt ?? ''}/><small>已核对时必填；待核对时留空。</small></div>
@@ -89,6 +93,8 @@ const valueOf = (key: string) => { const value = (resource as unknown as Record<
   .media-status { flex-basis: 100%; color: #52675d; font-size: 14px; }
   .media-status:empty { display: none; }
   .media-preview img { max-width: 100%; height: auto; border: 1px solid #e6ebe3; }
+  /* .field 的 display:flex 会覆盖 UA 的 [hidden]，必须显式关掉。 */
+  #scope-institutions-field[hidden] { display: none; }
 </style>
 <script>
   const form = document.querySelector<HTMLFormElement>('[data-resource-editor]');
@@ -105,8 +111,23 @@ const valueOf = (key: string) => { const value = (resource as unknown as Record<
       else resource[key] = value;
     }
     if (resource.status === 'review') resource.checkedAt = null;
+    const scopeType = document.querySelector<HTMLSelectElement>('#scope-type')?.value ?? 'unknown';
+    if (scopeType === 'institutions') {
+      const names = (document.querySelector<HTMLInputElement>('#scope-institutions')?.value ?? '')
+        .split(/[,，、\n]/).map((value) => value.trim()).filter(Boolean);
+      resource.scope = { type: 'institutions', institutions: names };
+    } else {
+      resource.scope = { type: scopeType === 'global' ? 'global' : 'unknown' };
+    }
     if (input) input.value = JSON.stringify(resource);
   }, {capture:true});
+  const scopeTypeSelect = document.querySelector<HTMLSelectElement>('#scope-type');
+  const scopeInstitutionsField = document.querySelector<HTMLElement>('#scope-institutions-field');
+  const toggleScopeField = () => {
+    if (scopeInstitutionsField) scopeInstitutionsField.hidden = scopeTypeSelect?.value !== 'institutions';
+  };
+  scopeTypeSelect?.addEventListener('change', toggleScopeField);
+  toggleScopeField();
   const mediaInput = form?.querySelector<HTMLInputElement>('[data-field="image"]');
   const mediaPreview = document.querySelector<HTMLElement>('#media-preview');
   const mediaStatus = document.querySelector<HTMLElement>('.media-status');

@@ -1,7 +1,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { launchTestBrowser } from "./browser-harness.mjs";
-import { resources } from "../src/data/resources.ts";
+import { fixtureResources as resources } from "./fixtures/content.ts";
 const base = process.env.TEST_BASE_URL ?? "http://127.0.0.1:4321";
 let browser;
 before(async () => {
@@ -81,14 +81,51 @@ test("首页、搜索、分类、空结果及可分享网址", async () => {
 test("公开页包含 canonical、OG 与时效说明", async () => {
   const page = await browser.newPage();
   await page.goto(base);
+  assert.match(await page.locator('body').innerText(), /范围待确认/, '目录卡片显示 unknown 范围');
   assert.equal(await page.locator('link[rel="canonical"]').count(), 1);
   assert.equal(await page.locator('meta[property="og:image"]').count(), 1);
   await page.goto(`${base}/resources/zotero/`);
+  assert.match(String(await page.locator("#conditions").textContent()), /适用范围待确认，请查阅资格说明/, '旧数据缺少 scope 时按 unknown 展示');
   assert.match(String(await page.locator(".checked-date").last().textContent()), /资料核对/);
   assert.match(String(await page.locator("#conditions").textContent()), /使用门槛/);
   assert.equal((await page.request.get(`${base}/robots.txt`)).status(), 200);
   assert.equal((await page.request.get(`${base}/sitemap.xml`)).status(), 200);
   await page.close();
+});
+test("赞助位：固定标识、外链属性、独立于资源列表、移动端无遮挡", async () => {
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const page = await context.newPage();
+  const origin = new URL(base).origin;
+  const external = new Set();
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (url.origin !== origin) external.add(url.origin);
+  });
+  try {
+    await page.goto(base);
+    assert.equal(await page.locator('.sponsor-slot').count(), 2);
+    assert.equal(await page.locator('.portal-sidebar .sponsor-sidebar').count(), 1);
+    assert.equal(await page.locator('.sponsor-catalog').count(), 1);
+    assert.equal(await page.locator('#resource-list .sponsor-slot').count(), 0);
+    assert.equal(await page.locator('.sponsor-slot[data-resource]').count(), 0);
+    assert.equal(await page.locator('#result-count').textContent(), '共 12 项');
+    assert.equal(await page.locator('.sponsor-label').filter({ hasText: '广告 · 赞助' }).count(), 2);
+    for (const link of await page.locator('.sponsor-link').all()) {
+      assert.match(String(await link.getAttribute('rel')), /sponsored/);
+      assert.match(String(await link.getAttribute('rel')), /noopener/);
+      assert.match(String(await link.getAttribute('rel')), /noreferrer/);
+      assert.equal(await link.getAttribute('data-outbound'), null, '赞助链接不进入资源外跳统计');
+    }
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    assert.ok(overflow <= 1, `赞助位不得造成横向溢出（${overflow}）`);
+    assert.ok(await page.locator('.portal-sidebar .sponsor-slot').isVisible());
+    assert.equal(await page.locator('script[src^="http"], iframe, img[src^="http"]').count(), 0, '赞助页不加载第三方脚本、像素或图片');
+    assert.deepEqual([...external], [], '首页不应产生第三方网络请求');
+    await page.goto(`${base}/about/`);
+    const about = String(await page.locator('body').innerText());
+    assert.match(about, /赞助与广告/);
+    assert.match(about, /不加载第三方脚本/);
+  } finally { await context.close(); }
 });
 test("全部详情路由与官方链接，所有图片正常加载", async () => {
   const page = await browser.newPage();

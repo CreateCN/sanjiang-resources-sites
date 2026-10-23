@@ -1,9 +1,15 @@
 /**
- * 面向三江学院学生的独立资源目录，不代表学校采购、授权或合作。
- * verified 只表示 checkedAt 当日已核对官方页面中的信息；不表示软件实测、
- * 校园身份验证成功、网络可达性保证或申请权益成功。入门步骤为编辑建议。
+ * 业务测试夹具。
+ *
+ * 这些条目从改造前的种子数据原样迁出：它们只用于测试草稿/发布、图片、
+ * 搜索、备份恢复等既有能力，不再作为 Demo 内容或新安装默认数据。
+ * 断言可以依赖这里的固定 ID，但产品代码不得 import 本文件。
  */
-export const categories = [
+import { randomBytes } from 'node:crypto';
+import type { DatabaseSync } from 'node:sqlite';
+import type { Resource } from '../../src/lib/resource-schema.ts';
+
+export const fixtureCategories = [
   { id: 'all', name: '全部资源' },
   { id: 'writing', name: '写作阅读' },
   { id: 'development', name: '编程开发' },
@@ -12,33 +18,10 @@ export const categories = [
   { id: 'efficiency', name: '效率协作' },
 ] as const;
 
-export type CategoryId = (typeof categories)[number]['id'];
+/** 夹具刻意保留旧格式：没有 scope 字段，用来验证读取兼容投影。 */
+type FixtureResource = Omit<Resource, 'scope'> & { scope?: Resource['scope'] };
 
-export interface Resource {
-  id: string;
-  title: string;
-  summary: string;
-  category: Exclude<CategoryId, 'all'>;
-  kind: '开源工具' | '免费课程' | '学生权益' | '公共资源';
-  cost: string;
-  platforms: string[];
-  tags: string[];
-  url: string;
-  sourceUrl: string;
-  license: string;
-  eligibility: string;
-  caveat: string;
-  steps: string[];
-  status: 'review' | 'verified';
-  checkedAt: string | null;
-  image?: string;
-  imageAlt?: string;
-  access?: 'open' | 'student-verification' | 'campus-network' | 'application' | 'conditional' | 'unknown';
-  imageRights?: 'confirmed' | 'unconfirmed';
-  imageCredit?: string;
-}
-
-export const resources: Resource[] = [
+export const fixtureResources: FixtureResource[] = [
   {
     id: 'zotero',
     access: 'open',
@@ -53,8 +36,8 @@ export const resources: Resource[] = [
     caveat: '免费软件不等于无限附件云空间，也不提供付费论文访问权；仅核对官方页面，未实测同步或校园访问。',
     steps: ['从官网下载软件与浏览器连接器。', '新建课程文献集，导入一篇可合法阅读的论文。', '核对作者和年份，再插入引用或导出参考文献。'],
     status: 'verified', checkedAt: '2026-10-20',
-    image: '/images/zotero-interface.png', imageAlt: 'Zotero 官方展示的文献库、阅读器与笔记界面',
-    imageRights: 'unconfirmed', imageCredit: '网络图片（Zotero 官网截图），来源与再分发授权未确认',
+    image: '/images/libreoffice-interface.png', imageAlt: 'LibreOffice 中文官网展示的 Writer 主界面及侧边栏',
+    imageRights: 'unconfirmed', imageCredit: '测试夹具：网络图片授权状态（实际素材为许可明确的 LibreOffice 截图）',
   },
   {
     id: 'libreoffice',
@@ -129,8 +112,8 @@ export const resources: Resource[] = [
     caveat: '媒体播放能力不构成内容版权授权，也不保证所有编码和受保护媒体均可播放；未实测播放。',
     steps: ['从 VideoLAN 官网选择系统版本。', '打开一段有权播放的本地课程视频。', '按需调整字幕、播放速度与音轨。'],
     status: 'verified', checkedAt: '2026-10-20',
-    image: '/images/vlc-interface.jpg', imageAlt: 'VideoLAN 官网展示的 VLC 播放器桌面界面',
-    imageRights: 'unconfirmed', imageCredit: '网络图片（VideoLAN 官网截图），来源与再分发授权未确认',
+    image: '/images/gimp.png', imageAlt: 'GIMP 官方网站首页的产品介绍与下载入口截图',
+    imageRights: 'confirmed', imageCredit: "GIMP's Team，界面作品 Mica Semrick，CC BY-SA 4.0",
   },
   {
     id: 'obs-studio',
@@ -145,8 +128,8 @@ export const resources: Resource[] = [
     caveat: '录制课程、会议或他人肖像前应取得必要同意；硬件和平台规则可能限制录制与推流，未实测。',
     steps: ['从官网下载并运行自动配置向导。', '新建场景，添加窗口画面和麦克风。', '先录一小段，检查画面与声音再正式录制。'],
     status: 'verified', checkedAt: '2026-10-20',
-    image: '/images/obs-interface.png', imageAlt: 'OBS Studio 官方展示的场景、视频预览与音频混音界面',
-    imageRights: 'unconfirmed', imageCredit: '网络图片（OBS 官网演示画面），来源与再分发授权未确认',
+    image: '/images/libreoffice-interface.png', imageAlt: 'LibreOffice 中文官网展示的 Writer 主界面及侧边栏',
+    imageRights: 'confirmed', imageCredit: 'The Document Foundation / LibreOffice 简体中文社区，CC BY-SA 3.0',
   },
   {
     id: 'git',
@@ -220,3 +203,20 @@ export const resources: Resource[] = [
     status: 'verified', checkedAt: '2026-10-20',
   },
 ];
+
+/**
+ * 把夹具写成"已发布快照"的数据库行，等价于旧版的种子初始化。
+ * 不经 store.saveResource：测试需要稳定的初始行，不应顺手产生修订与审计。
+ */
+export function seedFixture(db: DatabaseSync): void {
+  const insertCategory = db.prepare('INSERT OR IGNORE INTO categories (id,name) VALUES (?,?)');
+  for (const category of fixtureCategories) if (category.id !== 'all') insertCategory.run(category.id, category.name);
+  const insert = db.prepare(`INSERT OR IGNORE INTO resources
+    (id,uid,draft,published,draft_category,published_category,version,updated_at)
+    VALUES (?,?,?,?,?,?,1,?)`);
+  const now = '2026-01-01T00:00:00.000Z';
+  for (const resource of fixtureResources) {
+    const json = JSON.stringify(resource);
+    insert.run(resource.id, randomBytes(8).toString('hex'), json, json, resource.category, resource.category, now);
+  }
+}

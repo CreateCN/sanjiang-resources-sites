@@ -1,15 +1,23 @@
 ---
 import '../styles/site.css';
 import CommitVersion from '../components/CommitVersion.astro';
-import { repository } from '../lib/catalog';
+import { UPSTREAM, deriveThemeTokens } from '../lib/site-config';
+import { getPublicSiteConfig, getBrandAssets, getSiteOrigin } from '../server/site-config';
+import { isDemoContent } from '../server/demo';
 interface Props { title: string; description?: string; type?: 'website' | 'article'; jsonLd?: Record<string, unknown>[]; noindex?: boolean; }
-const { title, description = '为三江学院同学整理的开源工具、开放课程与学生资源。先了解条件，再放心开始。', type = 'website', jsonLd = [], noindex = false } = Astro.props;
+const site = getPublicSiteConfig();
+const assets = getBrandAssets();
+const theme = deriveThemeTokens(site.accentColor);
+const { title, description = site.description, type = 'website', jsonLd = [], noindex = false } = Astro.props;
 const year = new Date().getFullYear();
-const licenseUrl = `${repository}/blob/master/LICENSE`;
 const path = Astro.url.pathname;
-const origin = (process.env.SITE_URL ?? Astro.url.origin).replace(/\/$/, '');
+const origin = getSiteOrigin(Astro.url);
 const canonical = `${origin}${path}`;
-const image = `${origin}/og-default.png`;
+const shareImage = `${origin}${assets.shareImageUrl}`;
+const brandMark = [...site.name.trim()][0] ?? '书';
+const licenseUrl = `${UPSTREAM.repository}/blob/master/LICENSE`;
+// 只写入服务端计算出的 #RRGGBB；部署者不能注入原始 CSS。
+const themeStyle = `--portal-green:${theme.accent};--portal-green-dark:${theme.accentHover};--portal-soft:${theme.soft};--portal-softest:${theme.softest};--portal-paper:${theme.paper}`;
 const nav = [
   { href: '/#catalog', name: '资源目录', match: '/' },
   { href: '/guides/', name: '使用指南', match: '/guides/' },
@@ -17,37 +25,42 @@ const nav = [
   { href: '/feedback/', name: '反馈与推荐', match: '/feedback/' },
 ];
 const safeJson = (value: unknown) => JSON.stringify(value).replaceAll('<', '\\u003c');
+const footerOwner = site.organizationName || '本实例维护者';
+const demo = isDemoContent();
 ---
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" style={themeStyle}>
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content={description} />
-    <meta name="theme-color" content="#245c42" />
+    <meta name="theme-color" content={site.accentColor} />
     <link rel="canonical" href={canonical} />
     <meta property="og:type" content={type} />
-    <meta property="og:site_name" content="三江资源" />
+    <meta property="og:site_name" content={site.name} />
     <meta property="og:locale" content="zh_CN" />
-    <meta property="og:title" content={`${title} · 三江资源`} />
+    <meta property="og:title" content={`${title} · ${site.name}`} />
     <meta property="og:description" content={description} />
     <meta property="og:url" content={canonical} />
-    <meta property="og:image" content={image} />
+    <meta property="og:image" content={shareImage} />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content={`${title} · 三江资源`} />
+    <meta name="twitter:title" content={`${title} · ${site.name}`} />
     <meta name="twitter:description" content={description} />
-    <meta name="twitter:image" content={image} />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="twitter:image" content={shareImage} />
+    <link rel="icon" type={assets.faviconType} href={assets.faviconUrl} />
     {noindex && <meta name="robots" content="noindex, nofollow" />}
-    <title>{title} · 三江资源</title>
+    <title>{title} · {site.name}</title>
     {jsonLd.length > 0 && <script type="application/ld+json" set:html={safeJson(jsonLd.length === 1 ? jsonLd[0] : jsonLd)} />}
   </head>
   <body>
     <a class="portal-skip" href="#main">跳到主要内容</a>
+    {demo && <div class="portal-demo-banner" role="status">演示内容，请替换并重新核验后再对外发布。</div>}
     <header class="portal-header portal-container">
-      <a class="portal-brand" href="/" aria-label="三江资源首页">
-        <span class="portal-brand-mark" aria-hidden="true">三</span>
-        <span><strong>三江资源</strong><span>同学们的开放工具书架</span></span>
+      <a class="portal-brand" href="/" aria-label={`${site.name}首页`}>
+        {assets.logoUrl
+          ? <img class="portal-brand-logo" src={assets.logoUrl} alt="" />
+          : <span class="portal-brand-mark" aria-hidden="true">{brandMark}</span>}
+        <span><strong>{site.name}</strong>{site.subtitle && <span>{site.subtitle}</span>}</span>
       </a>
       <nav aria-label="主要导航">
         {nav.map((item) => <a class:list={[{ current: item.match === '/' ? path === '/' : path.startsWith(item.match) }]} href={item.href} aria-current={(item.match === '/' ? path === '/' : path.startsWith(item.match)) ? 'page' : undefined}>{item.name}</a>)}
@@ -58,14 +71,16 @@ const safeJson = (value: unknown) => JSON.stringify(value).replaceAll('<', '\\u0
     <footer class="portal-footer">
       <div class="portal-container">
         <div class="portal-footer-main">
-          <div><strong>三江资源</strong><p>让好工具走进学习日常。</p></div>
+          <div><strong>{site.name}</strong><p>{site.footerText}</p></div>
           <nav aria-label="页脚导航"><a href="/guides/">使用指南</a><a href="/updates/">处理记录</a><a href="/about/">收录说明</a><a href="/feedback/">反馈与推荐</a><a href="/admin/">管理入口</a></nav>
         </div>
         <div class="portal-footer-note">
-          <p>面向三江学院学生的非官方整理项目，不代表学校或资源方授权。</p>
-          <p>资源条件以提供方最新说明为准；核验状态不等于校内实测。</p>
-          <p><CommitVersion /></p>
-          <p class="portal-footer-legal">© {year} CreateCN · 代码以 <a href={licenseUrl} target="_blank" rel="noopener noreferrer">MIT 协议</a> 开源 · <a href={repository} target="_blank" rel="noopener noreferrer">项目地址</a> · 资源说明与截图版权归原提供方</p>
+          <p>{site.nonOfficialStatement}</p>
+          <p>资源条件以提供方最新说明为准；核验状态不等于实际使用测试。</p>
+          {site.showProjectAttribution && <p>本实例基于 <a href={UPSTREAM.repository} target="_blank" rel="noopener noreferrer">{UPSTREAM.name}</a> 构建 · <CommitVersion /></p>}
+          <p class="portal-footer-legal">© {year} {footerOwner} · {site.showProjectAttribution
+            ? <a href={licenseUrl} target="_blank" rel="noopener noreferrer">MIT 协议</a>
+            : '程序代码以 MIT 协议开源（许可文本随发行物提供）'} · 资源说明与截图版权归原提供方</p>
         </div>
       </div>
     </footer>

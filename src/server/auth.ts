@@ -1,6 +1,8 @@
 import { timingSafeEqual } from 'node:crypto';
 import { database, transaction } from './db.ts';
 import type { User, Role } from './store.ts';
+import { isSecureSite } from './deployment-config.ts';
+import { getFrozenAuthIssuer } from './site-config.ts';
 import { audit, consumeLimit, enforceLimits, fail, hashToken, randomToken, rateLimit, requireOrigin, resetLimit, verifyPassword } from './security.ts';
 import {
   base32Decode, buildOtpauthUri, classifyOtpInput, createRecoveryCodes, currentStep, encryptionKey,
@@ -151,7 +153,8 @@ function challengeRow(token: string): ChallengeRow | undefined {
 function clientHashFor(clientId: string): string { return hashToken(`client:${clientId}`); }
 
 function secureCookies(): boolean {
-  return (process.env.SITE_URL ?? '').startsWith('https://');
+  // 与 canonical、Origin 校验共用同一个 SITE_URL 解析；配置非法时按不安全处理。
+  return isSecureSite();
 }
 
 /** 挑战 Cookie。清除时除 Max-Age 外的属性与下发完全一致，避免留下同名的第二份 Cookie。 */
@@ -430,6 +433,8 @@ export function verifyLoginChallenge(challengeToken: string, rawCode: string, cl
 
 export interface EnrollView {
   username: string;
+  /** 实例冻结的 issuer；页面文案与二维码必须显示同一个值。 */
+  issuer: string;
   secret: string;
   uri: string;
   /** 二维码 SVG；生成失败时为空字符串，页面退回手输密钥。 */
@@ -462,7 +467,8 @@ export async function enrollChallengeView(
   try {
     secret = openSecret(challenge.pending_secret, key, secretAad(account.id));
   } catch { return undefined; }
-  const uri = buildOtpauthUri(account.username, secret);
+  const issuer = getFrozenAuthIssuer();
+  const uri = buildOtpauthUri(account.username, secret, issuer);
   // 二维码只是配置入口：生成失败不能让整页 500，也不能因此跳过验证码确认。
   let svg = '';
   let qrError: string | null = null;
@@ -471,7 +477,7 @@ export async function enrollChallengeView(
   } catch {
     qrError = '二维码暂时无法生成，请使用下方的手动密钥';
   }
-  return { username: account.username, secret, uri, svg, qrError, expiresAt: challenge.expires_at };
+  return { username: account.username, issuer, secret, uri, svg, qrError, expiresAt: challenge.expires_at };
 }
 
 export interface EnrollResult { token: string; recoveryCodes: string[] }

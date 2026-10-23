@@ -17,6 +17,9 @@ import sharp from 'sharp';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const inputDir = join(root, 'public/images');
 const outputDir = join(inputDir, 'optimized');
+const releasePolicy = JSON.parse(await readFile(join(root, 'src/data/release-assets.json'), 'utf8'));
+const includeLegacy = /^(1|true)$/i.test(process.env.INCLUDE_LEGACY_ASSETS ?? '');
+const legacyFiles = new Set(releasePolicy.legacyUnconfirmed.map((path) => parse(path).base));
 await mkdir(outputDir, { recursive: true });
 // 文件名是内容哈希：内容没变时文件名不变，可以直接复用磁盘上的文件。
 const existing = new Map();
@@ -31,6 +34,8 @@ let written = 0;
 let reused = 0;
 for (const file of (await readdir(inputDir)).sort()) {
   if (!/\.(png|jpe?g|webp)$/i.test(file)) continue;
+  // 默认发行排除授权未确认的历史截图及其全部派生图；兼容构建显式选择才生成。
+  if (!includeLegacy && legacyFiles.has(file)) continue;
   const input = await readFile(join(inputDir, file));
   const metadata = await sharp(input).rotate().metadata();
   const width = metadata.autoOrient?.width ?? metadata.width;
@@ -68,4 +73,4 @@ for (const name of existing.keys()) {
   pruned++;
 }
 await writeFile(join(root, 'src/data/image-variants.json'), JSON.stringify(manifest, null, 2) + '\n');
-console.log(JSON.stringify({ images: Object.keys(manifest).length, originalBytes, largestVariantBytes, written, reused, pruned }));
+console.log(JSON.stringify({ images: Object.keys(manifest).length, originalBytes, largestVariantBytes, written, reused, pruned, includeLegacy }));

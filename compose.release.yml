@@ -1,0 +1,75 @@
+# 发行部署：直接拉取固定 digest 的镜像，不构建源码。
+# 用法：
+#   SITE_IMAGE=ghcr.io/OWNER/sanjiang-resources@sha256:... \
+#   SITE_URL=https://example.org \
+#   docker compose -f compose.release.yml up -d
+# app 与 maintenance 必须使用同一个 digest；升级时同时修改两处（本文件只引用一个变量）。
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  app:
+    image: ${SITE_IMAGE:?SITE_IMAGE 必须设为 repo@sha256:digest}
+    pull_policy: always
+    restart: unless-stopped
+    logging: *logging
+    ports:
+      - "127.0.0.1:${APP_PORT:-4321}:4321"
+    environment:
+      SITE_URL: ${SITE_URL:-http://localhost:4321}
+      TRUST_PROXY: ${TRUST_PROXY:-1}
+      SITE_INIT_MODE: ${SITE_INIT_MODE:-empty}
+      SITE_INIT_NAME: ${SITE_INIT_NAME:-三匠资源站}
+      DATABASE_PATH: /app/data/site.sqlite
+      MEDIA_DIR: /app/data/media
+      MEDIA_QUOTA_BYTES: ${MEDIA_QUOTA_BYTES:-536870912}
+      MEDIA_MIN_FREE_BYTES: ${MEDIA_MIN_FREE_BYTES:-134217728}
+      TOTP_ENC_KEY: ${TOTP_ENC_KEY:-}
+      TOTP_REQUIRED_FOR: ${TOTP_REQUIRED_FOR:-off}
+      BACKUP_DIR: /app/backups
+      BACKUP_KEEP: ${BACKUP_KEEP:-7}
+      BACKUP_UTC_HOUR: ${BACKUP_UTC_HOUR:-19}
+      LINK_CHECK_UTC_HOUR: ${LINK_CHECK_UTC_HOUR:-20}
+      LINK_CHECK_UTC_DAY: ${LINK_CHECK_UTC_DAY:-0}
+      METRICS_CLEANUP_UTC_HOUR: ${METRICS_CLEANUP_UTC_HOUR:-18}
+    volumes:
+      - site-data:/app/data
+      - ${BACKUP_HOST_DIR:-./backups}:/app/backups
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4321/api/health/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  maintenance:
+    image: ${SITE_IMAGE:?SITE_IMAGE 必须设为 repo@sha256:digest}
+    pull_policy: always
+    restart: unless-stopped
+    command: ["node", "scripts/maintenance.mjs"]
+    healthcheck:
+      disable: true
+    depends_on:
+      app:
+        condition: service_healthy
+    logging: *logging
+    environment:
+      SITE_INIT_MODE: ${SITE_INIT_MODE:-empty}
+      SITE_INIT_NAME: ${SITE_INIT_NAME:-三匠资源站}
+      DATABASE_PATH: /app/data/site.sqlite
+      MEDIA_DIR: /app/data/media
+      BACKUP_DIR: /app/backups
+      BACKUP_KEEP: ${BACKUP_KEEP:-7}
+      BACKUP_UTC_HOUR: ${BACKUP_UTC_HOUR:-19}
+      LINK_CHECK_UTC_HOUR: ${LINK_CHECK_UTC_HOUR:-20}
+      LINK_CHECK_UTC_DAY: ${LINK_CHECK_UTC_DAY:-0}
+      METRICS_CLEANUP_UTC_HOUR: ${METRICS_CLEANUP_UTC_HOUR:-18}
+    volumes:
+      - site-data:/app/data
+      - ${BACKUP_HOST_DIR:-./backups}:/app/backups
+
+volumes:
+  site-data:

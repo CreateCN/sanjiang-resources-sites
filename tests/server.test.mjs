@@ -4,6 +4,8 @@ import { mkdirSync, mkdtempSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
+import { seedFixture } from './fixtures/content.ts';
 
 // All database access is redirected before importing the implementation.
 const directory = mkdtempSync(join(tmpdir(), 'sanjiang-server-'));
@@ -13,6 +15,7 @@ delete process.env.SITE_URL;
 const store = await import('../src/server/store.ts');
 const { noticeBoard } = await import('../src/lib/notices.ts');
 const settings = await import('../src/server/settings.ts');
+const siteConfig = await import('../src/server/site-config.ts');
 const importer = await import('../src/lib/importer.ts');
 const { database, closeDatabase } = await import('../src/server/db.ts');
 const auth = await import('../src/server/auth.ts');
@@ -27,6 +30,8 @@ beforeEach(() => {
   delete process.env.SITE_URL;
   admin = store.createInitialAdmin('operator', PASSWORD);
   editor = store.createUser(admin, 'editor', PASSWORD, 'editor');
+  // 业务用例需要固定的资源/分类集合；不再依赖新站默认种子。
+  seedFixture(database());
 });
 after(() => {
   closeDatabase();
@@ -57,14 +62,15 @@ function manage(session, action, fields = {}, options = {}) {
 }
 function draft(id = 'new-resource') { return { ...store.getPublishedResources()[0], id, title: 'Unpublished draft title' }; }
 
-test('first boot seeds resources only once and never creates a default account', () => {
+test('新库默认空站：零资源、一个综合分类、无默认账户；重开不灌示例', () => {
   closeDatabase(); process.env.DATABASE_PATH = join(directory, 'unseeded.sqlite');
+  delete process.env.SITE_INIT_MODE;
   assert.equal(store.listUsers().length, 0);
-  assert.ok(store.getPublishedResources().length > 0);
-  assert.ok(store.listCategories().every((category) => category.id !== 'all'));
-  database().prepare('DELETE FROM resources').run();
+  assert.equal(store.getPublishedResources().length, 0, '默认 Empty 不能有资源');
+  assert.deepEqual(store.listCategories().map((category) => category.id), ['general']);
   closeDatabase();
-  assert.equal(store.getPublishedResources().length, 0);
+  process.env.DATABASE_PATH = join(directory, 'unseeded.sqlite');
+  assert.equal(store.getPublishedResources().length, 0, '重开不灌示例');
   assert.equal(store.listUsers().length, 0);
 });
 
@@ -581,7 +587,7 @@ test('manual link check stores the result without changing publication', async (
 
 test('home settings are admin-only, validated and merged with defaults', () => {
   const defaults = settings.getSettings();
-  assert.equal(defaults.featuredResourceId, 'zotero');
+  assert.equal(defaults.featuredResourceId, '', '初始化写入空精选，不再默认指向 zotero');
   assert.equal(defaults.scenarios.writing?.task, '写好一篇报告');
   assert.throws(() => settings.saveSettings(editor, { featuredResourceId: 'python', scenarios: {} }), /仅限管理员/);
   settings.saveSettings(admin, { featuredResourceId: 'python', scenarios: { writing: { task: '写课程论文', detail: '从选题到引用', glyph: '文' } } });
@@ -598,6 +604,155 @@ test('home settings are admin-only, validated and merged with defaults', () => {
   assert.throws(() => settings.saveSettings(admin, { featuredResourceId: 'python', scenarios: {} }), /公开目录|已停用/, '停用资源不能成为精选');
   settings.saveSettings(admin, { featuredResourceId: 'zotero', scenarios: {} });
   assert.equal(settings.getSettings().featuredResourceId, 'zotero', '正常精选仍能保存');
+});
+
+test('场景文案为空时按未配置处理，空站或新分类仍能保存首页编排', async () => {
+  const logged = session(admin);
+  assert.equal((await manage(logged, 'save-settings', {
+    featuredResourceId: '', settingsRevision: settings.settingsRevision(),
+    'scenario.general.task': '', 'scenario.general.detail': '', 'scenario.general.glyph': '',
+  })).status, 303);
+  assert.equal(settings.getSettings().scenarios.general, undefined, '空任务不写入设置');
+});
+
+test('赞助 API：匿名、编辑者、缺 CSRF/Origin、重复字段与旧版本都被拒绝', async () => {
+  const fields = {
+    title: 'API 赞助', body: '', sponsorName: '赞助方', mediaId: '', imageAlt: '',
+    targetUrl: 'https://sponsor.example.com/', placement: 'home-sidebar',
+    enabled: '1', startsAt: '', endsAt: '', version: '',
+  };
+  const logged = session(admin);
+  assert.notEqual((await http.managePost(context('/api/manage/', { action: 'save-sponsor', ...fields }))).status, 303, '匿名不能创建');
+  assert.equal((await manage(session(editor), 'save-sponsor', fields)).status, 403);
+  assert.equal((await manage(logged, 'save-sponsor', { ...fields, csrf: '' })).status, 403);
+  assert.equal((await manage(logged, 'save-sponsor', fields, { origin: 'http://evil.invalid' })).status, 403);
+  assert.equal((await manage(logged, 'save-sponsor', fields, { origin: null })).status, 403);
+
+  const created = await manage(logged, 'save-sponsor', fields);
+  assert.equal(created.status, 303);
+  const sponsor = (await import('../src/server/sponsors.ts')).listSponsors()[0];
+  assert.equal((await manage(logged, 'save-sponsor', { ...fields, id: sponsor.id, version: '99' })).status, 409);
+
+  // 重复字段必须拒绝，不能静默取第一条。
+  const duplicate = new URLSearchParams();
+  duplicate.set('csrf', logged.csrfToken);
+  duplicate.set('action', 'save-sponsor');
+  for (const [key, value] of Object.entries(fields)) duplicate.set(key, value);
+  duplicate.append('title', '第二条标题');
+  const response = await http.managePost({
+    request: new Request('http://localhost/api/manage/', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Origin: 'http://localhost', Cookie: `${auth.SESSION_COOKIE}=${logged.token}` },
+      body: duplicate,
+    }),
+    clientAddress: '127.0.0.1',
+  });
+  assert.equal(response.status, 400);
+
+  // 撤销会话后旧 CSRF/会话不能再写。
+  database().prepare('DELETE FROM sessions WHERE user_id=?').run(admin.id);
+  assert.equal((await manage(logged, 'save-sponsor', fields)).status, 401);
+});
+
+test('退出演示标记只改标记与审计，不改变资源内容和发布状态', async () => {
+  // 显式模拟演示站标记；不再依赖测试进程的全局初始化模式。
+  database().prepare("INSERT INTO metadata (key,value) VALUES ('demo_content','1') ON CONFLICT(key) DO UPDATE SET value='1'").run();
+  const logged = session(admin);
+  const before = database().prepare('SELECT id,draft,published,version FROM resources ORDER BY id').all().map((row) => ({ ...row }));
+  const demo = await import('../src/server/demo.ts');
+  assert.equal(demo.isDemoContent(), true);
+  assert.equal((await manage(session(editor), 'exit-demo')).status, 403, '编辑者不能退出演示');
+  assert.equal((await manage(logged, 'exit-demo')).status, 303);
+  assert.equal(demo.isDemoContent(), false);
+  const row = database().prepare("SELECT value FROM metadata WHERE key='demo_content'").get();
+  assert.equal(String(row.value), '0');
+  assert.ok(database().prepare("SELECT 1 FROM audit WHERE action='exit-demo'").get());
+  assert.deepEqual(database().prepare('SELECT id,draft,published,version FROM resources ORDER BY id').all().map((item) => ({ ...item })), before);
+});
+
+test('scope：旧快照投影 unknown，草稿与公开隔离，发布后生效', () => {
+  const published = store.findPublishedResource('zotero');
+  assert.deepEqual(published.scope, { type: 'unknown' }, '旧快照缺字段必须投影为 unknown');
+  const current = store.findManagedResource('zotero');
+  const saved = store.saveResource(admin, {
+    ...published,
+    scope: { type: 'institutions', institutions: [' 示例大学 ', '示例大学', '第二学院'] },
+  }, current.version);
+  assert.deepEqual(saved.draft.scope, { type: 'institutions', institutions: ['示例大学', '第二学院'] }, '保存时 trim 并去重');
+  assert.deepEqual(store.findPublishedResource('zotero').scope, { type: 'unknown' }, '草稿变化不能进入公开快照');
+  store.changePublication(admin, 'zotero', saved.version, 'publish');
+  assert.deepEqual(store.findPublishedResource('zotero').scope, { type: 'institutions', institutions: ['示例大学', '第二学院'] });
+
+  const live = store.findManagedResource('zotero');
+  const student = store.saveResource(admin, { ...live.draft, access: 'student-verification', scope: { type: 'global' } }, live.version);
+  assert.equal(student.draft.access, 'student-verification');
+  assert.deepEqual(student.draft.scope, { type: 'global' }, 'access 与 scope 互不推导');
+  assert.deepEqual(store.findPublishedResource('zotero').scope, { type: 'institutions', institutions: ['示例大学', '第二学院'] }, '未发布前公开快照保持');
+});
+
+test('scope：非法值在保存与导入前拒绝，旧文件缺字段仍可导入为 unknown', () => {
+  const published = store.findPublishedResource('zotero');
+  const version = store.findManagedResource('zotero').version;
+  for (const scope of [
+    { type: 'institutions', institutions: [] },
+    { type: 'institutions', institutions: ['x'.repeat(101)] },
+    { type: 'institutions', institutions: Array.from({ length: 21 }, (_, index) => `机构${index}`) },
+    { type: 'global', institutions: [] },
+    { type: 'campus' },
+  ]) {
+    assert.throws(() => store.saveResource(admin, { ...published, scope }, version), /资源校验失败/);
+  }
+
+  const payload = importer.exportPayload();
+  const exported = payload.resources.find((entry) => entry.id === 'zotero');
+  assert.deepEqual(exported.draft.scope, { type: 'unknown' }, '导出把缺字段明确写为 unknown');
+  const legacy = { ...exported.draft };
+  delete legacy.scope;
+  const preview = importer.previewImport({ resources: [legacy] });
+  assert.ok(preview.resources.same.includes('zotero'), '缺少 scope 的旧文件应视为同一条目');
+  const invalid = importer.previewImport({ resources: [{ ...legacy, scope: { type: 'institutions', institutions: [] } }] });
+  assert.ok(invalid.resources.invalid.some((entry) => entry.id === 'zotero'), '非法 scope 在预检阶段拒绝');
+});
+
+test('scope：恢复缺字段的旧修订得到 unknown，且不改写原修订', () => {
+  const current = store.findManagedResource('zotero');
+  const first = store.saveResource(admin, { ...current.draft, title: '带 scope 的修订', scope: { type: 'global' } }, current.version);
+  store.saveResource(admin, { ...first.draft, scope: { type: 'institutions', institutions: ['甲学院'] } }, first.version);
+  const revision = store.listRevisions('resource', 'zotero').find((entry) => entry.version === first.version);
+  assert.ok(revision);
+  const { scope, ...legacyData } = revision.data;
+  database().prepare('UPDATE revisions SET data=? WHERE id=?').run(JSON.stringify(legacyData), revision.id);
+  const restored = store.restoreResourceRevision(admin, 'zotero', revision.id, store.findManagedResource('zotero').version);
+  assert.deepEqual(restored.draft.scope, { type: 'unknown' }, '旧修订恢复后按 unknown 处理');
+  const untouched = store.findRevisionById('resource', 'zotero', revision.id);
+  assert.equal(untouched.data.scope, undefined, '历史修订本身不能被批量改写');
+});
+
+test('站点品牌与首页编排各用各的 CAS：旧页面 409，互不覆盖', async () => {
+  const logged = session(admin);
+  const brandFields = {
+    name: '测试实例', subtitle: '独立站点', description: '实例简介', footerText: '页脚文案',
+    organizationName: '测试组织', nonOfficialStatement: '非官方声明', logoMediaId: '', faviconMediaId: '', shareImageMediaId: '',
+    accentColor: '#245c42', showProjectAttribution: '1', brandingVersion: '1',
+  };
+  assert.equal((await manage(session(editor), 'save-branding', brandFields)).status, 403, '编辑者不能改品牌');
+
+  const homeBefore = settings.settingsRevision();
+  const brandSave = await manage(logged, 'save-branding', brandFields);
+  assert.equal(brandSave.status, 303);
+  assert.equal(siteConfig.getBranding().name, '测试实例');
+  assert.equal(settings.settingsRevision(), homeBefore, '保存品牌不能改动首页编排');
+  assert.equal((await manage(logged, 'save-branding', { ...brandFields, name: '旧页面覆盖', brandingVersion: '0' })).status, 409, '旧品牌页面不能覆盖');
+  assert.equal(siteConfig.getBranding().name, '测试实例');
+
+  const revision = settings.settingsRevision();
+  assert.equal((await manage(logged, 'save-settings', { featuredResourceId: 'zotero', scenarios: {} })).status, 400, '缺少首页版本必须拒绝');
+  assert.equal((await manage(logged, 'save-settings', { featuredResourceId: 'python', scenarios: {}, settingsRevision: revision })).status, 303);
+  assert.equal(settings.getSettings().featuredResourceId, 'python');
+  assert.equal((await manage(logged, 'save-settings', { featuredResourceId: 'zotero', scenarios: {}, settingsRevision: revision })).status, 409, '旧首页页面不能覆盖');
+  assert.equal(settings.getSettings().featuredResourceId, 'python');
+  assert.equal((await manage(logged, 'save-settings', { featuredResourceId: 'zotero', scenarios: {}, settingsRevision: 'a'.repeat(64) })).status, 409);
+  assert.equal(siteConfig.getBranding().name, '测试实例', '保存首页不能覆盖品牌');
 });
 
 test('batch review updates drafts and history for editors', () => {
@@ -658,7 +813,12 @@ test('import preview and apply restore drafts, categories and guides', () => {
   const exported = importer.exportPayload();
   assert.ok(Array.isArray(exported.resources) && exported.resources.length > 12);
   assert.ok(exported.categories.some((category) => category.id === 'career'));
-  assert.equal(exported.schemaVersion, 2, '导出升到 v2：包含媒体元数据（不含二进制）');
+  assert.equal(exported.schemaVersion, 3, '导出升到 v3：包含媒体元数据与安全品牌投影');
+  assert.equal('sponsors' in exported, false, '普通内容导出不包含赞助');
+  assert.equal('sponsors' in (exported.settings ?? {}), false, '首页设置导出不包含赞助开关');
+  assert.equal(exported.branding.name, siteConfig.getBranding().name);
+  assert.equal(exported.branding.schemaVersion, 1);
+  assert.doesNotMatch(JSON.stringify(exported), /DATABASE_PATH|TOTP_ENC_KEY|password_hash|sanjiang_session/, '内容导出不包含部署环境或认证数据');
   assert.ok(Array.isArray(exported.media), '导出必须带媒体清单字段');
 });
 
@@ -768,6 +928,192 @@ test('exported JSON imports back without loss (export → preview → apply)', a
   assert.equal(applied.errors.length, 0);
   assert.equal(applied.resources, store.listManagedResources().length, '资源数量应与导出时一致');
   assert.ok(applied.resources > 0);
+});
+
+test('导入版本分发：无版本/v1/v2 兼容，v3 要求 scope，未来版本写入前拒绝', () => {
+  const base = { ...store.findPublishedResource('zotero') };
+  const noVersion = importer.previewImport({ resources: [base] });
+  assert.equal(noVersion.version.value, 0);
+  assert.equal(noVersion.version.legacy, true);
+  assert.equal(noVersion.resources.invalid.length, 0);
+
+  for (const version of [1, 2]) {
+    const preview = importer.previewImport({ schemaVersion: version, resources: [base] });
+    assert.equal(preview.version.value, version);
+    assert.equal(preview.resources.invalid.length, 0, `v${version} 兼容缺 scope`);
+  }
+
+  const withoutScope = { ...base };
+  delete withoutScope.scope;
+  const v3Missing = importer.previewImport({ schemaVersion: 3, resources: [withoutScope] });
+  assert.ok(v3Missing.resources.invalid.some((entry) => entry.id === 'zotero' && /scope/.test(entry.error)));
+  const v3 = importer.previewImport({ schemaVersion: 3, resources: [base] });
+  assert.equal(v3.version.value, 3);
+  assert.equal(v3.resources.invalid.length, 0);
+
+  const auditBefore = store.listAudit().length;
+  for (const bad of [{ schemaVersion: 4 }, { schemaVersion: 999 }, { schemaVersion: 0 }, { schemaVersion: null }, { schemaVersion: '3' }, { schemaVersion: 1.5 }]) {
+    assert.throws(() => importer.previewImport(bad));
+    assert.throws(() => importer.applyImport(admin, bad, null));
+  }
+  assert.equal(store.listAudit().length, auditBefore, '版本拒绝发生在任何写入之前');
+});
+
+test('预检摘要忽略导出时间与等价缺省：缺 scope 与显式 unknown 同一 digest', () => {
+  const base = { ...store.findPublishedResource('zotero') };
+  const withoutScope = { ...base };
+  delete withoutScope.scope;
+  const a = importer.previewImport({ schemaVersion: 1, exportedAt: '2026-01-01T00:00:00.000Z', resources: [withoutScope] });
+  const b = importer.previewImport({ schemaVersion: 1, exportedAt: '2026-10-01T00:00:00.000Z', resources: [{ ...base, scope: { type: 'unknown' } }] });
+  assert.equal(a.plan.digest, b.plan.digest);
+  const changed = importer.previewImport({ schemaVersion: 1, resources: [{ ...base, title: '标题变了' }] });
+  assert.notEqual(a.plan.digest, changed.plan.digest);
+});
+
+test('v3 品牌恢复：默认不写，勾选后按预检冻结的指纹恢复，内容不被动', () => {
+  const exported = importer.exportPayload();
+  const originalName = siteConfig.getBranding().name;
+  const brandingPayload = { schemaVersion: 3, branding: exported.branding };
+  const current = siteConfig.getBranding();
+  const { schemaVersion, version, ...input } = current;
+  siteConfig.saveBranding(admin, { ...input, name: '临时品牌' }, siteConfig.getBrandingAdminView().version);
+  const preview = importer.previewImport(brandingPayload);
+  assert.equal(preview.version.value, 3);
+  assert.equal(preview.branding.present, true);
+  assert.equal(preview.branding.valid, true);
+  assert.equal(preview.branding.changed, true);
+  assert.equal(preview.branding.name, originalName);
+
+  const untouched = importer.applyImport(admin, brandingPayload, preview.plan);
+  assert.equal(untouched.branding, false, '默认不恢复品牌');
+  assert.equal(siteConfig.getBranding().name, '临时品牌');
+
+  const restored = importer.applyImport(admin, brandingPayload, preview.plan, { restoreBranding: true });
+  assert.equal(restored.branding, true);
+  assert.equal(siteConfig.getBranding().name, originalName);
+  assert.equal(restored.resources, 0);
+
+  // 无 branding 字段时即使勾选恢复，也不能改动目标品牌。
+  const noBranding = { schemaVersion: 3 };
+  const noBrandingPreview = importer.previewImport(noBranding);
+  const noBrandingResult = importer.applyImport(admin, noBranding, noBrandingPreview.plan, { restoreBranding: true });
+  assert.equal(noBrandingResult.branding, false);
+  assert.equal(siteConfig.getBranding().name, originalName);
+});
+
+test('v3 品牌预检冲突：品牌或图片在预检后变化返回 409，且不写入内容', () => {
+  const exported = importer.exportPayload();
+  const brandingPayload = { schemaVersion: 3, branding: exported.branding };
+  const preview = importer.previewImport(brandingPayload);
+  const current = siteConfig.getBranding();
+  const { schemaVersion, version, ...input } = current;
+  siteConfig.saveBranding(admin, { ...input, name: '预检后改名' }, siteConfig.getBrandingAdminView().version);
+  const auditBefore = store.listAudit().length;
+  assert.throws(() => importer.applyImport(admin, brandingPayload, preview.plan, { restoreBranding: true }), /品牌设置在预检后被修改/);
+  assert.equal(store.listAudit().length, auditBefore);
+
+  // 图片可用性变化：品牌设置未变，但 logo 在预检后被下架。
+  const mediaId = 'b'.repeat(64);
+  database().prepare(`INSERT INTO media
+    (id,version,state,bytes,total_bytes,width,height,variants,encoding_version,source_name,uploaded_by,rights,credit,created_at)
+    VALUES (?,1,'ready',100,100,800,800,'[]','test','logo.png','tester','confirmed','测试 / CC0',?)`)
+    .run(mediaId, new Date().toISOString());
+  const view = siteConfig.getBrandingAdminView();
+  siteConfig.saveBranding(admin, { ...input, logoMediaId: mediaId }, view.version);
+  const withLogo = { schemaVersion: 3, branding: siteConfig.getBranding() };
+  const logoPreview = importer.previewImport(withLogo);
+  assert.equal(logoPreview.branding.media.find((item) => item.field === 'logo').available, true);
+  database().prepare('UPDATE media SET deleted_at=? WHERE id=?').run(new Date().toISOString(), mediaId);
+  assert.throws(() => importer.applyImport(admin, withLogo, logoPreview.plan, { restoreBranding: true }), /品牌图片在预检后发生变化/);
+});
+
+test('导入期间另一管理员改品牌：品牌写入拒绝，对方值保留，已提交分类不回滚', () => {
+  const current = siteConfig.getBranding();
+  const view = siteConfig.getBrandingAdminView();
+  const payload = {
+    schemaVersion: 3,
+    categories: [{ id: 'race-category', name: '并发分类' }],
+    branding: current,
+  };
+  const preview = importer.previewImport(payload);
+  assert.equal(preview.plan.branding.expectedVersion, view.version ?? 0);
+  const concurrent = {
+    ...current,
+    version: (view.version ?? 0) + 1,
+    name: '并发保存品牌',
+  };
+
+  const db = database();
+  const originalExec = db.exec.bind(db);
+  const external = new DatabaseSync(process.env.DATABASE_PATH);
+  let fired = false;
+  try {
+    db.exec = (sql) => {
+      const result = originalExec(sql);
+      if (!fired && /^COMMIT\b/i.test(String(sql))) {
+        fired = true;
+        external.prepare("INSERT INTO settings (key,value) VALUES ('branding',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+          .run(JSON.stringify(concurrent));
+      }
+      return result;
+    };
+    const result = importer.applyImport(admin, payload, preview.plan, { restoreBranding: true });
+    assert.equal(fired, true, '并发屏障必须命中一次已提交事务');
+    assert.equal(result.categoriesCreated, 1, '并发品牌失败不应回滚已提交的分类');
+    assert.equal(result.branding, false);
+    assert.ok(result.errors.some((entry) => entry.id === '品牌设置' && /导入期间|其他维护者/.test(entry.error)));
+  } finally {
+    db.exec = originalExec;
+    external.close();
+  }
+  assert.equal(siteConfig.getBranding().name, '并发保存品牌', '并发保存的品牌不能被导入覆盖');
+  assert.equal(siteConfig.getBrandingAdminView().version, concurrent.version);
+  assert.equal(store.listCategories().find((category) => category.id === 'race-category')?.name, '并发分类');
+});
+
+test('版本没变但品牌原始 JSON 变化：导入仍拒绝覆盖', () => {
+  const initial = siteConfig.getBranding();
+  const view = siteConfig.getBrandingAdminView();
+  const { schemaVersion: _schemaVersion, version: _version, ...initialInput } = initial;
+  siteConfig.saveBranding(admin, initialInput, view.version);
+  const baseline = siteConfig.getBranding();
+  const baselineView = siteConfig.getBrandingAdminView();
+  const payload = { schemaVersion: 3, categories: [{ id: 'same-version-category', name: '同版本分类' }], branding: baseline };
+  const preview = importer.previewImport(payload);
+  const sameVersionButChanged = { ...baseline, version: baselineView.version, name: '同版本但被改' };
+
+  const db = database();
+  const originalExec = db.exec.bind(db);
+  const external = new DatabaseSync(process.env.DATABASE_PATH);
+  try {
+    db.exec = (sql) => {
+      const result = originalExec(sql);
+      if (/^COMMIT\b/i.test(String(sql))) {
+        external.prepare("UPDATE settings SET value=? WHERE key='branding'").run(JSON.stringify(sameVersionButChanged));
+      }
+      return result;
+    };
+    const result = importer.applyImport(admin, payload, preview.plan, { restoreBranding: true });
+    assert.equal(result.branding, false);
+    assert.ok(result.errors.some((entry) => entry.id === '品牌设置' && /导入期间|其他维护者/.test(entry.error)));
+  } finally {
+    db.exec = originalExec;
+    external.close();
+  }
+  assert.equal(siteConfig.getBranding().name, '同版本但被改');
+  assert.equal(siteConfig.getBrandingAdminView().version, baselineView.version);
+});
+
+test('品牌无效或图片不可用时只报告品牌错误，不阻断内容导入', () => {
+  const before = siteConfig.getBranding().name;
+  const invalid = { schemaVersion: 3, branding: { name: '' } };
+  const preview = importer.previewImport(invalid);
+  assert.equal(preview.branding.valid, false);
+  assert.match(String(preview.branding.error), /name|品牌/);
+  const result = importer.applyImport(admin, invalid, preview.plan, { restoreBranding: true });
+  assert.equal(result.branding, false);
+  assert.ok(result.errors.some((entry) => entry.id === '品牌设置'));
+  assert.equal(siteConfig.getBranding().name, before);
 });
 
 test('import payload larger than the form limit still applies through the manage endpoint', async () => {

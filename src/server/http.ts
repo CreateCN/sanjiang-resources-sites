@@ -6,10 +6,14 @@ import { checkResourceLink } from './linkcheck.ts';
 import { issueEnrollChallenge } from './auth.ts';
 import { IMAGE_MAX_BYTES, MULTIPART_MAX_BYTES, deleteMedia, ingestUpload, purgeMedia, restoreMedia } from './media.ts';
 import { saveSettings } from './settings.ts';
+import { saveBranding } from './site-config.ts';
+import { exitDemoMode } from './demo.ts';
+import { createSponsor, deleteSponsor, saveSponsorSettings, updateSponsor } from './sponsors.ts';
 import { bulkReviewResources, saveImportRun, schemaVersion } from './store.ts';
 import { applyImport } from '../lib/importer.ts';
 import { renderInlineMarkdown, renderMarkdown } from '../lib/markdown.ts';
 import { MAX_IDENTIFIER_LENGTH } from '../lib/identifiers.ts';
+import { SiteConfigError, isSecureSite, resolveRequestOrigin } from './deployment-config.ts';
 
 type Context = { request: Request; clientAddress?: string };
 const privateHeaders = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin' };
@@ -33,6 +37,14 @@ function numberField(form: FormData, field: string): number {
   const value = text(form, field);
   if (!/^[1-9]\d*$/.test(value) || !Number.isSafeInteger(Number(value))) fail(400, '无效记录编号');
   return Number(value);
+}
+/** datetime-local 按后台标注的北京时间转换；带偏移的值原样交给服务层复核。 */
+function instantField(form: FormData, field: string): string | null {
+  const value = text(form, field).trim();
+  if (!value) return null;
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(value)) return `${value}:00+08:00`;
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(value)) return `${value}+08:00`;
+  return value;
 }
 function versionNumber(form: FormData): number | null {
   const value = text(form, 'version');
@@ -176,8 +188,71 @@ export async function managePost(context: Context): Promise<Response> {
           scenarios[id] ??= { task: '', detail: '', glyph: '' };
           scenarios[id][field as 'task' | 'detail' | 'glyph'] = value;
         }
-        saveSettings(session.user, { featuredResourceId: text(form, 'featuredResourceId'), scenarios });
-        return redirect('/admin/settings/');
+        const revision = text(form, 'settingsRevision');
+        if (!/^[a-f0-9]{64}$/.test(revision)) fail(400, '首页设置的版本信息缺失或无效，请重新加载页面后再保存');
+        // 新建分类还没有场景文案时，表单会提交空字段；空任务等于"用分类名兜底"，
+        // 不能当成非法输入，否则空站或新分类会导致整页无法保存。
+        for (const [id, copy] of Object.entries(scenarios)) if (!copy.task.trim()) delete scenarios[id];
+        saveSettings(session.user, { featuredResourceId: text(form, 'featuredResourceId'), scenarios }, revision);
+        return redirect('/admin/settings/?saved=settings');
+      }
+      case 'save-sponsor': {
+        const id = text(form, 'id');
+        const sponsorInput = {
+          title: text(form, 'title'),
+          body: text(form, 'body'),
+          sponsorName: text(form, 'sponsorName'),
+          mediaId: text(form, 'mediaId') || null,
+          imageAlt: text(form, 'imageAlt'),
+          targetUrl: text(form, 'targetUrl'),
+          placement: text(form, 'placement'),
+          enabled: text(form, 'enabled') === '1',
+          startsAt: instantField(form, 'startsAt'),
+          endsAt: instantField(form, 'endsAt'),
+        };
+        if (id) {
+          const rawVersion = text(form, 'version');
+          if (!/^\d+$/.test(rawVersion)) fail(400, '缺少有效的赞助版本号，请重新加载页面');
+          updateSponsor(session.user, id, sponsorInput, Number(rawVersion));
+        } else {
+          createSponsor(session.user, sponsorInput);
+        }
+        return redirect('/admin/sponsors/');
+      }
+      case 'delete-sponsor': {
+        deleteSponsor(session.user, text(form, 'id'), versionNumber(form));
+        return redirect('/admin/sponsors/');
+      }
+      case 'save-sponsor-settings': {
+        const rawVersion = text(form, 'settingsVersion');
+        if (rawVersion !== '' && !/^\d+$/.test(rawVersion)) fail(400, '赞助开关版本无效，请重新加载页面');
+        saveSponsorSettings(session.user, { enabled: text(form, 'enabled') === '1' }, rawVersion === '' ? null : Number(rawVersion));
+        return redirect('/admin/sponsors/');
+      }
+      case 'exit-demo': {
+        exitDemoMode(session.user);
+        return redirect('/admin/settings/?saved=demo-exited');
+      }
+      case 'save-branding': {
+        const mediaField = (name: string) => text(form, name) || null;
+        const rawVersion = text(form, 'brandingVersion');
+        // 空字符串表示"修复损坏配置"（服务层只接受 null）；其余必须是服务端发出的版本号。
+        if (rawVersion !== '' && !/^\d+$/.test(rawVersion)) fail(400, '品牌设置的版本信息无效，请重新加载页面');
+        const expectedVersion = rawVersion === '' ? null : Number(rawVersion);
+        saveBranding(session.user, {
+          name: text(form, 'name'),
+          subtitle: text(form, 'subtitle'),
+          description: text(form, 'description'),
+          footerText: text(form, 'footerText'),
+          organizationName: text(form, 'organizationName'),
+          nonOfficialStatement: text(form, 'nonOfficialStatement'),
+          logoMediaId: mediaField('logoMediaId'),
+          faviconMediaId: mediaField('faviconMediaId'),
+          shareImageMediaId: mediaField('shareImageMediaId'),
+          accentColor: text(form, 'accentColor'),
+          showProjectAttribution: text(form, 'showProjectAttribution') === '1',
+        }, expectedVersion);
+        return redirect('/admin/settings/?saved=branding');
       }
       case 'bulk-review': {
         const ids = form.getAll('ids').filter((value): value is string => typeof value === 'string');
@@ -207,10 +282,13 @@ export async function managePost(context: Context): Promise<Response> {
         // 预检计划冻结了各条目的版本号与内容摘要；没有它就等于跳过预检。
         let plan: unknown;
         try { plan = JSON.parse(text(form, 'plan') || 'null'); } catch { fail(400, '预检计划格式不正确，请重新预检'); }
-        const result = applyImport(session.user, payload, plan, { restoreSettings: text(form, 'restoreSettings') === '1' });
+        const result = applyImport(session.user, payload, plan, {
+          restoreSettings: text(form, 'restoreSettings') === '1',
+          restoreBranding: text(form, 'restoreBranding') === '1',
+        });
         // 失败明细落库：重定向只能带数量，维护者需要「哪一条、为什么」才能修正。
         const runId = result.errors.length > 0 ? saveImportRun(session.user, result) : null;
-        return redirect(`/admin/import/?resources=${result.resources}&guides=${result.guides}&categories=${result.categoriesCreated}&restored=${result.restored}&settings=${result.settings ? 1 : 0}&errors=${result.errors.length}${runId ? `&run=${runId}` : ''}`);
+        return redirect(`/admin/import/?resources=${result.resources}&guides=${result.guides}&categories=${result.categoriesCreated}&restored=${result.restored}&settings=${result.settings ? 1 : 0}&branding=${result.branding ? 1 : 0}&errors=${result.errors.length}${runId ? `&run=${runId}` : ''}`);
       }
       case 'upload-media': {
         const files = form.getAll('file');
@@ -300,8 +378,7 @@ export async function managePost(context: Context): Promise<Response> {
 function secureCookie(request: Request): boolean {
   // Secure only when the site is actually served over HTTPS. A self-hosted
   // trial on http://localhost must still be able to keep its session.
-  if ((process.env.SITE_URL ?? '').startsWith('https://')) return true;
-  try { return new URL(request.url).protocol === 'https:'; } catch { return false; }
+  try { return isSecureSite(new URL(request.url)); } catch { return false; }
 }
 export async function loginPost(context: Context): Promise<Response> {
   try {
@@ -394,7 +471,13 @@ export async function eventPost(context: Context): Promise<Response> {
   try {
     const request = context.request;
     const origin = request.headers.get('origin');
-    const siteOrigin = process.env.SITE_URL ? new URL(process.env.SITE_URL).origin : new URL(request.url).origin;
+    let siteOrigin: string;
+    try {
+      siteOrigin = resolveRequestOrigin(request);
+    } catch (error) {
+      if (error instanceof SiteConfigError) fail(503, '站点地址配置异常，请联系维护者');
+      throw error;
+    }
     const sameOrigin = origin ? origin === siteOrigin : request.headers.get('sec-fetch-site') === 'same-origin';
     if (!sameOrigin) fail(403, '请求来源验证失败');
     if (!(request.headers.get('content-type') || '').startsWith('application/json')) fail(415, '请使用 JSON 提交');

@@ -2,6 +2,7 @@ import { defineMiddleware } from 'astro:middleware';
 import { logRequest, newRequestId } from './server/log';
 import { withRequestCache } from './server/request-cache';
 import { isMediaPath, serveMediaRequest } from './server/media-http';
+import { isSecureSite } from './server/deployment-config';
 
 /**
  * Baseline response headers. The site is server-rendered with inline styles and
@@ -23,7 +24,8 @@ const CSP_REPORT_ONLY = [
 ].join('; ');
 
 function httpsSite(): boolean {
-  return (process.env.SITE_URL ?? '').startsWith('https://');
+  // HSTS 与 Cookie Secure 使用同一个权威 origin 判断。
+  return isSecureSite();
 }
 
 export const onRequest = defineMiddleware(async (context, next) => {

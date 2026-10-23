@@ -73,3 +73,38 @@ test('迁移可幂等重跑，且允许“先装 010、后补 009”的升级顺
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('011 只补缺失实例配置：新库不写品牌，旧库不覆盖已有品牌与 issuer', async () => {
+  const { applyMigrations } = await import('../src/server/migrations.ts');
+  const legacyMigrations = migrations.slice(0, migrations.findIndex((entry) => entry.id === '011-instance-configuration'));
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec('CREATE TABLE schema_migrations (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL)');
+    for (const migration of legacyMigrations) {
+      db.exec('BEGIN IMMEDIATE');
+      migration.up(db);
+      db.prepare('INSERT INTO schema_migrations (id,applied_at) VALUES (?,?)').run(migration.id, new Date().toISOString());
+      db.exec('COMMIT');
+    }
+    assert.deepEqual(applyMigrations(db), ['011-instance-configuration', '012-sponsors']);
+    assert.equal(db.prepare("SELECT 1 FROM settings WHERE key='branding'").get(), undefined, '新库的品牌由初始化流程写入，迁移不能抢先灌默认值');
+    assert.equal(db.prepare("SELECT 1 FROM metadata WHERE key='auth_issuer'").get(), undefined);
+
+    // 有业务数据后才出现的旧库：重新执行 011 时必须补缺失键，且不碰已有值。
+    db.prepare("INSERT INTO metadata (key,value) VALUES ('seeded','1')").run();
+    db.prepare("INSERT INTO settings (key,value) VALUES ('branding',?)").run(JSON.stringify({ schemaVersion: 1, version: 7, name: '部署者自定义' }));
+    db.prepare("INSERT INTO metadata (key,value) VALUES ('auth_issuer','部署者验证器')").run();
+    db.prepare("DELETE FROM schema_migrations WHERE id='011-instance-configuration'").run();
+    assert.deepEqual(applyMigrations(db), ['011-instance-configuration']);
+    assert.equal(JSON.parse(String(db.prepare("SELECT value FROM settings WHERE key='branding'").get().value)).name, '部署者自定义');
+    assert.equal(String(db.prepare("SELECT value FROM metadata WHERE key='auth_issuer'").get().value), '部署者验证器');
+
+    // 真正缺键的旧库：补入改造前的显示品牌与 issuer。
+    db.prepare("DELETE FROM settings WHERE key='branding'").run();
+    db.prepare("DELETE FROM metadata WHERE key='auth_issuer'").run();
+    db.prepare("DELETE FROM schema_migrations WHERE id='011-instance-configuration'").run();
+    assert.deepEqual(applyMigrations(db), ['011-instance-configuration']);
+    assert.equal(JSON.parse(String(db.prepare("SELECT value FROM settings WHERE key='branding'").get().value)).name, '三江资源');
+    assert.equal(String(db.prepare("SELECT value FROM metadata WHERE key='auth_issuer'").get().value), '三江资源');
+  } finally { db.close(); }
+});

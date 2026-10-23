@@ -1,3 +1,4 @@
+import type { DatabaseSync } from 'node:sqlite';
 import { database } from './db.ts';
 import { fail } from './security.ts';
 import { extractImageSources } from '../lib/markdown.ts';
@@ -16,10 +17,17 @@ const MEDIA_PATH = /^\/media\/([a-f0-9]{64})\.webp$/;
 
 export interface MediaReference {
   id: string;
-  kind: 'resource' | 'guide' | 'revision';
+  kind: 'resource' | 'guide' | 'revision' | 'branding' | 'sponsor';
   label: string;
   locations: string[];
 }
+
+/** 站点品牌里三个可引用图片的字段；顺序用于给管理界面稳定的展示文案。 */
+export const BRANDING_MEDIA_FIELDS = [
+  { field: 'logoMediaId', label: 'Logo' },
+  { field: 'faviconMediaId', label: 'favicon' },
+  { field: 'shareImageMediaId', label: '分享图' },
+] as const;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -52,6 +60,22 @@ export function mediaIdsInPayload(kind: MediaPayloadKind, payload: unknown): str
     if (match) ids.push(match[1]!);
   }
   return [...new Set(ids)];
+}
+
+/**
+ * settings.branding 的结构化图片字段。
+ * 品牌没有历史修订，只有当前配置；三个字段是独立引用来源，
+ * 不能被"资源/指南"扫描顺带覆盖。
+ */
+export function brandingMediaRefs(value: unknown): { id: string; label: string }[] {
+  const data = asRecord(value);
+  if (!data) return [];
+  const refs: { id: string; label: string }[] = [];
+  for (const { field, label } of BRANDING_MEDIA_FIELDS) {
+    const raw = textOf(data[field]);
+    if (/^[a-f0-9]{64}$/u.test(raw)) refs.push({ id: raw, label });
+  }
+  return refs;
 }
 
 function mediaPath(id: string): string {
@@ -133,8 +157,7 @@ function refsForEntity(kind: MediaPayloadKind, label: string, draft: unknown, pu
  * 扫描该媒体的全部引用：资源/指南的草稿与公开快照（**含回收站**）+ 所有历史修订。
  * purge 与 GC 都只认这个结果；禁止另写一套"近似"扫描。
  */
-export function scanMediaReferences(id: string): MediaReference[] {
-  const db = database();
+export function scanMediaReferences(id: string, db: DatabaseSync = database()): MediaReference[] {
   const references: MediaReference[] = [];
 
   const resources = db.prepare('SELECT id,draft,published,deleted_at FROM resources').all();
@@ -164,7 +187,53 @@ export function scanMediaReferences(id: string): MediaReference[] {
     references.push({ id, kind: 'revision', label: `修订 #${row.id}（${kind === 'guide' ? '指南' : '资源'} /${row.entity_id}）`, locations: ['历史修订'] });
   }
 
+  const branding = db.prepare("SELECT value FROM settings WHERE key='branding'").get();
+  const brandingLocations = brandingMediaRefs(safeJson(branding?.value)).filter((ref) => ref.id === id).map((ref) => ref.label);
+  if (brandingLocations.length > 0) {
+    references.push({ id, kind: 'branding', label: '站点品牌配置', locations: brandingLocations });
+  }
+
+  // 赞助图片同样受保护：停用/过期也不自动解除引用，必须显式移除后才能彻底删除。
+  const sponsorRows = db.prepare('SELECT id,title,placement,enabled FROM sponsors WHERE media_id=?').all(id);
+  for (const row of sponsorRows) {
+    references.push({
+      id,
+      kind: 'sponsor',
+      label: `赞助「${String(row.title)}」`,
+      locations: [row.placement === 'catalog-promotion' ? '目录推广位' : '首页侧栏', row.enabled ? '启用中' : '停用'],
+    });
+  }
+
   return references;
+}
+
+/**
+ * 与 scanMediaReferences 共用同一套提取规则，一次扫描全部引用来源。
+ * 必须显式传入数据库连接：离线恢复脚本在暂存副本上调用它，
+ * 绝不能因为默认参数而打开默认生产库。
+ */
+export function collectReferencedMediaIds(db: DatabaseSync): Set<string> {
+  const ids = new Set<string>();
+  const add = (kind: MediaPayloadKind, payload: unknown) => {
+    for (const id of mediaIdsInPayload(kind, payload)) ids.add(id);
+  };
+  for (const row of db.prepare('SELECT draft,published FROM resources').all()) {
+    add('resource', safeJson(row.draft));
+    add('resource', safeJson(row.published));
+  }
+  for (const row of db.prepare('SELECT draft,published FROM guides').all()) {
+    add('guide', safeJson(row.draft));
+    add('guide', safeJson(row.published));
+  }
+  for (const row of db.prepare('SELECT entity_kind,data FROM revisions').all()) {
+    add(row.entity_kind === 'guide' ? 'guide' : 'resource', safeJson(row.data));
+  }
+  const branding = db.prepare("SELECT value FROM settings WHERE key='branding'").get();
+  for (const ref of brandingMediaRefs(safeJson(branding?.value))) ids.add(ref.id);
+  for (const row of db.prepare('SELECT media_id FROM sponsors WHERE media_id IS NOT NULL').all()) {
+    ids.add(String(row.media_id));
+  }
+  return ids;
 }
 
 function safeJson(value: unknown): unknown {

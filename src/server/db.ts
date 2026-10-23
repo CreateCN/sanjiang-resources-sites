@@ -1,11 +1,9 @@
 import { DatabaseSync } from 'node:sqlite';
-import { randomBytes } from 'node:crypto';
 import { mkdirSync, chmodSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { categories, resources } from '../data/resources.ts';
-import { ResourceSchema } from '../lib/resource-schema.ts';
 import { applyMigrations } from './migrations.ts';
 import { clearRequestCache } from './request-cache.ts';
+import { InitializationError, describeCounts, initializeDatabase, parseInitMode } from './initialization.ts';
 
 let connection: DatabaseSync | undefined;
 
@@ -19,23 +17,13 @@ export function database(): DatabaseSync {
     if (path !== ':memory:') chmodSync(path, 0o600);
     db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;');
     applyMigrations(db);
-    db.exec('BEGIN IMMEDIATE');
-    try {
-      if (!db.prepare("SELECT 1 FROM metadata WHERE key = 'seeded'").get()) {
-        const categoryInsert = db.prepare('INSERT INTO categories (id,name) VALUES (?,?)');
-        for (const category of categories) if (category.id !== 'all') categoryInsert.run(category.id, category.name);
-        // 种子条目标记为已发布快照；uid 是导入预检用的不可复用身份，必须与手工创建的一致可读。
-        const insert = db.prepare('INSERT INTO resources (id,uid,draft,published,draft_category,published_category,version,updated_at) VALUES (?,?,?,?,?,?,1,?)');
-        const now = new Date().toISOString();
-        for (const seed of resources) {
-          const resource = ResourceSchema.parse(seed);
-          const json = JSON.stringify(resource);
-          insert.run(resource.id, randomBytes(8).toString('hex'), json, json, resource.category, resource.category, now);
-        }
-        db.prepare("INSERT INTO metadata (key,value) VALUES ('seeded','1')").run();
-      }
-      db.exec('COMMIT');
-    } catch (error) { db.exec('ROLLBACK'); throw error; }
+    // 状态机在同一个写事务里完成：新库按 empty/demo 初始化，旧库与已完成实例只迁移。
+    // 异常库（有业务数据但缺标记）拒绝自动写入，避免把种子灌进别人的库。
+    const mode = parseInitMode(process.env.SITE_INIT_MODE);
+    const result = initializeDatabase(db, { mode, name: process.env.SITE_INIT_NAME });
+    if (result.state === 'anomalous') {
+      throw new InitializationError(`数据库含有业务数据但缺少初始化标记（${describeCounts(result.counts)}）。为避免覆盖，已拒绝自动初始化；请停止应用后运行 npm run site:init -- --mode empty --adopt，或从备份恢复。`);
+    }
     connection = db;
     return db;
   } catch (error) { db.close(); throw error; }

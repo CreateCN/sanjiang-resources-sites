@@ -48,13 +48,31 @@ export function exportSettings(): SiteSettings {
 export function settingsFingerprint(): string {
   return createHash('sha256').update(JSON.stringify(getSettings())).digest('hex');
 }
-export function saveSettings(actor: User, input: unknown): SiteSettings {
+/**
+ * 首页编排的并发版本：直接摘要 settings.site 的原始值。
+ * 用原始值而不是归一化结果，避免默认场景合并掩盖"别人刚保存过"的事实；
+ * 页面保存时把渲染时的摘要带回，在事务内比较（CAS）。
+ */
+export function settingsRevision(): string {
+  const row = database().prepare("SELECT value FROM settings WHERE key='site'").get();
+  return createHash('sha256').update(row ? String(row.value) : '').digest('hex');
+}
+/**
+ * expectedRevision 省略时不做 CAS（导入应用等内部调用）；
+ * 管理表单必须传，旧页面提交会用 409 而不是覆盖新值。
+ */
+export function saveSettings(actor: User, input: unknown, expectedRevision?: string): SiteSettings {
   const parsed = SettingsSchema.safeParse(input);
   if (!parsed.success) fail(400, `设置校验失败：${parsed.error.issues.map((issue) => `${issue.path.join('.')} ${issue.message}`).join('；')}`);
   return transaction((db) => {
     const row = db.prepare('SELECT role,active FROM users WHERE id=?').get(actor.id);
     if (!row || !row.active) fail(401, '登录已失效，请重新登录');
     if (row.role !== 'admin') fail(403, '此操作仅限管理员');
+    if (expectedRevision !== undefined) {
+      const current = db.prepare("SELECT value FROM settings WHERE key='site'").get();
+      const currentRevision = createHash('sha256').update(current ? String(current.value) : '').digest('hex');
+      if (currentRevision !== expectedRevision) fail(409, '首页编排已被其他维护者修改，请刷新页面后重试');
+    }
     if (parsed.data.featuredResourceId && !db.prepare('SELECT 1 FROM resources WHERE id=? AND published IS NOT NULL AND deleted_at IS NULL AND discontinued_at IS NULL').get(parsed.data.featuredResourceId)) {
       fail(400, '首页精选资源不存在，或未发布、在回收站中、已停用；只有仍在公开目录中的资源可以设为精选');
     }

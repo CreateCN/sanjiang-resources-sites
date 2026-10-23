@@ -2,7 +2,12 @@
 import AdminLayout from '../../layouts/AdminLayout.astro';
 import { getSession } from '../../server/auth';
 import { listCategories, listManagedResources } from '../../server/store';
-import { getSettings } from '../../server/settings';
+import { getSettings, settingsRevision } from '../../server/settings';
+import { getBrandAssets, getBrandingAdminView, getPublicSiteConfig } from '../../server/site-config';
+import { isDemoContent } from '../../server/demo';
+import { siteUrlState } from '../../server/deployment-config';
+import { listMedia } from '../../server/media';
+import { deriveThemeTokens } from '../../lib/site-config';
 const session = getSession(Astro.request);
 if (!session) return Astro.redirect('/admin/login/');
 if (session.user.role !== 'admin') return Astro.redirect('/admin/');
@@ -11,15 +16,105 @@ const categories = listCategories();
 const resources = listManagedResources().filter((entry) => entry.published && !entry.lifecycle.discontinuedAt);
 const settings = getSettings();
 const featuredUnavailable = Boolean(settings.featuredResourceId) && !resources.some((entry) => entry.id === settings.featuredResourceId);
+const revision = settingsRevision();
+const branding = getBrandingAdminView();
+const publicSite = getPublicSiteConfig();
+const assets = getBrandAssets();
+const theme = deriveThemeTokens(publicSite.accentColor);
+const mediaRows = listMedia();
+const siteUrl = siteUrlState();
+const saved = Astro.url.searchParams.get('saved');
+const demo = isDemoContent();
+// 无配置行用 0（新建）；损坏行用空字符串（显式修复，服务层映射为 null）。
+const brandingVersion = branding.version === null ? (branding.corrupt ? '' : '0') : String(branding.version);
+const shortId = (id: string) => `${id.slice(0, 10)}…`;
+const mediaLabel = (row: (typeof mediaRows)[number]) => {
+  const state = row.state !== 'ready' ? ' · 删除中' : row.deleted_at ? ' · 已下架' : '';
+  const credit = (row.credit || '未署名').slice(0, 40);
+  return `${row.source_name || '图片'} · ${row.width}×${row.height} · ${credit}${state} · ${shortId(row.id)}`;
+};
 ---
-<AdminLayout title="首页编排" session={session}>
-  <div class="notice"><strong>首页的精选与场景文案从这里改，不再写死在代码里。</strong><p>精选资源只列出已发布内容；场景文案对应首页五张“按你要做的事找”入口，并会出现在 <code>/scenarios/&lt;分类&gt;/</code> 落地页。修改会立即生效，不需要重新构建。</p></div>
-  <form class="panel" action="/api/manage/" method="post" data-admin-form>
-    <input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="save-settings"/>
-    <div class="form-grid">
-      <div class="field full"><label for="featured">首页精选资源</label><select id="featured" name="featuredResourceId"><option value="">不指定（自动取第一个）</option>{resources.map((entry) => <option value={entry.id} selected={settings.featuredResourceId === entry.id}>{entry.draft.title}</option>)}</select><small>只显示仍在公开目录中的资源；草稿、回收站和已停用资源不能在首页精选。</small>{featuredUnavailable && <p class="error" style="padding:8px 10px">当前精选 {settings.featuredResourceId} 已未发布、被删除或已停用；保存前请重新选择。</p>}</div>
-      {categories.map((category) => <div class="field full" style="border-top:1px solid #e6ebe3;padding-top:18px"><strong>{category.name}（{category.id}）</strong><div class="form-grid" style="margin-top:12px"><div class="field"><label for={`task-${category.id}`}>任务文案</label><input id={`task-${category.id}`} name={`scenario.${category.id}.task`} value={settings.scenarios[category.id]?.task ?? ''} maxlength="30"/></div><div class="field"><label for={`detail-${category.id}`}>补充说明</label><input id={`detail-${category.id}`} name={`scenario.${category.id}.detail`} value={settings.scenarios[category.id]?.detail ?? ''} maxlength="60"/></div><div class="field"><label for={`glyph-${category.id}`}>字标（1–2 字）</label><input id={`glyph-${category.id}`} name={`scenario.${category.id}.glyph`} value={settings.scenarios[category.id]?.glyph ?? ''} maxlength="2"/></div></div></div>)}
+<AdminLayout title="站点与首页" session={session}>
+  {saved === 'branding' && <div class="notice" role="status"><strong>品牌设置已保存。</strong><p>前台名称、主题色、素材与页脚立即生效，不需要重新构建。</p></div>}
+  {saved === 'settings' && <div class="notice" role="status"><strong>首页编排已保存。</strong><p>首页精选与场景文案已更新。</p></div>}
+  {saved === 'demo-exited' && <div class="notice" role="status"><strong>已退出演示标记。</strong><p>前台不再显示演示提示；资源内容与发布状态没有改变。</p></div>}
+  {demo && <div class="notice"><strong>当前是演示站。</strong><p>前台会提示“演示内容，请替换并重新核验”。退出标记只隐藏提示，不会删除或修改示例内容；请先替换内容并重新核验。</p>
+    <form action="/api/manage/" method="post" data-admin-form data-confirm="退出演示只会去掉提示，不会删除或修改任何示例内容。确认继续？">
+      <input type="hidden" name="csrf" value={session.csrfToken}/>
+      <input type="hidden" name="action" value="exit-demo"/>
+      <div class="actions"><button type="submit">退出演示标记</button></div>
+      <p role="status" aria-live="polite"></p>
+    </form>
+  </div>}
+
+  <section class="panel">
+    <h2>站点品牌</h2>
+    <p class="muted">这里修改的是本站实例自己的身份：名称、简介、页脚、非官方声明与主题色。资源目录与账户数据不受影响，也不需要改源码。</p>
+    {branding.corrupt && <div class="notice"><strong>品牌配置当前无法解析。</strong><p>公开页正在回退到中性默认值。保存本表单会以修复方式重建配置，原始损坏值将被替换。</p></div>}
+    <form action="/api/manage/" method="post" data-admin-form>
+      <input type="hidden" name="csrf" value={session.csrfToken}/>
+      <input type="hidden" name="action" value="save-branding"/>
+      <input type="hidden" name="brandingVersion" value={brandingVersion}/>
+      <div class="form-grid">
+        <div class="field"><label for="name">站点名称</label><input id="name" name="name" value={branding.value.name} maxlength="60" required/><small>1–60 字，显示在页头、标题后缀、OG 与后台。</small></div>
+        <div class="field"><label for="subtitle">副标题</label><input id="subtitle" name="subtitle" value={branding.value.subtitle} maxlength="100"/><small>0–100 字，显示在页头名称下方。</small></div>
+        <div class="field full"><label for="description">站点简介</label><textarea id="description" name="description" maxlength="500">{branding.value.description}</textarea><small>0–500 字；未单独填写页面摘要时，也作为默认 description 与 WebSite JSON-LD 文案。</small></div>
+        <div class="field"><label for="organizationName">维护组织</label><input id="organizationName" name="organizationName" value={branding.value.organizationName} maxlength="100"/><small>0–100 字，可为空；显示在页脚版权行。</small></div>
+        <div class="field"><label for="footerText">页脚标语</label><input id="footerText" name="footerText" value={branding.value.footerText} maxlength="500"/><small>0–500 字。</small></div>
+        <div class="field full"><label for="nonOfficialStatement">非官方声明</label><textarea id="nonOfficialStatement" name="nonOfficialStatement" maxlength="500">{branding.value.nonOfficialStatement}</textarea><small>0–500 字，显示在页脚；请如实说明与学校、机构或资源方的关系。</small></div>
+        <div class="field"><label for="accentColor">主题强调色</label><div class="inline-form"><input id="accentColor" name="accentColor" type="color" value={branding.value.accentColor} required/><span class="badge" style={`background:${theme.accent};color:#fff`}>强调色预览</span></div><small>必须与白色文字达到 4.5:1 对比度；hover 与浅色背景由服务端派生，不接受原始 CSS。</small></div>
+        <div class="field"><label>当前素材</label><div class="inline-form" style="align-items:center">
+          {assets.logoUrl ? <img src={assets.logoUrl} alt="当前 Logo" height="40" style="width:auto;max-width:140px;object-fit:contain"/> : <span class="muted">未设置 Logo，使用文字标志</span>}
+          <img src={assets.faviconUrl} alt="当前 favicon" width="28" height="28"/>
+          <img src={assets.shareImageUrl} alt="当前分享图" height="48" style="width:auto;max-width:110px;object-fit:cover"/>
+        </div><small>分享图比例建议 1200×630；favicon 源图至少 200×200。</small></div>
+        <div class="field full"><label for="logoMediaId">Logo 图片</label><select id="logoMediaId" name="logoMediaId"><option value="">不使用（文字标志）</option>{mediaRows.map((row) => <option value={row.id} selected={branding.value.logoMediaId === row.id}>{mediaLabel(row)}</option>)}</select><small>只接受已确认授权、未下架且有署名的媒体；下架后页面自动回退文字标志。</small></div>
+        <div class="field"><label for="faviconMediaId">favicon 源图</label><select id="faviconMediaId" name="faviconMediaId"><option value="">使用默认中性图标</option>{mediaRows.map((row) => <option value={row.id} selected={branding.value.faviconMediaId === row.id}>{mediaLabel(row)}</option>)}</select><small>至少 200×200；未设置或下架时使用 /favicon.svg。</small></div>
+        <div class="field"><label for="shareImageMediaId">分享图</label><select id="shareImageMediaId" name="shareImageMediaId"><option value="">使用默认中性分享图</option>{mediaRows.map((row) => <option value={row.id} selected={branding.value.shareImageMediaId === row.id}>{mediaLabel(row)}</option>)}</select><small>用于 OG/Twitter；未设置或下架时使用 /og-default.png。</small></div>
+        <div class="field full"><label class="checkbox"><input type="checkbox" name="showProjectAttribution" value="1" checked={branding.value.showProjectAttribution}/> 在页面显示上游项目归属与 Commit</label><small>关闭后前台与后台不再展示上游项目链接和 Commit；LICENSE/NOTICE 仍随发行物保留。</small></div>
+      </div>
+      <div class="actions"><button type="submit">保存品牌设置</button><a class="button secondary" href="/" target="_blank" rel="noopener noreferrer">查看前台 ↗</a></div>
+      <p role="status" aria-live="polite"></p>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>站点地址</h2>
+    <div class="field full"><label for="site-url">SITE_URL（只读）</label><input id="site-url" value={siteUrl.configured ? (process.env.SITE_URL ?? '') : ''} readonly/><small>由部署环境提供，决定 canonical、OG 地址、Origin 校验与 Cookie Secure。修改后必须重启服务；不能在这里编辑。</small>
+      {!siteUrl.configured && <p class="muted">当前未配置。开发环境会回退到请求地址；生产环境必须显式配置。</p>}
+      {siteUrl.configured && !siteUrl.valid && <p class="error">配置无效：{siteUrl.error}</p>}
+      {siteUrl.configured && siteUrl.valid && <p class="muted">当前解析结果：<code>{siteUrl.origin}</code>（{siteUrl.secure ? 'HTTPS' : 'HTTP'}）</p>}
     </div>
-    <div class="actions"><button type="submit">保存首页编排</button><a class="button secondary" href="/" target="_blank" rel="noopener noreferrer">查看首页 ↗</a></div><p role="status" aria-live="polite"></p>
-  </form>
+  </section>
+
+  <section class="panel">
+    <h2>上传品牌素材</h2>
+    <p class="muted">上传后可回到上面的下拉框选择。文件会重新编码并剥离元数据；确认授权时必须填写署名与许可。</p>
+    <form action="/api/manage/" method="post" enctype="multipart/form-data" data-admin-form>
+      <input type="hidden" name="csrf" value={session.csrfToken}/>
+      <input type="hidden" name="action" value="upload-media"/>
+      <div class="form-grid">
+        <div class="field"><label for="upload-file">图片文件</label><input id="upload-file" type="file" name="file" accept="image/png,image/jpeg,image/webp" required/><small>PNG/JPEG/WebP，≤5 MiB，至少 200×200；favicon 也使用这张源图。</small></div>
+        <div class="field"><label for="upload-rights">授权状态</label><select id="upload-rights" name="rights"><option value="confirmed">已确认授权</option><option value="unconfirmed">未确认</option></select></div>
+        <div class="field full"><label for="upload-credit">署名与许可</label><input id="upload-credit" name="credit" maxlength="300"/><small>确认授权时必填，最多 300 字。</small></div>
+      </div>
+      <div class="actions"><button type="submit">上传到媒体库</button><a class="button secondary" href="/admin/media/">打开媒体库</a></div>
+      <p role="status" aria-live="polite"></p>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>首页编排</h2>
+    <p class="muted">首页的精选与场景文案从这里改，不再写死在代码里。精选资源只列出已发布内容；场景文案对应首页“按你要做的事找”入口，并会出现在 <code>/scenarios/&lt;分类&gt;/</code> 落地页。修改会立即生效，不需要重新构建。</p>
+    <form action="/api/manage/" method="post" data-admin-form>
+      <input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="save-settings"/>
+      <input type="hidden" name="settingsRevision" value={revision}/>
+      <div class="form-grid">
+        <div class="field full"><label for="featured">首页精选资源</label><select id="featured" name="featuredResourceId"><option value="">不指定（自动取第一个）</option>{resources.map((entry) => <option value={entry.id} selected={settings.featuredResourceId === entry.id}>{entry.draft.title}</option>)}</select><small>只显示仍在公开目录中的资源；草稿、回收站和已停用资源不能在首页精选。</small>{featuredUnavailable && <p class="error" style="padding:8px 10px">当前精选 {settings.featuredResourceId} 已未发布、被删除或已停用；保存前请重新选择。</p>}</div>
+        {categories.map((category) => <div class="field full" style="border-top:1px solid #e6ebe3;padding-top:18px"><strong>{category.name}（{category.id}）</strong><div class="form-grid" style="margin-top:12px"><div class="field"><label for={`task-${category.id}`}>任务文案</label><input id={`task-${category.id}`} name={`scenario.${category.id}.task`} value={settings.scenarios[category.id]?.task ?? ''} maxlength="30"/></div><div class="field"><label for={`detail-${category.id}`}>补充说明</label><input id={`detail-${category.id}`} name={`scenario.${category.id}.detail`} value={settings.scenarios[category.id]?.detail ?? ''} maxlength="60"/></div><div class="field"><label for={`glyph-${category.id}`}>字标（1–2 字）</label><input id={`glyph-${category.id}`} name={`scenario.${category.id}.glyph`} value={settings.scenarios[category.id]?.glyph ?? ''} maxlength="2"/></div></div></div>)}
+      </div>
+      <div class="actions"><button type="submit">保存首页编排</button><a class="button secondary" href="/" target="_blank" rel="noopener noreferrer">查看首页 ↗</a></div>
+      <p role="status" aria-live="polite"></p>
+    </form>
+  </section>
 </AdminLayout>

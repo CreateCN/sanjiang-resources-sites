@@ -1,17 +1,21 @@
 ---
 import Layout from '../layouts/Layout.astro';
 import { getPublishedResources, repository } from '../lib/catalog';
+import { getPublicSiteConfig } from '../server/site-config';
 const resources = getPublishedResources();
+const site = getPublicSiteConfig();
+const operator = site.organizationName ? `由 ${site.organizationName} 维护的` : '由本实例维护者独立维护的';
 ---
 <Layout title="收录与核验说明">
   <article class="page-shell portal-container prose-page">
     <nav class="breadcrumbs" aria-label="面包屑"><a href="/">首页</a><span aria-hidden="true">/</span><span aria-current="page">收录说明</span></nav>
     <h1 class="page-title">好资源，也要说清楚。</h1>
-    <p class="page-lead">三江资源是面向三江学院学生的非官方资源整理项目。我们希望减少找工具的时间，也把每个选择背后的使用条件交代清楚。</p>
-    <section class="prose-section"><h2>收录什么，不收录什么</h2><p>我们收录适合学习与创作的开源工具、开放课程、公共学习资源，以及有官方说明的学生权益。资源应有明确用途、可追溯的官方来源和可以解释的费用或资格条件。</p><p>不收录破解软件、盗版教材、共享账号、绕过资格验证的教程，或来源不明的下载镜像。本站不提供第三方软件与课程文件的代下载。</p><div class="definition-list"><div><dt>开源工具</dt><dd>源代码按特定许可证开放。云服务、托管和附加功能仍可能收费。</dd></div><div><dt>免费资源</dt><dd>公开说明的免费内容或功能。不意味着所有课程、证书或商业服务都免费。</dd></div><div><dt>学生权益</dt><dd>需要提供方核验学生身份；是否符合资格，以官方申请结果为准。</dd></div></div><p>不能因为资源面向大学生，就推断三江学院已经订阅、授权或保证学生可用。校内限定资源只有在获得明确来源后，才会标注学校适用范围。</p></section>
+    <p class="page-lead">{site.name}是{operator}资源整理项目。{site.description}{site.nonOfficialStatement}我们希望减少找工具的时间，也把每个选择背后的使用条件交代清楚。</p>
+    <section class="prose-section"><h2>收录什么，不收录什么</h2><p>我们收录适合学习与创作的开源工具、开放课程、公共学习资源，以及有官方说明的学生权益。资源应有明确用途、可追溯的官方来源和可以解释的费用或资格条件。</p><p>不收录破解软件、盗版教材、共享账号、绕过资格验证的教程，或来源不明的下载镜像。本站不提供第三方软件与课程文件的代下载。</p><div class="definition-list"><div><dt>开源工具</dt><dd>源代码按特定许可证开放。云服务、托管和附加功能仍可能收费。</dd></div><div><dt>免费资源</dt><dd>公开说明的免费内容或功能。不意味着所有课程、证书或商业服务都免费。</dd></div><div><dt>学生权益</dt><dd>需要提供方核验学生身份；是否符合资格，以官方申请结果为准。</dd></div></div><p>不能因为资源面向大学生，就推断任何学校或机构已经订阅、授权或保证学生可用。校内限定资源只有在获得明确来源后，才会标注适用范围。</p></section>
     <section class="prose-section" id="verification"><h2>如何理解核验状态</h2><ul><li><strong>官方信息已核对：</strong>维护时读取过官方公开页面，核对资源说明及公开费用或资格信息；日期显示在详情页。</li><li><strong>资料待核对：</strong>官方资料暂未完整读取或确认，条目作为候选入口保留，不作可用保证。</li></ul><p>状态不代表完成软件安装、校园网络实测或学生身份验证。网络检测成功也不能证明服务免费、学校可访问或申请一定通过。详情页会显示“资料核对于 X 天前”，超过复核周期时提示“可能已变化，使用前请复核”；这表示需要维护者重新确认，不等于资源已经失效。</p><p>发现错误后，维护者应复查官方来源并通过内容修改记录更正。公开状态不会因为一次未核实的举报就自动变为不可用。</p></section>
     <section class="prose-section"><h2>你的反馈，如何到达维护者</h2><p>反馈表单无需登录，提交后保存在本站数据库，仅供授权维护者处理，不会自动公开或转发到 GitHub。只有服务端确认保存后，页面才会显示回执。</p><p>请勿提交学号、学生证、手机号、邮箱验证码或个人账号凭据。维护者可将反馈标记为待处理、处理中、已解决，并记录内部备注；项目目前不承诺固定响应时限。为防止滥用，服务端保留短期限流标识，代理部署的具体设置见项目运行说明。</p></section>
     <section class="prose-section"><h2>浏览与隐私</h2><p>核心内容无需登录。搜索和场景筛选在浏览器本地完成，关键词会保存在当前页面网址中，便于分享；分享前请注意网址中不要包含个人信息。</p><p>为了判断哪些资源真正被使用，本站只做匿名聚合计数：资源详情浏览、指南阅读、前往官方资源的点击、搜索无结果的词。计数按天累加，不保存明文 IP、浏览器标识、账户或会话；为防止滥用，限流表会保存短期的哈希来源标识，窗口结束即失效；零结果关键词会截断到 60 字以内并在 90 天后自动清理。数据仅管理员可看，不用做广告画像，也不提供给第三方。管理后台与爬虫访问会尽量排除，统计仅用于内容决策，不作为精确流量承诺。</p><p>外部资源会跳转到第三方网站。本站当前不加载外部字体或分析脚本，页面只使用系统字体；资源截图为本项目引用的本地文件。</p></section>
+    <section class="prose-section" id="sponsorship"><h2>赞助与广告</h2><p>本站可能使用少量静态赞助位支持服务器与维护成本。广告位会固定标注“广告 · 赞助”，只展示本站媒体库中的图片或纯文本卡片，不加载第三方脚本、像素、广告 Cookie，也不根据浏览行为做个性化投放。</p><p>赞助不影响资源收录、核验状态或排序；外链会标明赞助关系并显示目标域名。赞助方名称、说明与图片授权由维护者审核，媒体下架、赞助停用或过期后会立即停止展示。是否开启由管理员总开关控制，关闭不会删除已有赞助内容。</p></section>
     <section class="prose-section" id="credits"><h2>图片、版权与下架</h2>
       <p>资源截图用于说明工具与界面，不代表相关项目对本站背书。项目名称、商标及截图中的内容权益属于各自权利人。我们尊重版权：无法确认来源或再分发许可的截图，会明确标注“网络图片，来源与授权未确认”。</p>
       <ul>{resources.filter((resource) => resource.image).map((resource) => {
@@ -20,7 +24,7 @@ const resources = getPublishedResources();
       })}</ul>
       <div class="notice"><strong>版权与下架流程</strong><p>如果你是图片权利人，或发现图片使用超出许可范围，请通过 <a href="/feedback/?kind=%E7%89%88%E6%9D%83%E4%B8%8E%E4%B8%8B%E6%9E%B6">反馈页的“版权与下架”</a> 提交，说明图片页面、权利依据与可选的替换素材。核实后我们会移除图片或替换为许可明确的素材，并在素材记录中留下处理说明；资源条目本身会保留官方链接，不影响学生查看。</p><p>不要求提供真实姓名与联系方式；如需回复，可自行留下可用渠道，但请勿发送身份证件、学生证或账户凭据。</p></div>
       <p>“网络图片”不构成自动获得再分发许可，也不代表权利已授权。若后续取得许可，我们会在素材记录中更新授权状态；若无法取得，则移除图片，仅保留官方页面链接。</p></section>
-    <section class="prose-section" id="license"><h2>开源协议与项目地址</h2><p>本站是开源项目，源代码、样式与构建脚本以 <a href={`${repository}/blob/master/LICENSE`} target="_blank" rel="noopener noreferrer">MIT 协议</a> 发布，仓库地址：<a href={repository} target="_blank" rel="noopener noreferrer">{repository.replace('https://', '')}</a>。欢迎通过 issue 指出信息错误，或提交改进；维护者会按可用时间处理，不承诺响应时限。</p><p>MIT 只覆盖代码本身。资源条目里的第三方项目名称、商标、官方文案与界面截图，权利仍归各提供方；站内收录的软件、课程与服务也不因本站开源而改变其授权条件。</p><p>如果你要自建一份同样的目录站，保留版权声明与许可文本即可；但请替换站点名称、免责说明和资源来源，不要让人误以为由本项目或三江学院背书。</p></section>
+    <section class="prose-section" id="license"><h2>开源协议与项目地址</h2><p>本站是开源项目，源代码、样式与构建脚本以 <a href={`${repository}/blob/master/LICENSE`} target="_blank" rel="noopener noreferrer">MIT 协议</a> 发布，仓库地址：<a href={repository} target="_blank" rel="noopener noreferrer">{repository.replace('https://', '')}</a>。欢迎通过 issue 指出信息错误，或提交改进；维护者会按可用时间处理，不承诺响应时限。</p><p>MIT 只覆盖代码本身。资源条目里的第三方项目名称、商标、官方文案与界面截图，权利仍归各提供方；站内收录的软件、课程与服务也不因本站开源而改变其授权条件。</p><p>如果你要自建一份同样的目录站，保留版权声明与许可文本即可；但请替换站点名称、免责说明和资源来源，不要让人误以为由本项目或任何学校、机构背书。</p></section>
     <a class="portal-button" href="/#catalog">回到资源目录</a>
   </article>
 </Layout>

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { MAX_IDENTIFIER_LENGTH } from './identifiers.ts';
+import { ResourceScopeSchema, canonicalScope } from './resource-scope.ts';
 const text = z.string().trim().min(1).max(4000);
 const httpsUrl = z.string().url().refine((value) => new URL(value).protocol === 'https:', '请使用 HTTPS 官方链接');
 export const ResourceSchema = z.object({
@@ -16,11 +17,13 @@ export const ResourceSchema = z.object({
   imageAlt: z.string().trim().max(300).optional(),
   details: z.string().max(20000).optional(),
   access: z.enum(['open', 'student-verification', 'campus-network', 'application', 'conditional', 'unknown']).optional(),
+  /** 旧数据缺字段时按 unknown 投影；存在但非法仍拒绝。 */
+  scope: ResourceScopeSchema.default({ type: 'unknown' }),
   imageRights: z.enum(['confirmed', 'unconfirmed']).optional(),
   imageCredit: z.string().max(300).optional(),
 }).superRefine((resource, ctx) => {
   if (resource.status === 'verified' && (!resource.checkedAt || Number.isNaN(Date.parse(resource.checkedAt)))) ctx.addIssue({ code: 'custom', message: '已核对条目必须填写有效核对日期' });
   // 图片必须有替代文本：缺图占位与屏幕阅读器都依赖它。
   if (resource.image && !resource.imageAlt) ctx.addIssue({ code: 'custom', path: ['imageAlt'], message: '设置图片时必须填写图片说明（alt）' });
-});
+}).transform((resource) => ({ ...resource, scope: canonicalScope(resource.scope) }));
 export type Resource = z.infer<typeof ResourceSchema>;

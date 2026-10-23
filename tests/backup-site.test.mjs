@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
+import { seedFixture } from './fixtures/content.ts';
 
 const projectRoot = fileURLToPath(new URL('..', import.meta.url));
 const root = mkdtempSync(join(tmpdir(), 'sj-site-backup-'));
@@ -21,6 +22,9 @@ delete process.env.MEDIA_QUOTA_BYTES;
 
 const store = await import('../src/server/store.ts');
 const media = await import('../src/server/media.ts');
+const siteConfig = await import('../src/server/site-config.ts');
+const sponsors = await import('../src/server/sponsors.ts');
+const { DEFAULT_BRANDING } = await import('../src/lib/site-config.ts');
 const { database, closeDatabase } = await import('../src/server/db.ts');
 
 const PASSWORD = 'site-backup-password-2026!';
@@ -37,12 +41,31 @@ function objectIds() { try { return readdirSync(join(mediaDir, 'objects')).sort(
 
 let admin;
 let view;
+let brandingView;
+let sponsorId;
+
+function brandingInput(overrides = {}) {
+  const { schemaVersion, version, ...rest } = DEFAULT_BRANDING;
+  return { ...rest, ...overrides };
+}
 
 before(async () => {
   admin = store.createInitialAdmin('operator', PASSWORD);
   const editor = store.createUser(admin, 'editor', PASSWORD, 'editor');
+  seedFixture(database());
   const bytes = await sharp({ create: { width: 900, height: 600, channels: 3, background: '#224466' } }).png().toBuffer();
   view = await media.ingestUpload(editor, { bytes, name: 'shot.png', rights: 'confirmed', credit: '测试 / CC0' });
+  // 一张只被站点品牌引用的图片：备份/恢复必须与内容引用同等对待。
+  const brandingBytes = await sharp({ create: { width: 800, height: 800, channels: 3, background: '#662244' } }).png().toBuffer();
+  brandingView = await media.ingestUpload(editor, { bytes: brandingBytes, name: 'branding.png', rights: 'confirmed', credit: '测试 / CC0' });
+  siteConfig.saveBranding(admin, brandingInput({ logoMediaId: brandingView.id, shareImageMediaId: brandingView.id }), siteConfig.getBrandingAdminView().version ?? 0);
+  const sponsor = sponsors.createSponsor(admin, {
+    title: '测试赞助', body: '备份恢复必须保留赞助与图片引用。', sponsorName: '测试赞助方',
+    mediaId: brandingView.id, imageAlt: '赞助图片', targetUrl: 'https://sponsor.example.com/learn',
+    placement: 'home-sidebar', enabled: true, startsAt: null, endsAt: null,
+  });
+  sponsorId = sponsor.id;
+  sponsors.saveSponsorSettings(admin, { enabled: true }, 0);
   store.saveResource(admin, {
     id: 'site-backup-resource', title: '备份资源', summary: '引用媒体的资源', category: 'writing',
     kind: '开源工具', cost: '免费', platforms: ['网页'], tags: ['测试'],
@@ -71,7 +94,15 @@ test('站点备份包含 DB + 全部对象 + 哈希清单，批次以 COMPLETE �
   assert.equal(manifest.format, 'sanjiang-site-backup/1');
   assert.equal(manifest.database.sha256, sha(join(batch, 'site.sqlite')));
   assert.ok(manifest.media.files.some((file) => file.path.endsWith('master.webp')));
-  assert.equal(manifest.database.counts.media, 1);
+  assert.equal(manifest.database.counts.media, 2);
+  assert.equal(manifest.database.counts.sponsors, 1);
+  assert.equal(manifest.software.version, '0.2.0');
+  assert.match(String(manifest.software.commit), /^[a-f0-9]{40}$|^$/, '有 Git 时写完整提交，源码归档可为空');
+  assert.equal(manifest.software.license, 'MIT');
+  assert.ok(manifest.schema.migrations.includes('011-instance-configuration'));
+  assert.equal(manifest.schema.current, manifest.schema.migrations.at(-1));
+  assert.match(JSON.stringify(manifest), /^\{/);
+  assert.doesNotMatch(JSON.stringify(manifest.software), /TOTP_ENC_KEY|password|secret/i, '清单不写密钥');
   assert.ok(manifest.database.counts.resources >= 1);
 });
 
@@ -106,11 +137,20 @@ test('恢复站点：DB 与媒体同批切换，认证证明被净化，引用�
     assert.equal(Number(check.prepare('SELECT COUNT(*) AS total FROM recovery_codes').get().total), 0);
     const resource = JSON.parse(String(check.prepare("SELECT draft FROM resources WHERE id='site-backup-resource'").get().draft));
     assert.equal(resource.image, view.src);
+    const branding = JSON.parse(String(check.prepare("SELECT value FROM settings WHERE key='branding'").get().value));
+    assert.equal(branding.logoMediaId, brandingView.id, '品牌媒体引用必须随站点备份恢复');
+    assert.equal(branding.shareImageMediaId, brandingView.id);
+    assert.equal(media.verifyBundle(brandingView.id).ok, true, '品牌图片文件必须完整恢复');
     const user = check.prepare('SELECT auth_version,totp_last_step FROM users WHERE id=?').get(admin.id);
     assert.ok(Number(user.auth_version) >= 2, 'auth_version 必须递增');
     // 未启用双因素的账户没有步数可抬升；已启用账户的下限在 restore.test.mjs 中覆盖。
     assert.equal(user.totp_last_step, null);
     assert.equal(Number(check.prepare('SELECT COUNT(*) AS total FROM media').get().total), before.database.counts.media);
+    const restoredSponsor = check.prepare('SELECT id,media_id,title FROM sponsors WHERE id=?').get(sponsorId);
+    assert.equal(restoredSponsor?.title, '测试赞助');
+    assert.equal(restoredSponsor?.media_id, brandingView.id);
+    const sponsorSettings = JSON.parse(String(check.prepare("SELECT value FROM settings WHERE key='sponsors'").get().value));
+    assert.equal(sponsorSettings.enabled, true);
   } finally { check.close(); }
 });
 

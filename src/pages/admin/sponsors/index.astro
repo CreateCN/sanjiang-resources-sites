@@ -1,0 +1,55 @@
+---
+import AdminLayout from '../../../layouts/AdminLayout.astro';
+import { getSession } from '../../../server/auth';
+import { getSponsorSettingsView, listSponsors, type Sponsor } from '../../../server/sponsors';
+import { SPONSOR_PLACEMENT_LABELS } from '../../../lib/sponsor-schema';
+const session = getSession(Astro.request);
+if (!session) return Astro.redirect('/admin/login/');
+if (session.user.role !== 'admin') return Astro.redirect('/admin/');
+const sponsors = listSponsors();
+const settings = getSponsorSettingsView();
+const settingsVersion = settings.stored ? (settings.corrupt ? '' : String(settings.version)) : '0';
+const now = Date.now();
+const format = (iso: string | null) => iso ? new Date(iso).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }) : '不限';
+function stateLabel(sponsor: Sponsor) {
+  if (!sponsor.enabled) return '停用';
+  const starts = sponsor.startsAt ? Date.parse(sponsor.startsAt) : Number.NEGATIVE_INFINITY;
+  const ends = sponsor.endsAt ? Date.parse(sponsor.endsAt) : Number.POSITIVE_INFINITY;
+  if (starts > now) return '未开始';
+  if (ends <= now) return '已过期';
+  return '生效中';
+}
+---
+<AdminLayout title="赞助位" session={session}>
+  <div class="notice"><strong>赞助位只展示本地图片或纯文本，不加载第三方脚本、像素或广告 Cookie。</strong><p>默认关闭。只有总开关开启、单项启用、处于时间窗且图片可用时才会出现在前台；同一位置同一时间最多一个生效项。外链会标注“广告 · 赞助”。</p></div>
+
+  <section class="panel">
+    <h2>总开关</h2>
+    {settings.corrupt && <div class="notice"><strong>赞助开关设置无法解析。</strong><p>当前按关闭处理；保存本表单会以修复方式重建。</p></div>}
+    <form action="/api/manage/" method="post" data-admin-form>
+      <input type="hidden" name="csrf" value={session.csrfToken}/>
+      <input type="hidden" name="action" value="save-sponsor-settings"/>
+      <input type="hidden" name="settingsVersion" value={settingsVersion}/>
+      <label class="checkbox"><input type="checkbox" name="enabled" value="1" checked={settings.enabled}/> 开启全站赞助位</label>
+      <small>关闭只停止展示，不删除任何赞助或图片；重新开启即可恢复。</small>
+      <div class="actions"><button type="submit">保存总开关</button><a class="button secondary" href="/" target="_blank" rel="noopener noreferrer">查看首页 ↗</a></div>
+      <p role="status" aria-live="polite"></p>
+    </form>
+  </section>
+
+  <section class="panel">
+    <div class="panel-heading"><h2>赞助条目</h2><a class="button" href="/admin/sponsors/new/">新增赞助</a></div>
+    {sponsors.length === 0
+      ? <p class="muted">还没有赞助条目。创建后默认停用，确认内容与图片授权后再启用。</p>
+      : <div class="table-wrap"><table><thead><tr><th>条目</th><th>位置</th><th>状态</th><th>时间窗（北京时间）</th><th>图片</th><th>操作</th></tr></thead><tbody>
+        {sponsors.map((sponsor) => <tr>
+          <td><a href={`/admin/sponsors/${sponsor.id}/`}>{sponsor.title}</a><br/><span class="muted">{sponsor.sponsorName} · <span title={sponsor.targetUrl}>{sponsor.targetHostname}</span></span></td>
+          <td>{SPONSOR_PLACEMENT_LABELS[sponsor.placement]}</td>
+          <td>{stateLabel(sponsor)}</td>
+          <td>{format(sponsor.startsAt)}<br/>→ {format(sponsor.endsAt)}</td>
+          <td>{sponsor.mediaId ? <code>{sponsor.mediaId.slice(0, 10)}…</code> : '纯文本'}</td>
+          <td><div class="inline-form"><a class="button secondary" href={`/admin/sponsors/${sponsor.id}/`}>编辑</a><form action="/api/manage/" method="post" data-admin-form data-confirm="删除赞助条目会同时解除图片引用；确认继续？"><input type="hidden" name="csrf" value={session.csrfToken}/><input type="hidden" name="action" value="delete-sponsor"/><input type="hidden" name="id" value={sponsor.id}/><input type="hidden" name="version" value={sponsor.version}/><button class="danger" type="submit">删除</button><p role="status" aria-live="polite"></p></form></div></td>
+        </tr>)}
+      </tbody></table></div>}
+  </section>
+</AdminLayout>

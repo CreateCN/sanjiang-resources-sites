@@ -17,6 +17,9 @@ import {
 import { join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { objectsDir, mediaRoot, listMedia, verifyBundle } from '../src/server/media.ts';
+import { resolveBuildRevision } from './build-revision.mjs';
+
+const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 
 const args = process.argv.slice(2);
 function option(name) {
@@ -55,6 +58,7 @@ if (!existsSync(mediaRoot())) fail(`找不到媒体目录：${mediaRoot()}`);
 // 1. 快照一致性前置：不能有未结算的媒体操作。
 const source = new DatabaseSync(databasePath, { readOnly: true });
 let counts;
+let appliedMigrations;
 try {
   source.exec('PRAGMA busy_timeout=5000');
   const tables = new Set(source.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((row) => String(row.name)));
@@ -67,7 +71,14 @@ try {
     if (pending > 0) fail(`存在 ${pending} 条未结算的媒体操作；请先对账`);
   }
   const count = (table) => Number(source.prepare(`SELECT COUNT(*) AS total FROM ${table}`).get()?.total ?? 0);
-  counts = { resources: count('resources'), guides: count('guides'), media: count('media'), users: count('users'), reports: count('reports'), revisions: count('revisions') };
+  counts = {
+    categories: count('categories'), resources: count('resources'), guides: count('guides'),
+    media: count('media'), users: count('users'), reports: count('reports'),
+    revisions: count('revisions'), settings: count('settings'),
+    // 旧库可能尚未跑 012；缺失时省略该计数，旧清单仍可恢复。
+    ...(tables.has('sponsors') ? { sponsors: count('sponsors') } : {}),
+  };
+  appliedMigrations = source.prepare('SELECT id FROM schema_migrations ORDER BY id').all().map((row) => String(row.id));
 } finally { source.close(); }
 
 // 2. 先校验现有对象：缺文件/哈希不符的站点不能生成"成功"的备份。
@@ -126,6 +137,13 @@ try {
     encodingVersion: 'webp-q82-effort4-v1',
     database: { file: 'site.sqlite', bytes: statSync(snapshot).size, sha256: dbHash, counts },
     media: { objects: counts.media, bytes: mediaBytes, files },
+    software: {
+      name: pkg.name,
+      version: process.env.APP_VERSION?.trim() || pkg.version,
+      license: pkg.license,
+      commit: resolveBuildRevision(),
+    },
+    schema: { current: appliedMigrations.at(-1) ?? null, migrations: appliedMigrations },
     note: '恢复请使用 scripts/restore-site.mjs；本备份不含 TOTP_ENC_KEY 等密钥。',
   };
   writeFileSyncSafe(join(batch, 'manifest.json'), JSON.stringify(manifest, null, 2));

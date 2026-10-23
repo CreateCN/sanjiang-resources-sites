@@ -190,12 +190,15 @@ export function secretAad(userId: number): string {
   return `user:${userId}`;
 }
 
-/** Key URI：标签与 query 分开编码，issuer 两处一致，参数固定。 */
-export function buildOtpauthUri(username: string, secret: string): string {
-  const label = `${encodeURIComponent(TOTP_ISSUER)}:${encodeURIComponent(username)}`;
+/**
+ * Key URI：标签与 query 分开编码，issuer 两处一致，参数固定。
+ * issuer 由服务端解析后传入（实例初始化时冻结）；默认值只用于兼容旧调用。
+ */
+export function buildOtpauthUri(username: string, secret: string, issuer: string = TOTP_ISSUER): string {
+  const label = `${encodeURIComponent(issuer)}:${encodeURIComponent(username)}`;
   const query = new URLSearchParams({
     secret,
-    issuer: TOTP_ISSUER,
+    issuer,
     algorithm: 'SHA1',
     digits: String(DIGITS),
     period: String(STEP_SECONDS),

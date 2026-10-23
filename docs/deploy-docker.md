@@ -2,6 +2,13 @@
 
 推荐路径。宿主机直装方案见 [非 Docker 部署](deploy-local.md)；公网暴露与 CDN 防护见 [边缘防护](edge-cdn-hardening.md)。
 
+本页命令使用开发 Compose（从源码构建）。生产发行建议使用 `compose.release.yml` 与固定 digest：
+主机只需拉取镜像，不构建源码；把下列命令中的 `docker compose` 换成
+`docker compose -f compose.release.yml`。构建、推送与支持范围见 [发行与部署](release.md)。
+
+默认构建排除授权未确认的旧截图；旧站仍需原 `/images` 时，确认权利后显式构建兼容素材：
+`INCLUDE_LEGACY_ASSETS=1 docker compose build`。默认构建对旧引用显示占位，不输出 404 图片。
+
 ## 1. 拓扑
 
 ```
@@ -34,21 +41,30 @@ cp .env.example .env
 SITE_URL=https://res.example.edu          # 必须与浏览器地址完全一致
 TRUST_PROXY=1                             # 有反向代理时开启（compose 默认已是 1）
 BACKUP_HOST_DIR=/srv/backups/sanjiang     # 备份目录，放在仓库之外
+SITE_INIT_MODE=empty                      # 只对新库生效：empty / demo
+SITE_INIT_NAME=你的实例名称                # 同时冻结为 TOTP issuer
 ```
+
+配置分层、origin 校验与密钥边界见 [配置与边界](configuration.md)。
 
 > `TRUST_PROXY=0` 只在"应用直连、且只服务本机单用户"时使用；否则所有访客会共享一个限流桶（详见 [SECURITY-SPEC](SECURITY-SPEC.md) §2.1）。
 
 ## 4. 构建、启动、建管理员
 
 ```bash
-COMMIT_SHA="$(git rev-parse HEAD)" docker compose up -d --build
+COMMIT_SHA="$(git rev-parse HEAD)" docker compose build
+# 需要 Demo 时在首次启动前初始化；默认 Empty 可跳过这一步
+docker compose run --rm --no-deps app node scripts/init-site.mjs --mode demo --name "示例站"
+docker compose up -d
 docker compose ps
 curl -fsS http://127.0.0.1:4321/api/health/      # {"status":"ok","db":"ok",...}
 docker compose exec app node scripts/create-admin.mjs
 ```
 
 - 管理员口令 12–256 字符；口令不要出现在 shell history（交互式输入或临时 `env`）。
-- 首次启动会自动建库、跑迁移、导入 12 条种子资源；**不会创建任何默认账户**。
+- 首次启动只建库、跑迁移并按 `SITE_INIT_MODE` 初始化；默认 Empty（一个综合分类），**不会创建任何默认账户**。
+- app 与 maintenance 使用同一初始化变量；维护容器不会向已有实例灌 Demo。
+- 初始化、异常库接管与导入/恢复的区别见 [初始化](initialization.md)。
 
 ## 5. 端口与网络（最容易出事的一节）
 
@@ -101,44 +117,66 @@ location / {
 
 ## 7. 备份与恢复
 
+**定时任务里的数据库快照只用于诊断，不是完整灾备。** maintenance 调用的 `backup-db.mjs`
+不包含媒体二进制，也不能保证 DB 与媒体同批一致。
+
+完整备份必须停写，并同时包含数据库与媒体对象：
+
 ```bash
-# 手动备份（容器内执行，写入 BACKUP_HOST_DIR）
-docker compose exec app node scripts/backup-db.mjs
-
-# 查看
-ls -l "${BACKUP_HOST_DIR:-./backups}"
-
-# 恢复：先停止所有数据库使用者，再用恢复工具替换
+# 1. 停止所有写入者；不要对已停止的服务 exec
 docker compose stop app maintenance
-docker compose ps -a                                # app / maintenance 都应为 exited
+docker compose ps -a                     # app / maintenance 都应为 exited
 docker ps --filter volume=<project>_site-data --format '{{.Names}}'
-# ↑ 必须没有输出；若有其他容器挂载同一数据卷，先停止它们。
+# ↑ 必须没有输出；有输出说明还有容器挂载同一数据卷
 
-# 工具会校验备份、保全旧库和 sidecar、删除旧 WAL、替换并复查。
-# 它运行在独立的一次性容器中，看不到其他容器的进程，所以上面的停止/检查不能省略。
-docker compose run --rm --no-deps app node scripts/restore-db.mjs \
-  --backup /app/backups/site-YYYY-MM-DD.sqlite --yes
+# 2. 用一次性工具容器做离线整站备份（写入 BACKUP_HOST_DIR）
+docker compose run --rm --no-deps app node scripts/backup-site.mjs
 
+# 3. 验证批次
+ls -l "${BACKUP_HOST_DIR:-./backups}"
+# 批次内应有 COMPLETE、manifest.json、site.sqlite 与 media/objects/**
+
+# 4. 整站恢复（先确认批次完整；工具会在暂存副本迁移、净化并核对后切换）
+docker compose run --rm --no-deps app node scripts/restore-site.mjs \
+  --backup /app/backups/site-<stamp>-<rand> --yes
+
+# 5. 重新启动并验证
 docker compose up -d
-curl -fsS http://127.0.0.1:4321/api/health/
+curl -fsS http://127.0.0.1:4321/api/health/ | grep '"db":"ok"'
 ```
 
-恢复成功后旧库位于数据卷的 `site.sqlite.restore-*` 目录（含主库和原 `-wal`/`-shm`），确认无需要后再人工清理；失败时工具会退出非零并保留诊断目录。不要用 `docker cp`/`cp` 直接覆盖 `/app/data/site.sqlite`。
-
-- 备份含口令哈希与反馈正文：目录 `0700`，不要进仓库，最好加密后异地保存。
-- `docker compose down -v` 会删数据卷，只在确定弃用时使用。
+- 备份与恢复都在一次性容器中运行，**不挂载 Docker socket**；
+- 工具只检测同一 PID 命名空间的进程，跨容器/跨主机的使用者必须人工确认已停止；
+- 恢复成功后会清空会话/挑战/恢复码、递增 `auth_version`，用户需要重新登录并生成恢复码；
+- 失败或硬中断的诊断与恢复步骤见 [运维](operations.md) 与 [升级与回滚](upgrade.md)；
+- 数据卷内的 `site.sqlite.restore-*` 与 `site-restore-*.log.json` 是故障现场，确认后再人工清理；
+- 备份含口令哈希、反馈正文与品牌配置：目录 `0700`，不要进仓库，最好加密后异地保存；
+- `docker compose down -v` 会删数据卷，只在确定弃用时使用；
+- 无媒体登记或仅做数据库诊断时，才使用 `restore-db.mjs` 与 `backup-db.mjs`。
 
 ## 8. 升级与回滚
 
+完整顺序、失败回退与硬中断处理见 [升级与回滚](upgrade.md)。最小步骤：
+
 ```bash
+# 1. 停写并用旧版本做一次离线整站备份（见上一节）
+docker compose stop app maintenance
+docker compose run --rm --no-deps app node scripts/backup-site.mjs
+
+# 2. 构建/启动目标版本
 git pull --ff-only
 COMMIT_SHA="$(git rev-parse HEAD)" docker compose up -d --build
 docker compose logs -n 50 app
+
+# 3. 验证
+curl -fsS http://127.0.0.1:4321/api/health/ | grep '"db":"ok"'
 ```
 
-- 数据库迁移在启动时按序自动执行，无需手工操作。
-- 回滚：切回上一个提交后重新 `up -d --build`；**数据库只前进不回退**，回滚前先备份。
-- 构建会跑 `astro check`，类型错误会直接失败——这是好事，别用 `--no-cache` 绕过检查。
+- 迁移在启动时按序自动执行；遇到不认识的迁移会拒绝启动，不能用旧工具打开新库。
+- **数据库只前进不回退**。只有 Release 明确声明格式双向兼容时才可只回退镜像；否则用旧版本
+  恢复工具恢复升级前 DB+媒体批次，再启动旧程序。
+- 构建会跑 `astro check`，类型错误会直接失败——不要用 `--no-cache` 绕过检查。
+- 回滚会撤销会话/挑战/恢复码，需要重新登录并生成新恢复码；`TOTP_ENC_KEY` 必须保留。
 
 ## 9. 日志与监控
 
