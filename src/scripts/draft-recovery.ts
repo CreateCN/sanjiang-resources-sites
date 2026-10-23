@@ -58,9 +58,9 @@ export function attachDraftRecovery(panel: HTMLElement): void {
   function collect(): { key: string; draft: Draft }[] {
     const found: { key: string; draft: Draft }[] = [];
     try {
-      for (let cursor = localStorage.length - 1; cursor >= 0; cursor--) {
-        const storedKey = localStorage.key(cursor);
-        if (!storedKey) continue;
+      // 先取键快照再处理：删除或迁移键会改变 localStorage 的枚举顺序，
+      // 边遍历边删除会跳过尚未处理的键（倒序索引遍历也不能保证安全）。
+      for (const storedKey of Object.keys(localStorage)) {
         const legacy = storedKey === base;
         if (!legacy && !storedKey.startsWith(`${base}:`)) continue;
         const draft = readDraft(storedKey);
@@ -107,9 +107,9 @@ export function attachDraftRecovery(panel: HTMLElement): void {
   function clearSavedDuplicates() {
     const current = JSON.stringify(snapshot());
     try {
-      for (let cursor = localStorage.length - 1; cursor >= 0; cursor--) {
-        const storedKey = localStorage.key(cursor);
-        if (!storedKey) continue;
+      // 先取键快照再处理：删除或迁移键会改变 localStorage 的枚举顺序，
+      // 边遍历边删除会跳过尚未处理的键（倒序索引遍历也不能保证安全）。
+      for (const storedKey of Object.keys(localStorage)) {
         const legacy = storedKey === base;
         if (!legacy && !storedKey.startsWith(`${base}:`)) continue;
         if (storedKey === key) continue;
@@ -129,9 +129,9 @@ export function attachDraftRecovery(panel: HTMLElement): void {
 
   try {
     // 清理其他条目过期或损坏的备份；本条目交给 collect() 处理。
-    for (let cursor = localStorage.length - 1; cursor >= 0; cursor--) {
-      const storedKey = localStorage.key(cursor);
-      if (!storedKey?.startsWith(PREFIX)) continue;
+    // 同样先取键快照：清理会删除键并改变枚举顺序。
+    for (const storedKey of Object.keys(localStorage)) {
+      if (!storedKey.startsWith(PREFIX)) continue;
       if (storedKey === base || storedKey.startsWith(`${base}:`)) continue;
       try {
         const saved = JSON.parse(localStorage.getItem(storedKey) || '{}');
