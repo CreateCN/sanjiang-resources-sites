@@ -2,6 +2,19 @@
 
 适用于单实例部署。升级与恢复都必须先停止所有写者，不能用 `cp` 覆盖带 WAL 的生产库。
 
+## 0. 本次升级必须处理的配置变更（2026-10-25 安全修复）
+
+限流身份不再信任"连接对端是否在私网"（该判据在本技术栈里可被直连伪造），改为**代理共享凭据**：
+
+1. 生成一个 ≥16 字符的随机值（建议 32），写入 `.env` 的 `TRUST_PROXY_SECRET`；
+2. 反代增加一行 `proxy_set_header X-Sanjiang-Proxy-Secret "<同一个值>";`，并保持
+   `proxy_set_header X-Forwarded-For $remote_addr;`（覆盖，不要用 `$proxy_add_x_forwarded_for`）；
+3. 重启 app 与反代，然后执行 `docker compose exec app node scripts/check-deployment.mjs`。
+
+未配置凭据时应用 **fail closed**：站点正常访问，但所有请求按不可信身份处理，只吃站点级限流
+（登录 500/5 分钟、反馈 500/小时、指标 20000/小时），并按访客计的额度失效。这是**有意的
+安全默认**，不要为了让"按访客限流恢复"而把 `TRUST_PROXY` 改成 0——那样所有访客会共享一个桶。
+
 ## 1. 升级前
 
 1. 阅读目标版本 Release / 提交记录，确认来源版本可升级；

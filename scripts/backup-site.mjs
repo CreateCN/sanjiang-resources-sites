@@ -35,8 +35,16 @@ const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 // 同一秒内多次备份不能互相覆盖（VACUUM INTO 要求目标不存在）。
 const batch = join(backupDir, `site-${stamp}-${randomBytes(3).toString('hex')}`);
 
+let batchCreated = false;
+/** 失败时清掉**本次**创建的半成品批次；绝不动其他批次（目录名带时间戳与随机后缀）。 */
+function removeOwnBatch() {
+  if (!batchCreated) return false;
+  batchCreated = false;
+  try { rmSync(batch, { recursive: true, force: true }); return true; } catch { return false; }
+}
 function fail(message, extra = {}) {
-  console.error(JSON.stringify({ event: 'site-backup', status: 'error', message, ...extra }, null, 2));
+  const removed = removeOwnBatch();
+  console.error(JSON.stringify({ event: 'site-backup', status: 'error', message, ...(removed ? { batchRemoved: true } : {}), ...extra }, null, 2));
   process.exit(1);
 }
 function sha256File(path) {
@@ -53,7 +61,10 @@ function walk(root, prefix = '') {
 }
 
 if (!existsSync(databasePath)) fail(`找不到数据库：${databasePath}`);
-if (!existsSync(mediaRoot())) fail(`找不到媒体目录：${mediaRoot()}`);
+// 媒体根目录必须存在（否则 MEDIA_DIR 很可能指错了地方）；但 objects/ 可能还没创建：
+// 从未上传过媒体的新实例只有空目录，备份应当照常生成完整批次。
+if (!existsSync(mediaRoot())) fail(`找不到媒体目录：${mediaRoot()}（请确认 MEDIA_DIR 指向站点数据目录）`);
+mkdirSync(objectsDir(), { recursive: true, mode: 0o700 });
 
 // 1. 快照一致性前置：不能有未结算的媒体操作。
 const source = new DatabaseSync(databasePath, { readOnly: true });
@@ -85,7 +96,15 @@ try {
 const broken = listMedia().map((row) => ({ id: row.id, verdict: verifyBundle(row.id) })).filter((entry) => !entry.verdict.ok);
 if (broken.length > 0) fail(`媒体对象校验失败（${broken[0].id}: ${broken[0].verdict.reason}），请先对账或从更早的备份恢复`, { broken: broken.slice(0, 5) });
 
-mkdirSync(batch, { recursive: true, mode: 0o700 });
+// 备份根目录可能还不存在（首次部署）；批次目录本身用非递归创建，
+// 这样同名目录已存在时会失败而不是被复用。
+mkdirSync(backupDir, { recursive: true, mode: 0o700 });
+try {
+  mkdirSync(batch, { recursive: false, mode: 0o700 });
+} catch (error) {
+  fail(`无法创建备份批次目录：${batch}（${error instanceof Error ? error.message : '未知错误'}）`);
+}
+batchCreated = true;
 chmodSync(batch, 0o700);
 
 try {
@@ -162,9 +181,9 @@ try {
     kept: Math.min(batches.length, keep),
   }, null, 2));
 } catch (error) {
-  // 失败的批次不能留下 COMPLETE；保留现场供排查。
-  rmSync(join(batch, 'COMPLETE'), { force: true });
-  fail(error instanceof Error ? error.message : '备份失败', { batch });
+  // 失败的批次既不标 COMPLETE，也不留在备份目录里：半成品被 restore 拒绝是对的，
+  // 但让它长期堆在 backups/ 会让"数一下有几个目录"变成错误的健康判断。
+  fail(error instanceof Error ? error.message : '备份失败');
 }
 
 function writeFileSyncSafe(path, content) {

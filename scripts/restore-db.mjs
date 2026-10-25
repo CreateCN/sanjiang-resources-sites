@@ -18,11 +18,12 @@
 import { DatabaseSync } from 'node:sqlite';
 import {
   chmodSync, chownSync, closeSync, copyFileSync, existsSync, fsyncSync, lstatSync,
-  mkdirSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, statSync,
+  mkdirSync, openSync, realpathSync, renameSync, rmSync, statSync,
 } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
 import { migrations } from '../src/server/migrations.ts';
 import { prepareRestoredDatabase, assertRestoreCounts } from '../src/server/restore-prepare.ts';
+import { detectDatabaseUsers, describeUsers, OFFLINE_HINT } from './lib/offline-guard.mjs';
 
 const REQUIRED_TABLES = {
   metadata: ['key', 'value'],
@@ -41,12 +42,6 @@ const REQUIRED_TABLES = {
   schema_migrations: ['id', 'applied_at'],
 };
 const KNOWN_MIGRATIONS = new Set(migrations.map((migration) => migration.id));
-const KNOWN_DB_PROCESSES = new Set([
-  'entry.mjs', 'maintenance.mjs', 'backup-db.mjs', 'check-links.mjs',
-  'cleanup-metrics.mjs', 'create-admin.mjs', 'restore-db.mjs', 'security-audit.mjs',
-  'reset-totp.mjs', 'set-totp-policy.mjs', 'reconcile-media.mjs',
-  'backup-site.mjs', 'restore-site.mjs', 'cleanup-media.mjs',
-]);
 const args = process.argv.slice(2);
 function option(name) {
   const index = args.indexOf(name);
@@ -99,51 +94,6 @@ function inspect(path, label) {
     if (failure?.details) throw failure;
     error(`${label}无法读取：${failure instanceof Error ? failure.message : '未知错误'}`);
   } finally { db?.close(); }
-}
-function currentProcessInfo(pid) {
-  const base = `/proc/${pid}`;
-  let cwd;
-  try { cwd = readlinkSync(`${base}/cwd`); } catch { cwd = undefined; }
-  let argv = [];
-  try { argv = readFileSync(`${base}/cmdline`, 'utf8').split('\0').filter(Boolean); } catch { /* ignore */ }
-  let env = [];
-  try { env = readFileSync(`${base}/environ`, 'utf8').split('\0').filter(Boolean); } catch { /* ignore */ }
-  return { cwd, argv, env };
-}
-function declaredDatabase(info, fallbackCwd) {
-  const entry = info.env.find((value) => value.startsWith('DATABASE_PATH='));
-  if (entry) return entry.slice('DATABASE_PATH='.length) === ':memory:' ? null : resolve(info.cwd ?? fallbackCwd, entry.slice('DATABASE_PATH='.length));
-  if (info.cwd) return resolve(info.cwd, 'data/site.sqlite');
-  return null;
-}
-function isProjectDbProcess(argv) {
-  return argv.some((argument) => KNOWN_DB_PROCESSES.has(basename(argument)));
-}
-function detectUsers(target) {
-  if (!existsSync('/proc/self/fd')) return { supported: false, users: [] };
-  const real = canonical(target);
-  const watched = new Set([real, `${real}-wal`, `${real}-shm`]);
-  const users = [];
-  for (const entry of readdirSync('/proc')) {
-    if (!/^\d+$/.test(entry) || Number(entry) === process.pid) continue;
-    const pid = Number(entry);
-    const info = currentProcessInfo(pid);
-    let descriptors = [];
-    try { descriptors = readdirSync(`/proc/${entry}/fd`); } catch { continue; }
-    let opened = false;
-    for (const descriptor of descriptors) {
-      let link;
-      try { link = readlinkSync(`/proc/${entry}/fd/${descriptor}`); } catch { continue; }
-      const clean = link.replace(/ \(deleted\)$/, '');
-      if (watched.has(clean) || watched.has(canonical(clean))) { opened = true; break; }
-    }
-    const declared = declaredDatabase(info, process.cwd());
-    const named = isProjectDbProcess(info.argv);
-    if (opened || (named && declared === real)) {
-      users.push({ pid, command: info.argv.map((value) => basename(value)).join(' ') || 'unknown', opened });
-    }
-  }
-  return { supported: true, users };
 }
 function preserve(target) {
   if (!existsSync(target)) return { directory: null, files: [], consistent: false };
@@ -210,12 +160,12 @@ function main() {
     error('备份旁边还有非空的 -wal 文件，说明它不是独立快照；请使用 scripts/backup-db.mjs 生成备份');
   }
   const source = inspect(backupPath, '备份文件');
-  const offline = detectUsers(databasePath);
+  const offline = detectDatabaseUsers(databasePath);
   if (!offline.supported && !assumeOffline) {
     error('当前系统没有 /proc，无法检查是否有进程正在使用数据库；确认全部使用方离线后加 --assume-offline 再执行');
   }
   if (offline.users.length > 0) {
-    error(`检测到可能正在使用数据库的进程，已拒绝恢复：${offline.users.map((user) => `PID ${user.pid}（${user.command}${user.opened ? '，已打开数据库' : ''}）`).join('；')}。请停止 app、maintenance、定时任务和手动脚本后重试`);
+    error(`检测到可能正在使用数据库的进程，已拒绝恢复：${describeUsers(offline.users)}。${OFFLINE_HINT}`);
   }
   const result = {
     event: 'database-restore', status: 'dry-run', database: databasePath, backup: backupPath,

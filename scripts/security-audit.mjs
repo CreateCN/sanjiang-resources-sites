@@ -25,9 +25,13 @@ function record(name, result) { evidence.checks.push({ name, ...result }); conso
 async function get(path, cookie) {
   return fetch(base + path, { redirect: 'manual', headers: cookie ? { cookie } : {} });
 }
+/** 伪造转发头时必须同时带上代理共享凭据，否则应用会按不可信身份处理（见 SECURITY-SPEC §2.1）。 */
+const proxySecret = (process.env.TRUST_PROXY_SECRET ?? '').trim();
 async function post(path, fields, { cookie, origin = base, forwarded } = {}) {
   return fetch(base + path, { method: 'POST', redirect: 'manual', headers: {
-    origin, accept: 'application/json', ...(cookie ? { cookie } : {}), ...(forwarded ? { 'x-forwarded-for': forwarded } : {}),
+    origin, accept: 'application/json', ...(cookie ? { cookie } : {}),
+    ...(forwarded ? { 'x-forwarded-for': forwarded } : {}),
+    ...(forwarded && proxySecret ? { 'x-sanjiang-proxy-secret': proxySecret } : {}),
   }, body: new URLSearchParams(fields) });
 }
 async function session(user) {

@@ -19,9 +19,13 @@ services:
       - "127.0.0.1:4321:4321"
     environment:
       SITE_URL: ${SITE_URL:-http://localhost:4321}
-      # 应用只在本机代理后面暴露：信任代理写入的单值 X-Forwarded-For，按访客限流。
+      # 应用只在本机代理后面暴露：只有通过 TRUST_PROXY_SECRET 验证的代理，
+      # 它写的单值 X-Forwarded-For 才会被采信（按访客限流）。
       # 若把 4321 直接暴露给公网，请改为 0。
       TRUST_PROXY: ${TRUST_PROXY:-1}
+      # 代理共享凭据：代理必须带同名头，应用才采信它写的 X-Forwarded-For。
+      # 留空 = fail closed（所有请求按不可信身份，仅站点级限流）。
+      TRUST_PROXY_SECRET: ${TRUST_PROXY_SECRET:-}
       # 仅对新库生效；app 与 maintenance 必须使用同一取值，避免维护容器先启动时灌入不同模式。
       SITE_INIT_MODE: ${SITE_INIT_MODE:-empty}
       SITE_INIT_NAME: ${SITE_INIT_NAME:-三匠资源站}

@@ -13,6 +13,7 @@ import sharp from 'sharp';
 import jsQR from 'jsqr';
 import * as totp from '../src/server/totp.ts';
 import { seedFixture } from './fixtures/content.ts';
+import { withChildDiagnostics } from './fixtures/child-report.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 // 这些用例依赖固定资源/分类；新库默认 Empty，使用显式测试夹具而不是 Demo 内容。
@@ -33,11 +34,11 @@ async function waitForServer() {
 }
 
 before(async () => {
-  const seeded = spawnSync(process.execPath, ['scripts/create-admin.mjs'], {
+  const seeded = withChildDiagnostics(spawnSync(process.execPath, ['scripts/create-admin.mjs'], {
     cwd: root,
     env: { ...process.env, DATABASE_PATH: dbPath, ADMIN_USERNAME: 'rootadmin', ADMIN_PASSWORD: 'root-password-123' },
     encoding: 'utf8',
-  });
+  }));
   assert.equal(seeded.status, 0, seeded.stderr);
   const fixtureDb = new DatabaseSync(dbPath);
   try { fixtureDb.exec('PRAGMA busy_timeout=5000'); seedFixture(fixtureDb); } finally { fixtureDb.close(); }
@@ -1173,11 +1174,11 @@ test('TOTP：强制策略下未启用管理员登录即进入注册，完成绑�
   const forcedDb = join(forcedDir, 'site.sqlite');
   const forcedPort = port + 137;
   const forcedBase = `http://127.0.0.1:${forcedPort}`;
-  const seeded = spawnSync(process.execPath, ['scripts/create-admin.mjs'], {
+  const seeded = withChildDiagnostics(spawnSync(process.execPath, ['scripts/create-admin.mjs'], {
     cwd: root,
     env: { ...process.env, DATABASE_PATH: forcedDb, ADMIN_USERNAME: 'forcedadmin', ADMIN_PASSWORD: 'forced-password-123' },
     encoding: 'utf8',
-  });
+  }));
   assert.equal(seeded.status, 0, seeded.stderr);
   const forced = spawn(process.execPath, ['dist/server/entry.mjs'], {
     cwd: root,

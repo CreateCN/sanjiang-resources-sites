@@ -116,6 +116,7 @@ docker compose -f compose.release.yml up -d
 | `SITE_INIT_MODE` | `empty` | 仅作用于新库：`empty` 空站 / `demo` 示例站；已有实例只迁移，不转换模式 |
 | `SITE_INIT_NAME` | `三匠资源站` | 新实例的初始名称，同时冻结为 TOTP issuer；之后可在后台改品牌，issuer 不变 |
 | `TRUST_PROXY` | `0`（compose 中为 `1`） | 是否信任代理写入的单值 `X-Forwarded-For`；关闭时按站点共享限流 |
+| `TRUST_PROXY_SECRET` | 无（开启 `TRUST_PROXY` 时必需） | 代理共享凭据（≥16 字符）；代理写入 `X-Sanjiang-Proxy-Secret`，应用据此采信转发头 |
 | `DATABASE_PATH` | `./data/site.sqlite` | SQLite 文件；容器内为 `/app/data/site.sqlite` |
 | `BACKUP_DIR` | `./backups` | 备份目录；容器内挂载到宿主机 |
 | `BACKUP_KEEP` | `7` | 保留备份份数 |
@@ -174,7 +175,22 @@ docker compose -f compose.release.yml up -d
   proxy_set_header X-Forwarded-Proto https;
   ```
 
-  同时设置 `TRUST_PROXY=1`（compose 默认开启）。应用只接受"单个合法 IP"作为限流身份；缺失、畸形或含多个地址的转发头一律退化为站点级熔断桶，不会被当作访客身份。若不设置 `TRUST_PROXY`，应用会忽略转发头，此时所有访客共享同一个来源桶（只适合内网试运行）。详见 [安全设计与实现规范](docs/SECURITY-SPEC.md)。
+  同时设置 `TRUST_PROXY=1`（compose 默认开启）**和一个共享凭据** `TRUST_PROXY_SECRET`。
+  应用不靠"对端 IP 在不在私网"判断代理——本项目跑在 `@astrojs/node` standalone 模式，
+  适配器会把 `X-Forwarded-For` 的首值当作 `clientAddress`，拿它做信任判断等于循环论证。
+  判据是**只有持有凭据的代理**才能让应用采信转发头：
+
+  ```nginx
+  proxy_set_header X-Sanjiang-Proxy-Secret "<与 TRUST_PROXY_SECRET 相同的值>";
+  proxy_set_header X-Forwarded-For $remote_addr;   # 覆盖，保证只有一个值
+  ```
+
+  凭据缺失或不匹配、转发头缺失/畸形/多值，一律按"不可信身份"处理：只吃站点级预算
+  （登录 500/5 分钟、反馈 500/小时、指标 20000/小时），绝不落进访客小额度。因此直连
+  访问时伪造或轮换 `X-Forwarded-For` 换不到新额度。`TRUST_PROXY=1` 但没配置凭据时，
+  应用 fail closed（全部按不可信身份）并在首次请求时告警；用
+  `node scripts/check-deployment.mjs` 可以提前发现。
+  详见 [安全设计与实现规范](docs/SECURITY-SPEC.md)。
 - 忘记管理员密码没有邮件找回：在服务器上再创建一位管理员，或谨慎地直接操作数据库。
 
 ## 备份与恢复

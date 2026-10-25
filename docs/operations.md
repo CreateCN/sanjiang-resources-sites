@@ -56,7 +56,23 @@ npm run site:restore -- --backup ./backups/site-<stamp>-<rand> --yes
 ```
 
 批次目录包含 `site.sqlite`、`media/objects/**`、`manifest.json` 与最后的 `COMPLETE` 标记；
-备份前要求媒体占位为空且所有对象哈希正确，否则拒绝标记成功。
+备份前要求媒体占位为空且所有对象哈希正确，否则拒绝标记成功。备份**失败时不会留下半成品批次**
+（本次创建的目录会被删除，成功批次不受影响），因此 `backups/` 下不存在 `COMPLETE` 的目录
+可以直接视为异常。从未上传过媒体的新实例（`media/objects` 尚未创建）也能正常备份。
+
+**恢复必须在离线状态下执行。** `site:restore` 会在任何写操作之前扫描同一 PID 命名空间内
+持有目标数据库（含 `-wal`/`-shm`）的进程，命中即拒绝、非零退出、不修改目标文件：
+
+```bash
+docker compose stop app maintenance      # 或 docker stop <app> <maintenance> / systemctl stop …
+docker compose run --rm app node scripts/restore-site.mjs \
+  --backup /app/backups/site-<stamp>-<rand> --database /app/data/site.sqlite --media /app/data/media --yes
+```
+
+`--assume-offline` 的语义与 `restore-db` 一致：**只**覆盖"当前系统没有 `/proc`、无法检测"
+的情形，不覆盖"检测到使用方"。容器之间互相看不到对方的进程，Docker 部署必须自己确认
+没有其他容器挂载同一数据卷（`docker ps` + `docker inspect` 的 Mounts）。
+恢复目标目录不存在时会安全创建（裸机灾难恢复场景）；权限不足或磁盘错误会以明确错误退出。
 恢复在暂存位置完成校验、迁移与认证净化（清空会话/挑战/恢复码、递增 `auth_version`、
 抬升 TOTP 步数下限），再按日志切换 DB 与 `objects/`；中途失败会回滚并保留原目录。
 
@@ -169,7 +185,7 @@ docker compose exec -T app node scripts/check-links.mjs --limit 50 --delay 500
 
 ## 数据库恢复（仅无媒体登记时）
 
-恢复是离线操作，不能用 `cp` 覆盖主库。先停止 `app`、`maintenance`（或本地 timer/cron）以及所有手动数据库脚本；Docker 还要确认没有其他容器挂载 `site-data` 卷。然后运行：
+恢复是离线操作，不能用 `cp` 覆盖主库。先停止 `app`、`maintenance`（或本地 timer/cron）以及所有手动数据库脚本；Docker 还要确认没有其他容器挂载 `site-data` 卷。`restore-db` 与 `restore-site` 共用同一套离线检测（`scripts/lib/offline-guard.mjs`），两条命令对"能不能现在恢复"给出一致结论。然后运行：
 
 ```bash
 # 本地

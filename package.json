@@ -23,8 +23,11 @@
     "site:init": "node scripts/init-site.mjs",
     "test": "node --test tests/*.test.mjs",
     "test:seed": "node tests/fixtures/seed-site.mjs",
+    "pretest:browser": "node scripts/check-dist-freshness.mjs",
     "test:browser": "node --test tests/browser.mjs",
+    "pretest:admin": "node scripts/check-dist-freshness.mjs",
     "test:admin": "node --test tests/admin-e2e.mjs",
+    "pretest:instances": "node scripts/check-dist-freshness.mjs",
     "test:instances": "node --test tests/instances.mjs",
     "test:assets": "bash scripts/legacy-assets-smoke.sh",
     "test:server": "node --test tests/server.test.mjs",
@@ -45,6 +48,10 @@
     "site:restore": "node scripts/restore-site.mjs",
     "image:build": "bash scripts/build-image.sh",
     "release:check": "node scripts/release-check.mjs",
+    "deploy:check": "node scripts/check-deployment.mjs",
+    "dist:check": "node scripts/check-dist-freshness.mjs",
+    "preacceptance:proxy": "node scripts/check-dist-freshness.mjs",
+    "acceptance:proxy": "node scripts/proxy-acceptance.mjs",
     "rehearsal:upgrade": "bash scripts/upgrade-rehearsal.sh"
   },
   "dependencies": {

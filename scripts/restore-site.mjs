@@ -8,6 +8,11 @@
  * 为什么不能用 restore-db：DB 与目录不是单个原子 rename，只换 DB 会制造
  * "新库指向旧图"或"旧库指向新图"的混合批次。本工具在暂存位置完整校验后才切换，
  * 失败时按日志回滚；切换后再次核对引用，仍未通过则回滚并报错。
+ *
+ * 前置条件（与 restore-db 一致）：app、maintenance、定时任务与所有媒体任务全部停止。
+ * 工具在**任何破坏性操作之前**扫描同一 PID 命名空间内持有目标库/sidecar 的进程；
+ * 检测到使用方即拒绝，不写目标文件。容器之间互相看不到对方的进程，Docker 部署
+ * 必须先停 app 与 maintenance（见 docs/operations.md）。
  */
 import { createHash } from 'node:crypto';
 import {
@@ -17,6 +22,7 @@ import {
 import { dirname, join, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { prepareRestoredDatabase, assertRestoreCounts } from '../src/server/restore-prepare.ts';
+import { detectDatabaseUsers, describeUsers, OFFLINE_HINT } from './lib/offline-guard.mjs';
 import { businessSummary, compareBusinessSummary } from '../src/server/restore-verify.ts';
 import { collectReferencedMediaIds } from '../src/server/media-references.ts';
 
@@ -28,6 +34,7 @@ function option(name) {
   return value && !value.startsWith('--') ? value : undefined;
 }
 const confirmed = args.includes('--yes');
+const assumeOffline = args.includes('--assume-offline');
 const batch = resolve(option('--backup') ?? '');
 const databasePath = resolve(option('--database') ?? process.env.DATABASE_PATH ?? './data/site.sqlite');
 const mediaDir = resolve(option('--media') ?? process.env.MEDIA_DIR ?? './data/media');
@@ -148,10 +155,33 @@ function referencedMediaIds(path) {
 }
 
 if (!confirmed) {
-  console.error('用法：node scripts/restore-site.mjs --backup <批次目录> [--database <目标库>] [--media <媒体目录>] --yes');
+  console.error('用法：node scripts/restore-site.mjs --backup <批次目录> [--database <目标库>] [--media <媒体目录>] --yes [--assume-offline]');
   console.error('请先停止 app、maintenance、定时任务与所有媒体任务。未做任何修改。');
   process.exit(2);
 }
+// 目标目录可能尚不存在（裸机灾难恢复）。日志与 staging 都写在它旁边，
+// 因此必须在任何 fail()/writeJson 之前创建，否则会以 ENOENT 崩溃并指向内部临时文件。
+try {
+  mkdirSync(dirname(databasePath), { recursive: true, mode: 0o700 });
+} catch (error) {
+  console.error(JSON.stringify({
+    event: 'site-restore', status: 'error', databasePath,
+    message: `无法创建目标目录 ${dirname(databasePath)}：${error instanceof Error ? error.message : '未知错误'}。请检查权限与磁盘状态后重试`,
+  }, null, 2));
+  process.exit(1);
+}
+// 0. 离线前置：在与目标库发生任何交互之前判定。
+// `--assume-offline` 的语义与 restore-db 一致：只覆盖"没有 /proc、无法检测"的情形，
+// 绝不覆盖"检测到使用方"——那是真实风险，不是可以假定的配置。
+const offline = detectDatabaseUsers(databasePath);
+if (!offline.supported && !assumeOffline) {
+  fail('当前系统没有 /proc，无法检查是否有进程正在使用数据库；确认全部使用方离线后加 --assume-offline 再执行');
+}
+if (offline.users.length > 0) {
+  fail(`检测到可能正在使用数据库的进程，已拒绝恢复：${describeUsers(offline.users)}。${OFFLINE_HINT}`);
+}
+log.offlineCheck = offline.supported ? 'no matching processes' : 'unsupported (--assume-offline)';
+
 if (!batch || !existsSync(join(batch, 'COMPLETE'))) fail(`备份批次不完整或不存在：${batch}（缺少 COMPLETE 标记）`);
 let manifest;
 try { manifest = JSON.parse(readFileSync(join(batch, 'manifest.json'), 'utf8')); } catch { fail('备份缺少可读的 manifest.json'); }

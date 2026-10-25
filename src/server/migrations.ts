@@ -285,6 +285,14 @@ export const migrations: Migration[] = [
       db.exec('CREATE INDEX IF NOT EXISTS sponsors_placement ON sponsors(placement, enabled, starts_at, ends_at)');
     },
   },
+  {
+    // consumeLimit() 每次消费都会 DELETE 过期行；没有索引时这是一次全表扫描 + 全表重写。
+    // 索引只影响清理代价，不改变任何限流语义（窗口、计数、阈值都不动）。
+    id: '013-rate-limits-reset-at',
+    up: (db) => {
+      db.exec('CREATE INDEX IF NOT EXISTS rate_limits_reset_at ON rate_limits(reset_at)');
+    },
+  },
 ];
 
 export class UnknownMigrationError extends Error {

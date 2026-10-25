@@ -9,7 +9,7 @@ const BLOCKED_V4_RANGES: [string, number][] = [
   ['192.88.99.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15], ['198.51.100.0', 24],
   ['203.0.113.0', 24], ['224.0.0.0', 4], ['240.0.0.0', 4],
 ];
-function ipv4ToInt(value: string): number | null {
+export function ipv4ToInt(value: string): number | null {
   const parts = value.split('.');
   if (parts.length !== 4) return null;
   let result = 0;
@@ -30,7 +30,7 @@ function blockedV4(value: number): boolean {
   });
 }
 /** 解析 IPv6（含 :: 压缩、IPv4 尾巴与 zone id）；无法解析返回 null。 */
-function ipv6Bytes(input: string): Uint8Array | null {
+export function ipv6Bytes(input: string): Uint8Array | null {
   let value = input.trim().toLowerCase();
   if (value.startsWith('[') && value.endsWith(']')) value = value.slice(1, -1);
   const zone = value.indexOf('%');

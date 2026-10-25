@@ -1,5 +1,5 @@
-import { randomToken, HttpError, fail, rateLimit, requireOrigin, clientIdentity } from './security.ts';
-import { challengeCookie, challengeTokenFrom, confirmEnrollment, login, logout, requireCsrf, sessionCookie, verifyLoginChallenge } from './auth.ts';
+import { randomToken, HttpError, fail, rateLimit, rateLimitClient, requireOrigin, clientIdentity, type ClientBudget, type ClientIdentity } from './security.ts';
+import { challengeCookie, challengeTokenFrom, confirmEnrollment, getSession, login, logout, requireCsrf, sessionCookie, verifyLoginChallenge } from './auth.ts';
 import { disableTotp, regenerateRecoveryCodes, resetTotpByAdmin, verifyFreshPassword } from './account.ts';
 import { changeGuidePublication, changePublication, createReport, createUser, deleteCategory, discontinueResource, findManagedResource, isMetricTargetAllowed, pingDatabase, purgeTrashGuide, purgeTrashResource, reactivateResource, recordEvent, restoreGuideRevision, restoreResourceRevision, restoreTrashGuide, restoreTrashResource, saveCategory, saveGuide, saveLinkCheck, saveResource, updateReport, updateUser } from './store.ts';
 import { checkResourceLink } from './linkcheck.ts';
@@ -105,11 +105,73 @@ function errorResponse(request: Request, error: unknown, draft?: string): Respon
 }
 /**
  * Client identity for throttling. The deployment contract lives in
- * security.ts#clientIdentity: only a single peer address written by our own
- * proxy is accepted, everything else collapses to a dedicated bucket.
+ * security.ts#clientIdentity: only an address we can attribute to a client
+ * (a verified proxy's single forwarded value, or the socket peer when there is
+ * no forwarded header at all) is usable per-visitor; anything else is
+ * `unverified` and is throttled by site-wide budgets only.
  */
-function identity(context: Context): string {
+function identity(context: Context): ClientIdentity {
   return clientIdentity(context.request, context.clientAddress);
+}
+
+/** 匿名反馈：每客户端 5 次/小时；不可信身份只吃站点预算。 */
+export const REPORTS_CLIENT_BUDGET: ClientBudget = { scope: 'reports-client', maximum: 5, windowMs: 60 * 60 * 1000 };
+export const REPORTS_SITE_BUDGET: ClientBudget = { scope: 'reports-site', maximum: 500, windowMs: 60 * 60 * 1000 };
+/** 事件统计：每客户端 600 次/小时；站点层 20000 次/小时。 */
+export const EVENT_CLIENT_BUDGET: ClientBudget = { scope: 'event-client', maximum: 600, windowMs: 60 * 60 * 1000 };
+export const EVENT_SITE_BUDGET: ClientBudget = { scope: 'event-site', maximum: 20000, windowMs: 60 * 60 * 1000 };
+
+/** 管理动作 → 所需权限。授权判定必须早于动作专属的参数校验（见 SJ-07）。
+ *
+ * `admin`：仅管理员；`session`：任何已登录维护者（编辑者也可以）。
+ * 新增动作时必须同步登记，否则该动作对所有人返回 400（现有 e2e 会立刻发现）。
+ */
+export const MANAGE_ACTION_ROLES: Record<string, 'admin' | 'session'> = {
+  'save-resource': 'session',
+  'save-guide': 'session',
+  'update-report': 'session',
+  'check-link': 'session',
+  'bulk-review': 'session',
+  'restore-resource': 'session',
+  'restore-guide': 'session',
+  'upload-media': 'session',
+  'begin-totp-enroll': 'session',
+  'disable-totp': 'session',
+  'regenerate-recovery': 'session',
+  publish: 'admin',
+  unpublish: 'admin',
+  'delete-resource': 'admin',
+  'discontinue-resource': 'admin',
+  'reactivate-resource': 'admin',
+  'save-category': 'admin',
+  'delete-category': 'admin',
+  'create-user': 'admin',
+  'update-user': 'admin',
+  'save-settings': 'admin',
+  'save-branding': 'admin',
+  'save-sponsor': 'admin',
+  'delete-sponsor': 'admin',
+  'save-sponsor-settings': 'admin',
+  'exit-demo': 'admin',
+  'import-apply': 'admin',
+  'delete-media': 'admin',
+  'restore-media': 'admin',
+  'purge-media': 'admin',
+  'reset-totp': 'admin',
+  'restore-trash-resource': 'admin',
+  'purge-resource': 'admin',
+  'restore-trash-guide': 'admin',
+  'purge-guide': 'admin',
+  'publish-guide': 'admin',
+  'unpublish-guide': 'admin',
+  'delete-guide': 'admin',
+};
+
+/** 校验动作存在性与所需角色；未知动作按 400 处理，越权按 403 处理。 */
+function requireManagePermission(session: { user: { role: 'admin' | 'editor' } }, action: string): void {
+  const required = MANAGE_ACTION_ROLES[action];
+  if (!required) fail(400, '未知管理操作');
+  if (required === 'admin' && session.user.role !== 'admin') fail(403, '此操作仅限管理员');
 }
 
 export async function managePost(context: Context): Promise<Response> {
@@ -130,6 +192,9 @@ export async function managePost(context: Context): Promise<Response> {
     // It is never evaluated and is always HTML-escaped on the error page.
     if (action === 'save-resource') draft = text(form, 'resource');
     const session = requireCsrf(request, text(form, 'csrf'));
+    // 先判权限，再做动作专属参数校验：越权者不能靠构造非法参数拿到 400/409 之类的
+    // 差异化响应，也不能让未授权请求触发昂贵解析。
+    requireManagePermission(session, action);
     switch (action) {
       case 'save-resource': {
         let input: unknown;
@@ -435,10 +500,9 @@ export async function logoutPost(context: Context): Promise<Response> {
 export async function reportsPost(context: Context): Promise<Response> {
   try {
     requireOrigin(context.request);
-    // Per-client budget keeps one visitor from blocking everyone; the site-wide
-    // circuit breaker only trips under a distributed flood.
-    rateLimit('reports-client', identity(context), 5, 60 * 60 * 1000);
-    rateLimit('reports-site', 'site', 500, 60 * 60 * 1000);
+    // 可信身份用"每客户端 + 站点"双层；不可信身份没有可归属的客户端，
+    // 只能吃站点预算，绝不允许共享一个"访客"小额度（否则一人可关停全站）。
+    rateLimitClient(identity(context), REPORTS_CLIENT_BUDGET, REPORTS_SITE_BUDGET);
     const { form } = await readForm(context.request);
     // Return the same opaque receipt for honeypots without storing the submission.
     if (!text(form, 'website').trim()) createReport({ resourceId: text(form, 'resourceId'), kind: text(form, 'kind'), title: text(form, 'title'), body: text(form, 'body') });
@@ -454,17 +518,34 @@ export async function previewPost(context: Context): Promise<Response> {
     return new Response(JSON.stringify({ html }), { headers: { ...privateHeaders, 'Content-Type': 'application/json; charset=utf-8' } });
   } catch (error) { return errorResponse(context.request, error); }
 }
+/**
+ * 公共健康检查：只回答"服务是否可用"，不泄露迁移版本与运行时长（规范 §9.3）。
+ * 探针（Compose healthcheck、容器冒烟、外部 uptime）只依赖 status/db，不受影响。
+ */
 export function healthGet(): Response {
   const healthy = pingDatabase();
   return new Response(JSON.stringify({
     status: healthy ? 'ok' : 'error',
     db: healthy ? 'ok' : 'error',
-    schema: healthy ? schemaVersion() : null,
-    uptime: Math.round(process.uptime()),
   }), {
     status: healthy ? 200 : 503,
     headers: { ...privateHeaders, 'Content-Type': 'application/json' },
   });
+}
+
+/** 详细诊断：schema 与 uptime 属于运维内部信息，只对已登录的管理员开放。
+ * 这是路由处理函数，鉴权失败直接返回 JSON 错误体（不抛异常，避免变成 500）。 */
+export function healthDetailGet(context: Context): Response {
+  const session = getSession(context.request);
+  if (!session) return jsonResponse({ error: '请先登录后台' }, 401);
+  if (session.user.role !== 'admin') return jsonResponse({ error: '此操作仅限管理员' }, 403);
+  const healthy = pingDatabase();
+  return jsonResponse({
+    status: healthy ? 'ok' : 'error',
+    db: healthy ? 'ok' : 'error',
+    schema: healthy ? schemaVersion() : null,
+    uptime: Math.round(process.uptime()),
+  }, healthy ? 200 : 503);
 }
 const METRIC_NAMES = ['resource_view', 'guide_view', 'outbound_click', 'search_miss'] as const;
 export async function eventPost(context: Context): Promise<Response> {
@@ -492,8 +573,7 @@ export async function eventPost(context: Context): Promise<Response> {
     if (typeof name !== 'string' || !METRIC_NAMES.includes(name as typeof METRIC_NAMES[number])) fail(400, '未知事件');
     // 与资源 ID / 指南 slug 的 schema 共用同一上限，否则合法的长 ID 会被拒绝上报。
     if (typeof target !== 'string' || target.length > MAX_IDENTIFIER_LENGTH) fail(400, '事件目标无效');
-    rateLimit('event-client', identity(context), 600, 60 * 60 * 1000);
-    rateLimit('event-site', 'site', 20000, 60 * 60 * 1000);
+    rateLimitClient(identity(context), EVENT_CLIENT_BUDGET, EVENT_SITE_BUDGET);
     const metric = name as typeof METRIC_NAMES[number];
     // Targets must reference something that exists and is published. Unknown
     // targets are acknowledged without being stored: no probe oracle, and no

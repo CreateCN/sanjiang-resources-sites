@@ -22,6 +22,7 @@ const auth = await import('../src/server/auth.ts');
 const http = await import('../src/server/http.ts');
 const { hashToken, hashPassword, verifyPassword } = await import('../src/server/security.ts');
 const { withRequestCache } = await import('../src/server/request-cache.ts');
+const client = (address) => ({ kind: 'client', address });
 const PASSWORD = 'test-password-2026!';
 let admin, editor;
 beforeEach(() => {
@@ -47,7 +48,7 @@ function context(path, fields = {}, { token, origin = 'http://localhost', addres
   }), clientAddress: address };
 }
 function directLogin(user = admin) {
-  const outcome = auth.login(user.username, PASSWORD, `session-${user.id}-${Math.random().toString(36).slice(2)}`);
+  const outcome = auth.login(user.username, PASSWORD, client(`session-${user.id}-${Math.random().toString(36).slice(2)}`));
   // 这些用例都使用未启用双因素的账户且 TOTP_REQUIRED_FOR=off，因此必须是单步会话。
   if (outcome.kind !== 'session') throw new Error(`unexpected challenge: ${outcome.purpose}`);
   return outcome.token;
@@ -139,7 +140,7 @@ test('disabling, resetting passwords, and role changes revoke existing sessions'
   let logged = session(editor);
   store.updateUser(admin, editor.id, userVersion(editor.id), 'editor', false);
   assert.equal(auth.getSession(logged.request), undefined);
-  assert.throws(() => auth.login('editor', PASSWORD, 'disabled-login'), /密码错误/);
+  assert.throws(() => auth.login('editor', PASSWORD, client('disabled-login')), /密码错误/);
   store.updateUser(admin, editor.id, userVersion(editor.id), 'editor', true);
   logged = session(editor);
   store.updateUser(admin, editor.id, userVersion(editor.id), 'admin', true);
@@ -147,8 +148,8 @@ test('disabling, resetting passwords, and role changes revoke existing sessions'
   logged = session(editor);
   store.updateUser(admin, editor.id, userVersion(editor.id), 'editor', true, 'new-test-password!');
   assert.equal(auth.getSession(logged.request), undefined);
-  assert.throws(() => auth.login('editor', PASSWORD, 'reset-login'), /密码错误/);
-  assert.ok(auth.login('editor', 'new-test-password!', 'reset-login'));
+  assert.throws(() => auth.login('editor', PASSWORD, client('reset-login')), /密码错误/);
+  assert.ok(auth.login('editor', 'new-test-password!', client('reset-login')));
 });
 
 test('stale user forms cannot overwrite a newer deactivation or role change', async () => {
@@ -176,8 +177,8 @@ test('a sole administrator can reset their own password and old sessions are rev
   const logged = session(admin);
   store.updateUser(admin, admin.id, userVersion(admin.id), 'admin', true, 'replacement-password-2026!');
   assert.equal(auth.getSession(logged.request), undefined, '改密后旧会话立即失效');
-  assert.throws(() => auth.login('operator', PASSWORD, 'self-reset-old'), /密码错误/);
-  assert.ok(auth.login('operator', 'replacement-password-2026!', 'self-reset-new'));
+  assert.throws(() => auth.login('operator', PASSWORD, client('self-reset-old')), /密码错误/);
+  assert.ok(auth.login('operator', 'replacement-password-2026!', client('self-reset-new')));
 });
 
 test('cannot deactivate, demote, or delete the last active administrator', () => {
@@ -245,7 +246,7 @@ test('anonymous feedback is persisted, handled by maintainers, and receipt expos
   assert.equal(store.listReports()[0].resourceId, null);
 });
 
-test('feedback blocks cross-origin, short bodies, drafts, and honeypots; rate limits persist', async () => {
+test('feedback blocks cross-origin, short bodies, drafts, and honeypots; per-client budget persists', async () => {
   const fields = { kind: 'general', title: '反馈', body: '这是长度足够的反馈说明内容' };
   assert.equal((await http.reportsPost(context('/api/reports/', fields, { origin: 'https://other.invalid' }))).status, 403);
   assert.equal((await http.reportsPost(context('/api/reports/', { ...fields, body: '短' }, { address: 'short-ip' }))).status, 400);
@@ -253,9 +254,10 @@ test('feedback blocks cross-origin, short bodies, drafts, and honeypots; rate li
   assert.equal((await http.reportsPost(context('/api/reports/', { ...fields, resourceId: 'new-resource' }, { address: 'draft-ip' }))).status, 400);
   assert.equal((await http.reportsPost(context('/api/reports/', { ...fields, website: 'https://spam.invalid' }, { address: 'bot-ip' }))).status, 303);
   assert.equal(store.listReports().length, 0);
-  for (let index = 0; index < 5; index++) assert.equal((await http.reportsPost(context('/api/reports/', fields, { address: 'report-limit', headers: { 'X-Forwarded-For': `fake-${index}` } }))).status, 303);
+  // 可信客户端（无转发头的直连对端）按访客计满 5 次后拒绝。
+  for (let index = 0; index < 5; index++) assert.equal((await http.reportsPost(context('/api/reports/', fields, { address: 'report-limit' }))).status, 303);
   closeDatabase();
-  assert.equal((await http.reportsPost(context('/api/reports/', fields, { address: 'spoofed-client-address', headers: { 'X-Forwarded-For': 'different-spoofed-address' } }))).status, 429);
+  assert.equal((await http.reportsPost(context('/api/reports/', fields, { address: 'report-limit' }))).status, 429);
   assert.equal(store.listReports().length, 5);
 });
 
@@ -309,7 +311,7 @@ test('administrator CLI requires explicit credentials and uses only its selected
   assert.equal(store.listUsers().length, 2);
   closeDatabase(); process.env.DATABASE_PATH = path;
   assert.equal(store.listUsers()[0].username, 'cli-admin');
-  assert.ok(auth.login('cli-admin', PASSWORD, 'cli-login'));
+  assert.ok(auth.login('cli-admin', PASSWORD, client('cli-login')));
 });
 
 test('form input limits, JSON errors, configured Origin, and health expose minimal information', async () => {
@@ -323,8 +325,7 @@ test('form input limits, JSON errors, configured Origin, and health expose minim
   const healthBody = await health.json();
   assert.equal(healthBody.status, 'ok');
   assert.equal(healthBody.db, 'ok');
-  assert.match(String(healthBody.schema), /^0\d{2}-[a-z0-9-]+$/);
-  assert.equal(typeof healthBody.uptime, 'number');
+  assert.deepEqual(Object.keys(healthBody).sort(), ['db', 'status'], '公共健康接口不得暴露迁移版本或运行时信息');
   assert.equal(health.headers.get('cache-control'), 'no-store');
 });
 
@@ -446,6 +447,21 @@ test('health endpoint reports database availability', async () => {
   process.env.DATABASE_PATH = blocked;
   closeDatabase();
   assert.equal(http.healthGet().status, 503, '数据库不可用时健康检查必须失败');
+});
+
+test('详细健康诊断只对管理员开放，公共探针不暴露内部信息', async () => {
+  const anonymous = http.healthDetailGet({ request: new Request('http://localhost/api/health/detail/') });
+  assert.equal(anonymous.status, 401);
+  const editorSession = session(editor);
+  const asEditor = http.healthDetailGet({ request: editorSession.request });
+  assert.equal(asEditor.status, 403);
+  const adminSession = session(admin);
+  const asAdmin = http.healthDetailGet({ request: adminSession.request });
+  assert.equal(asAdmin.status, 200);
+  const body = await asAdmin.json();
+  assert.match(String(body.schema), /^0\d{2}-[a-z0-9-]+$/);
+  assert.equal(typeof body.uptime, 'number');
+  assert.equal(asAdmin.headers.get('cache-control'), 'no-store');
 });
 
 test('soft delete moves content to trash, restore keeps it a draft, purge removes history', () => {
@@ -854,29 +870,73 @@ test('metrics retention is handled by maintenance, preserving the exact 90-day b
   assert.ok(database().prepare("SELECT 1 FROM events WHERE target='zotero'").get());
 });
 
-test('client identity only trusts a single proxy-written address', async () => {
-  const { clientIdentity } = await import('../src/server/security.ts');
-  const request = (xff) => new Request('http://localhost/', { headers: xff === null ? {} : { 'X-Forwarded-For': xff } });
-  const original = process.env.TRUST_PROXY;
+const PROXY_SECRET = 'server-test-proxy-secret-2026';
+const proxyHeaders = (xff) => ({ 'X-Forwarded-For': xff, 'X-Sanjiang-Proxy-Secret': PROXY_SECRET });
+
+test('client identity trusts a forwarded address only behind a verified proxy', async () => {
+  const { clientIdentity, clientKey, resetTrustedProxyCache } = await import('../src/server/security.ts');
+  const request = (xff, secret = PROXY_SECRET) => new Request('http://localhost/', {
+    headers: { ...(xff === null ? {} : { 'X-Forwarded-For': xff }), ...(secret === null ? {} : { 'X-Sanjiang-Proxy-Secret': secret }) },
+  });
+  const original = { trust: process.env.TRUST_PROXY, secret: process.env.TRUST_PROXY_SECRET };
+  const restore = () => {
+    if (original.trust === undefined) delete process.env.TRUST_PROXY; else process.env.TRUST_PROXY = original.trust;
+    if (original.secret === undefined) delete process.env.TRUST_PROXY_SECRET; else process.env.TRUST_PROXY_SECRET = original.secret;
+    resetTrustedProxyCache();
+  };
   try {
+    // TRUST_PROXY 关闭：转发头一律不参与身份（带头时连 clientAddress 都不可信）。
     delete process.env.TRUST_PROXY;
-    assert.equal(clientIdentity(request('203.0.113.5'), '10.0.0.1'), 'unverified-peer', '未声明可信代理时忽略转发头');
-    assert.equal(clientIdentity(request(null), '10.0.0.1'), '10.0.0.1');
+    resetTrustedProxyCache();
+    assert.deepEqual(clientIdentity(request('203.0.113.5'), '10.0.0.1'), { kind: 'unverified', reason: 'forwarded-header-ignored' });
+    assert.deepEqual(clientIdentity(request(null), '198.51.100.9'), { kind: 'client', address: '198.51.100.9' }, '直连部署按对端地址分桶');
+    assert.deepEqual(clientIdentity(new Request('http://localhost/'), ''), { kind: 'unverified', reason: 'no-peer-address' });
+
+    // TRUST_PROXY=1 但没有共享凭据：fail closed，绝不因为"头里是单个合法 IP"就采信。
     process.env.TRUST_PROXY = '1';
-    assert.equal(clientIdentity(request('203.0.113.5'), '10.0.0.1'), '203.0.113.5');
-    assert.equal(clientIdentity(request('203.0.113.5, 10.0.0.1'), '10.0.0.1'), 'unverified-peer', '多跳链不是身份');
-    assert.equal(clientIdentity(request('not-an-ip'), '10.0.0.1'), 'unverified-peer');
-    assert.equal(clientIdentity(request(null), '10.0.0.1'), '10.0.0.1');
+    delete process.env.TRUST_PROXY_SECRET;
+    resetTrustedProxyCache();
+    assert.deepEqual(clientIdentity(request('203.0.113.5'), '10.0.0.1'), { kind: 'unverified', reason: 'proxy-secret-not-configured' });
+
+    // 凭据过短按未配置处理。
+    process.env.TRUST_PROXY_SECRET = 'too-short';
+    resetTrustedProxyCache();
+    assert.deepEqual(clientIdentity(request('203.0.113.5'), '10.0.0.1'), { kind: 'unverified', reason: 'proxy-secret-not-configured' });
+
+    // 配置了凭据但请求没带 / 带错：不可信（直连伪造 XFF 的路径就断在这里）。
+    process.env.TRUST_PROXY_SECRET = PROXY_SECRET;
+    resetTrustedProxyCache();
+    assert.deepEqual(clientIdentity(request('203.0.113.5', null), '10.0.0.1'), { kind: 'unverified', reason: 'proxy-secret-mismatch' });
+    assert.deepEqual(clientIdentity(request('203.0.113.5', 'wrong-secret-value-16'), '10.0.0.1'), { kind: 'unverified', reason: 'proxy-secret-mismatch' });
+    // 关键回归：伪造私网地址也不行——决定权在凭据，不在请求头里写的 IP。
+    assert.deepEqual(clientIdentity(request('10.0.0.1', null), '10.0.0.1'), { kind: 'unverified', reason: 'proxy-secret-mismatch' });
+
+    // 凭据正确：采信代理写的单值地址。
+    assert.deepEqual(clientIdentity(request('203.0.113.5'), '10.0.0.1'), { kind: 'client', address: '203.0.113.5' });
+    assert.deepEqual(clientIdentity(request('2001:db8::1'), '127.0.0.1'), { kind: 'client', address: '2001:db8::1' });
+    assert.deepEqual(clientIdentity(request('::ffff:198.51.100.7'), '127.0.0.1'), { kind: 'client', address: '::ffff:198.51.100.7' });
+
+    // 凭据正确但代理写坏了头：不可信，也不当成"某个访客"。
+    assert.deepEqual(clientIdentity(request('203.0.113.5, 10.0.0.1'), '10.0.0.1'), { kind: 'unverified', reason: 'forwarded-multi-hop' });
+    assert.deepEqual(clientIdentity(request('not-an-ip'), '10.0.0.1'), { kind: 'unverified', reason: 'forwarded-invalid-value' });
+    assert.deepEqual(clientIdentity(request('203.0.113.5:8080'), '10.0.0.1'), { kind: 'unverified', reason: 'forwarded-invalid-value' }, '带端口的地址不是访客身份');
+    assert.deepEqual(clientIdentity(request(''), '10.0.0.1'), { kind: 'unverified', reason: 'forwarded-missing' });
+    assert.deepEqual(clientIdentity(request(null), '10.0.0.1'), { kind: 'unverified', reason: 'forwarded-missing' });
+
+    // 挑战绑定键：不可信身份共用固定值，可信身份用地址。
+    assert.equal(clientKey({ kind: 'unverified', reason: 'proxy-secret-mismatch' }), 'unverified-peer');
+    assert.equal(clientKey({ kind: 'client', address: '203.0.113.5' }), '203.0.113.5');
   } finally {
-    if (original === undefined) delete process.env.TRUST_PROXY; else process.env.TRUST_PROXY = original;
+    restore();
   }
 });
 
 test('login throttling counts failures only and keeps clients separate', async () => {
-  const original = process.env.TRUST_PROXY;
+  const original = { trust: process.env.TRUST_PROXY, secret: process.env.TRUST_PROXY_SECRET };
   try {
     process.env.TRUST_PROXY = '1';
-    const signIn = (fields, xff) => http.loginPost(context('/api/login/', fields, { headers: { 'X-Forwarded-For': xff } }));
+    process.env.TRUST_PROXY_SECRET = PROXY_SECRET;
+    const signIn = (fields, xff, headers = proxyHeaders(xff)) => http.loginPost(context('/api/login/', fields, { headers }));
     for (let index = 0; index < 20; index++) {
       assert.equal((await signIn({ username: 'operator', password: PASSWORD }, '203.0.113.7')).status, 303, '成功登录不得消耗额度');
     }
@@ -889,8 +949,11 @@ test('login throttling counts failures only and keeps clients separate', async (
     assert.ok(retry > 0 && retry <= 900, `Retry-After 应反映真实窗口，实际 ${retry}`);
     assert.equal((await signIn({ username: 'missing-other', password: 'wrong' }, '203.0.113.9')).status, 401, '别的客户端/账号不受影响');
     assert.equal((await signIn({ username: 'missing-chain', password: 'wrong' }, '1.2.3.4, 203.0.113.8')).status, 401, '多值转发头不作为身份');
+    // 没有代理凭据的请求拿不到访客身份，只能吃站点预算。
+    assert.equal((await signIn({ username: 'missing-nosecret', password: 'wrong' }, '203.0.113.10', { 'X-Forwarded-For': '203.0.113.10' })).status, 401);
   } finally {
-    if (original === undefined) delete process.env.TRUST_PROXY; else process.env.TRUST_PROXY = original;
+    if (original.trust === undefined) delete process.env.TRUST_PROXY; else process.env.TRUST_PROXY = original.trust;
+    if (original.secret === undefined) delete process.env.TRUST_PROXY_SECRET; else process.env.TRUST_PROXY_SECRET = original.secret;
   }
 });
 
@@ -1544,4 +1607,189 @@ test('resolved feedback can publish a public announcement without leaking the re
   const current = store.listReports()[0];
   store.updateReport(admin, current.id, 'processing', '内部备注', null, current.version, null);
   assert.equal(store.listAnnouncements().length, 0, '取消勾选即撤下公告');
+});
+
+/* ------------------------------------------------ 身份分层与站点级熔断（SJ-01/02） */
+
+async function withProxyEnv(values, run) {
+  const { resetTrustedProxyCache } = await import('../src/server/security.ts');
+  const saved = { trust: process.env.TRUST_PROXY, secret: process.env.TRUST_PROXY_SECRET };
+  for (const [key, value] of Object.entries(values)) {
+    if (value === undefined) delete process.env[key]; else process.env[key] = value;
+  }
+  resetTrustedProxyCache();
+  try { return await run(); } finally {
+    if (saved.trust === undefined) delete process.env.TRUST_PROXY; else process.env.TRUST_PROXY = saved.trust;
+    if (saved.secret === undefined) delete process.env.TRUST_PROXY_SECRET; else process.env.TRUST_PROXY_SECRET = saved.secret;
+    resetTrustedProxyCache();
+  }
+}
+
+const MULTI_HOP = '1.2.3.4, 5.6.7.8';
+const PROXIED = { TRUST_PROXY: '1', TRUST_PROXY_SECRET: PROXY_SECRET };
+
+test('不可信身份不会占用访客额度，也无法用 30 次失败锁死登录（SJ-02 回归）', async () => {
+  const security = await import('../src/server/security.ts');
+  await withProxyEnv(PROXIED, async () => {
+    const signIn = (fields, xff = MULTI_HOP) => http.loginPost(context('/api/login/', fields, { headers: proxyHeaders(xff) }));
+    for (let index = 0; index < 30; index += 1) {
+      assert.equal((await signIn({ username: `ghost-${index}`, password: 'wrong-password-2026' })).status, 401);
+    }
+    // 修复前：这条请求会撞上"所有人共享的 30 次访客桶"，返回 429。
+    assert.equal((await signIn({ username: 'operator', password: PASSWORD })).status, 303, '不可信身份不得把正确口令的登录挡掉');
+    assert.deepEqual(
+      database().prepare("SELECT key FROM rate_limits WHERE key LIKE 'login-client:%'").all(),
+      [],
+      '不可信身份不得创建访客桶',
+    );
+    const site = database().prepare("SELECT count FROM rate_limits WHERE key LIKE 'login-site:%'").all();
+    assert.equal(site.length, 1, '失败次数记在站点级熔断桶');
+    assert.equal(Number(site[0].count), 30);
+    assert.equal(security.checkLimit({ scope: 'login-site', identity: 'site', maximum: 500, windowMs: 300_000 }).allowed, true, '30 次远未触及站点阈值');
+  });
+});
+
+test('站点级熔断达到阈值后拒绝不可信流量，且轮换转发头无法绕过（SJ-01）', async () => {
+  const security = await import('../src/server/security.ts');
+  const fields = { kind: '一般建议', title: '反馈', body: '这是长度足够的反馈说明内容' };
+  await withProxyEnv(PROXIED, async () => {
+    // 直连（对端不在可信网段）时轮换单值 XFF：身份不随头变化，也不会产生访客桶。
+    const rotated = [];
+    for (let index = 0; index < 6; index += 1) {
+      rotated.push((await http.reportsPost(context('/api/reports/', fields, { address: '203.0.113.9', headers: { 'X-Forwarded-For': `203.0.113.${index + 1}` } }))).status);
+    }
+    assert.deepEqual(rotated, [303, 303, 303, 303, 303, 303], '没有代理凭据时轮换转发头换不到新额度，只吃站点预算');
+    assert.deepEqual(database().prepare("SELECT key FROM rate_limits WHERE key LIKE 'reports-client:%'").all(), [], '伪造身份不得创建访客桶');
+
+    // 站点桶打满后，无论怎么换头都必须 429。
+    for (let index = 6; index < 500; index += 1) {
+      security.consumeLimit({ scope: 'reports-site', identity: 'site', maximum: 500, windowMs: 3_600_000 });
+    }
+    const blocked = await http.reportsPost(context('/api/reports/', fields, { address: '203.0.113.9', headers: { 'X-Forwarded-For': '198.51.100.99' } }));
+    assert.equal(blocked.status, 429);
+    const retry = Number(blocked.headers.get('retry-after'));
+    assert.ok(retry > 3000 && retry <= 3600, `Retry-After 应反映站点窗口，实际 ${retry}`);
+    const viaTrustedProxy = await http.reportsPost(context('/api/reports/', fields, { address: '127.0.0.1', headers: { 'X-Forwarded-For': '203.0.113.77' } }));
+    assert.equal(viaTrustedProxy.status, 429, '站点熔断对可信客户端同样生效（这是站点级保护的本意）');
+  });
+});
+
+test('可信代理写入的单值地址仍然拥有独立访客额度', async () => {
+  const fields = { kind: '一般建议', title: '反馈', body: '这是长度足够的反馈说明内容' };
+  await withProxyEnv(PROXIED, async () => {
+    for (let index = 0; index < 5; index += 1) {
+      assert.equal((await http.reportsPost(context('/api/reports/', fields, { address: '127.0.0.1', headers: proxyHeaders('203.0.113.50') }))).status, 303);
+    }
+    const blocked = await http.reportsPost(context('/api/reports/', fields, { address: '127.0.0.1', headers: proxyHeaders('203.0.113.50') }));
+    assert.equal(blocked.status, 429);
+    assert.ok(Number(blocked.headers.get('retry-after')) > 3000);
+    assert.equal((await http.reportsPost(context('/api/reports/', fields, { address: '127.0.0.1', headers: proxyHeaders('203.0.113.51') }))).status, 303, '另一个真实访客仍有自己的额度');
+    assert.equal(database().prepare("SELECT COUNT(*) AS total FROM rate_limits WHERE key LIKE 'reports-client:%'").get().total, 2, '只有可信身份建访客桶');
+  });
+});
+
+test('直接访问不能靠伪造转发头获得可信身份（SJ-01 身份判定）', async () => {
+  const { clientIdentity, clientKey } = await import('../src/server/security.ts');
+  await withProxyEnv(PROXIED, async () => {
+    const spoof = (value) => clientIdentity(new Request('http://localhost/', { headers: { 'X-Forwarded-For': value } }), '203.0.113.200');
+    const first = spoof('198.51.100.1');
+    const second = spoof('198.51.100.2');
+    const third = spoof('10.0.0.1');
+    assert.deepEqual(first, second, '轮换转发头不能改变身份');
+    assert.deepEqual(first, third, '伪造私网地址同样不改变身份（凭据才是判据）');
+    assert.equal(first.kind, 'unverified');
+    assert.equal(first.reason, 'proxy-secret-mismatch');
+    assert.equal(clientKey(first), clientKey(second));
+  });
+});
+
+test('登录站点熔断达到阈值后拒绝，并保持账号级额度语义', async () => {
+  const security = await import('../src/server/security.ts');
+  await withProxyEnv(PROXIED, async () => {
+    for (let index = 0; index < 500; index += 1) {
+      security.consumeLimit({ scope: 'login-site', identity: 'site', maximum: 500, windowMs: 300_000 });
+    }
+    const blocked = await http.loginPost(context('/api/login/', { username: 'operator', password: PASSWORD }, { headers: proxyHeaders('203.0.113.60') }));
+    assert.equal(blocked.status, 429, '全站失败熔断命中时任何登录都应被拒绝');
+    const retry = Number(blocked.headers.get('retry-after'));
+    assert.ok(retry > 0 && retry <= 300, `登录站点窗口为 5 分钟，实际 Retry-After ${retry}`);
+    assert.deepEqual(database().prepare("SELECT key FROM rate_limits WHERE key LIKE 'login-client:%'").all(), [], '熔断命中不应额外记访客桶');
+  });
+});
+
+/* --------------------------------------------------- 动作级权限前置（SJ-07） */
+
+test('每个管理动作先判权限再做参数校验', async () => {
+  const { MANAGE_ACTION_ROLES } = await import('../src/server/http.ts');
+  const adminSession = session(admin);
+  const editorSession = session(editor);
+  for (const [action, role] of Object.entries(MANAGE_ACTION_ROLES)) {
+    const editorResult = await manage(editorSession, action, {});
+    const adminResult = await manage(adminSession, action, {});
+    // 动作必须在 switch 里也有分支：映射里有、switch 里没有（或反之）都会落成
+    // "未知管理操作"，这是新增动作漏登记时唯一会静默失效的地方，必须断言。
+    const adminBody = await adminResult.text();
+    assert.doesNotMatch(adminBody, /未知管理操作/, `${action} 必须有对应的 switch 分支（映射与分支不能漂移）`);
+    if (role === 'admin') {
+      // 关键：参数非法时也必须先得到 403，而不是 400/404/409 之类的差异化响应。
+      assert.equal(editorResult.status, 403, `${action} 是管理员动作，编辑者携带非法参数也必须 403（实际 ${editorResult.status}）`);
+      assert.notEqual(adminResult.status, 403, `${action} 对管理员不应 403（实际 ${adminResult.status}）`);
+    } else {
+      // 允许编辑者的动作：编辑者与管理员看到同一个"动作自身"的结果，
+      // 说明没有被前置权限额外拦住（403 可能来自"口令不正确"等业务证明校验）。
+      assert.equal(editorResult.status, adminResult.status, `${action} 对编辑者与管理员应给出同一动作级结果（${editorResult.status} vs ${adminResult.status}）`);
+    }
+    assert.notEqual(adminResult.status, 401, `${action} 对管理员不应 401（实际 ${adminResult.status}）`);
+  }
+  assert.equal((await manage(adminSession, 'no-such-action', {})).status, 400, '未知动作对管理员也是 400');
+  assert.equal((await manage(editorSession, 'no-such-action', {})).status, 400, '未知动作先被识别为未知，而不是越权');
+});
+
+/* ------------------------------------- 恢复码失败预算的 HTTP 入口（终审 P1 回归） */
+
+test('不可信身份走 HTTP 提交错误恢复码：401→429，不是 500，Retry-After 在窗口内（P1）', async () => {
+  const auth = await import('../src/server/auth.ts');
+  const { clientIdentity } = await import('../src/server/security.ts');
+  const totp = await import('../src/server/totp.ts');
+  const setup = process.env.TOTP_ENC_KEY;
+  process.env.TOTP_ENC_KEY = Buffer.alloc(32, 11).toString('base64url');
+  try {
+    // 先确认这条请求确实会被判定为不可信身份（否则"不建客户端桶"的断言没有意义）。
+    await withProxyEnv(PROXIED, async () => {
+      assert.deepEqual(clientIdentity(new Request('http://localhost/'), '203.0.113.30'), { kind: 'unverified', reason: 'proxy-secret-mismatch' });
+
+      // 用一个可信身份完成注册，拿到 10 个恢复码。
+      const enrollClient = { kind: 'client', address: 'enroll-http' };
+      const enroll = auth.issueEnrollChallenge(editor.id, enrollClient);
+      const view = await auth.enrollChallengeView(enroll, enrollClient);
+      assert.ok(view, '注册挑战必须可渲染');
+      const enrolled = auth.confirmEnrollment(enroll, totp.hotp(totp.base32Decode(view.secret), totp.currentStep()), enrollClient);
+      assert.equal(enrolled.recoveryCodes.length, 10);
+
+      // 登录请求不带代理凭据 → 不可信身份；挑战按不可信身份签发。
+      const loginResponse = await http.loginPost(context('/api/login/', { username: 'editor', password: PASSWORD }, { address: '203.0.113.30' }));
+      assert.equal(loginResponse.status, 303);
+      assert.equal(loginResponse.headers.get('location'), '/admin/login/totp/');
+      const challengeCookie = loginResponse.headers.getSetCookie().find((cookie) => cookie.startsWith('sanjiang_mfa='));
+      assert.ok(challengeCookie, '必须拿到第二步挑战 Cookie');
+      const mfa = challengeCookie.split(';')[0];
+
+      const bogus = 'AAAA-BBBB';
+      const statuses = [];
+      for (let index = 0; index < 4; index += 1) {
+        // 同一身份提交（挑战与客户端绑定，换身份会 401 —— 那是另一条正常的安全行为）。
+        const response = await http.totpPost(context('/api/login/totp/', { code: bogus }, { address: '203.0.113.30', headers: { Cookie: mfa } }));
+        statuses.push({ status: response.status, retryAfter: response.headers.get('retry-after') });
+      }
+      assert.deepEqual(statuses.map((entry) => entry.status), [401, 401, 401, 429], '错误恢复码必须先 401 再 429，绝不能 500');
+      const retry = Number(statuses[3].retryAfter);
+      assert.ok(Number.isFinite(retry) && retry > 0 && retry <= 3600, `Retry-After 必须落在恢复码窗口内，实际 ${statuses[3].retryAfter}`);
+      const attempts = Number(database().prepare('SELECT attempts FROM login_challenges ORDER BY created_at DESC LIMIT 1').get()?.attempts ?? 0);
+      assert.equal(attempts, 3, '挑战尝试次数必须随失败推进');
+      assert.equal(Number(database().prepare("SELECT count FROM rate_limits WHERE key LIKE 'totp-recovery-user:%'").get()?.count ?? 0), 3);
+      assert.deepEqual(database().prepare("SELECT key FROM rate_limits WHERE key LIKE 'totp-client:%'").all(), [], '不可信身份不建客户端桶');
+    });
+  } finally {
+    if (setup === undefined) delete process.env.TOTP_ENC_KEY; else process.env.TOTP_ENC_KEY = setup;
+  }
 });

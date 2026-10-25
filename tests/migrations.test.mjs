@@ -86,7 +86,11 @@ test('011 只补缺失实例配置：新库不写品牌，旧库不覆盖已有�
       db.prepare('INSERT INTO schema_migrations (id,applied_at) VALUES (?,?)').run(migration.id, new Date().toISOString());
       db.exec('COMMIT');
     }
-    assert.deepEqual(applyMigrations(db), ['011-instance-configuration', '012-sponsors']);
+    // 断言"从 011 起的全部未执行迁移"，这样新增迁移时不需要改这里。
+    const pending = migrations
+      .slice(migrations.findIndex((entry) => entry.id === '011-instance-configuration'))
+      .map((entry) => entry.id);
+    assert.deepEqual(applyMigrations(db), pending);
     assert.equal(db.prepare("SELECT 1 FROM settings WHERE key='branding'").get(), undefined, '新库的品牌由初始化流程写入，迁移不能抢先灌默认值');
     assert.equal(db.prepare("SELECT 1 FROM metadata WHERE key='auth_issuer'").get(), undefined);
 
@@ -107,4 +111,65 @@ test('011 只补缺失实例配置：新库不写品牌，旧库不覆盖已有�
     assert.equal(JSON.parse(String(db.prepare("SELECT value FROM settings WHERE key='branding'").get().value)).name, '三江资源');
     assert.equal(String(db.prepare("SELECT value FROM metadata WHERE key='auth_issuer'").get().value), '三江资源');
   } finally { db.close(); }
+});
+
+test('013 只给 rate_limits.reset_at 加索引，不改动任何限流行或语义', async () => {
+  const { applyMigrations } = await import('../src/server/migrations.ts');
+  const db = new DatabaseSync(':memory:');
+  try {
+    applyMigrations(db);
+    const index = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='rate_limits_reset_at'").get();
+    assert.ok(index, '过期行清理依赖 reset_at 索引');
+    // 迁移不动数据：插入一行后再跑一次迁移，内容与计数保持不变。
+    db.prepare('INSERT INTO rate_limits (key,count,reset_at) VALUES (?,?,?)').run('probe:abc', 3, Date.now() + 60_000);
+    assert.deepEqual(applyMigrations(db), [], '已应用的迁移不会重复执行');
+    assert.equal(Number(db.prepare('SELECT count FROM rate_limits WHERE key=?').get('probe:abc').count), 3);
+  } finally { db.close(); }
+});
+
+test('013 从 012 升级：索引出现、旧数据不变、结构与新库一致', async () => {
+  const { applyMigrations } = await import('../src/server/migrations.ts');
+  const upTo012 = migrations.slice(0, migrations.findIndex((entry) => entry.id === '013-rate-limits-reset-at'));
+  assert.equal(upTo012.length > 0, true, '必须能在 012 的基础上升级');
+
+  const upgraded = new DatabaseSync(':memory:');
+  const fresh = new DatabaseSync(':memory:');
+  try {
+    // 旧库：手工跑到 012，并留下限流行。
+    upgraded.exec('CREATE TABLE schema_migrations (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL)');
+    for (const migration of upTo012) {
+      upgraded.exec('BEGIN IMMEDIATE');
+      migration.up(upgraded);
+      upgraded.prepare('INSERT INTO schema_migrations (id,applied_at) VALUES (?,?)').run(migration.id, new Date().toISOString());
+      upgraded.exec('COMMIT');
+    }
+    upgraded.prepare('INSERT INTO rate_limits (key,count,reset_at) VALUES (?,?,?)').run('login-user:legacy', 7, 1_700_000_000_000);
+    assert.deepEqual(applyMigrations(upgraded), ['013-rate-limits-reset-at'], '只补 013');
+    // 数据原样保留。
+    const row = upgraded.prepare('SELECT count,reset_at FROM rate_limits WHERE key=?').get('login-user:legacy');
+    assert.equal(Number(row.count), 7);
+    assert.equal(Number(row.reset_at), 1_700_000_000_000);
+    // 重复执行不重复建索引、不报错。
+    assert.deepEqual(applyMigrations(upgraded), []);
+
+    // 新库：一次跑完。
+    applyMigrations(fresh);
+
+    const indexSql = (db) => db.prepare("SELECT name,sql FROM sqlite_master WHERE type='index' AND tbl_name='rate_limits' ORDER BY name").all()
+      .map((entry) => ({ name: entry.name, sql: entry.sql }));
+    assert.deepEqual(indexSql(upgraded), indexSql(fresh), '升级库与新库的限流索引结构必须一致');
+    const names = indexSql(fresh).map((entry) => entry.name);
+    assert.ok(names.includes('rate_limits_reset_at'), 'reset_at 索引必须存在');
+
+    // 索引确实被查询计划使用（清理过期行走索引而不是全表扫描）。
+    const plan = upgraded.prepare('EXPLAIN QUERY PLAN DELETE FROM rate_limits WHERE reset_at <= ?').all(1_800_000_000_000)
+      .map((entry) => String(entry.detail)).join(' ');
+    assert.match(plan, /rate_limits_reset_at/, `过期行清理应命中索引，实际计划：${plan}`);
+
+    const columns = upgraded.prepare('PRAGMA table_info(rate_limits)').all().map((entry) => entry.name);
+    assert.deepEqual(columns, ['key', 'count', 'reset_at'], '迁移不得改变列结构');
+  } finally {
+    upgraded.close();
+    fresh.close();
+  }
 });

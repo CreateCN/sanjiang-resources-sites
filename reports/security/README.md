@@ -10,7 +10,10 @@
 | [2026-10-21-isolated-partial/](2026-10-21-isolated-partial/README.md) | 上一轮隔离测试中止前的残留证据（非完整报告） | 仅存档 |
 | [2026-10-21-attacker/REPORT.md](2026-10-21-attacker/REPORT.md) | 攻击者视角黑盒审查（部署、限流、授权、注入、SSRF、HTTP 边界） | 结论有效；限流窗口已按源码更正 |
 | [2026-10-21-attacker/BF-REPORT.md](2026-10-21-attacker/BF-REPORT.md) | 暴力式攻击测试（配额绕过、弱口令喷洒、指标打空、压力画像） | 结论有效 |
-| [2026-10-21-attacker/ROOT-CAUSE-AND-FIX.md](2026-10-21-attacker/ROOT-CAUSE-AND-FIX.md) | 源码级根因 + 修复方案 + §13 实施与验证记录 | **当前权威**：问题与修复状态以此为准 |
+| [2026-10-21-attacker/ROOT-CAUSE-AND-FIX.md](2026-10-21-attacker/ROOT-CAUSE-AND-FIX.md) | 源码级根因 + 修复方案 + §13 实施与验证记录 | 截至 2026-10-21 的权威记录；此后状态见 2026-10-25-fix |
+| [2026-10-25-fix/README.md](2026-10-25-fix/README.md) | 本地审查（SJ-01…SJ-12）的修复记录、前后对照与保留项分析 | 修复过程记录；SJ-01 方案已在终审中修正（见终审 N-01）|
+| [2026-10-25-final-review/README.md](2026-10-25-final-review/README.md) | 终审：独立代码复核、凭据模型修正（N-01）、发布顺序检查与验收结论 | **当前权威**：发布验收以本文为准 |
+| [2026-10-25-final-review/REMEDIATION-PLAN.md](2026-10-25-final-review/REMEDIATION-PLAN.md) / [REMEDIATION-RECORD.md](2026-10-25-final-review/REMEDIATION-RECORD.md) | 终审后 P1（恢复码失败不计数/500）与两项 P2（strict 自检、部署文档）的修复方案与复验记录 | 已实施；发布条件仍见终审 §11 |
 | [TEARDOWN-2026-10-21.md](TEARDOWN-2026-10-21.md) | 早期测试环境撤回记录 | 仅存档 |
 
 ## 阅读顺序

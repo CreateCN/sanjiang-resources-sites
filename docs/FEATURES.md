@@ -87,7 +87,7 @@
 | ✅ | 站点备份 / 恢复（P0） | `site:backup`：先要求无未结算媒体操作与完整对象，再生成 DB 快照 + 全部对象 + 哈希清单，最后写 `COMPLETE`；`site:restore`：暂存校验、迁移 + 认证净化、按日志切换并可回滚。回退使用 `VACUUM INTO` 独立一致性快照（包含原库匹配的已提交 WAL），核对原业务、媒体与完整性后才记录 `rollback-verified`；缺文件/哈希不符/未知迁移拒绝 | `scripts/backup-site.mjs`、`scripts/restore-site.mjs`、`src/server/restore-prepare.ts` |
 | ✅ | 媒体离线对账 | 默认 dry-run；未提交对象隔离、占位需显式 `--clear-guard`、哈希不符保持上传暂停 | `scripts/reconcile-media.mjs` |
 | ✅ | 恢复流程 | 离线恢复工具：校验备份完整性/必要表/schema → 保全当前主库与 sidecar → 删除旧 WAL/SHM → 原子替换 → 复查完整性与计数；失败回滚并保留诊断；文档明确 app、maintenance、定时任务和手动脚本全部离线 | `scripts/restore-db.mjs`、`README.md` |
-| ✅ | 健康检查 | `/api/health/` 查 `SELECT 1`，返回状态、DB、迁移版本、运行时长 | `src/server/http.ts` |
+| ✅ | 健康检查 | `/api/health/` 查 `SELECT 1`，只返回 `status` / `db`；迁移版本与运行时长在 `/api/health/detail/`，仅管理员会话可读 | `src/server/http.ts` |
 | ✅ | 结构化日志 | 每请求一行 JSON（request id、方法、路径、状态、耗时），不记查询串/IP/UA | `src/server/log.ts` |
 | ✅ | CI | Node 24：check → test → build → 生产服务器冒烟 | `.github/workflows/ci.yml` |
 | ✅ | 测试覆盖 | `npm test` 268 项（内容/后端/Markdown/链接检查/备份/恢复/WAL 回滚/迁移）、后台端到端 36 项、公开浏览器 10 项；CI 另跑实例隔离、容器冒烟与默认/兼容素材验收，浏览器测试依赖 Chromium | `tests/` |
@@ -104,7 +104,8 @@
 
 - scrypt 密码哈希；会话令牌只存哈希、8 小时有效；`HttpOnly` + `SameSite=Strict`，HTTPS 下加 `Secure`。
 - 写操作逐次校验角色、CSRF 与会话令牌、同源 Origin。
-- 限流按访客分层（需 `TRUST_PROXY=1` 且代理覆盖写入单值 `X-Forwarded-For`）：登录失败 10 次/账号/15 分钟、30 次/客户端/15 分钟；反馈 5 次/客户端/小时；指标 600 次/客户端/小时。成功登录不消耗额度，`Retry-After` 按真实剩余时间返回。
+- 限流按访客分层（需 `TRUST_PROXY=1` **且** `TRUST_PROXY_SECRET` 与反代的 `X-Sanjiang-Proxy-Secret` 一致，并由代理覆盖写入单值 `X-Forwarded-For`）：登录失败 10 次/账号/15 分钟、30 次/客户端/15 分钟；反馈 5 次/客户端/小时；指标 600 次/客户端/小时。成功登录不消耗额度，`Retry-After` 按真实剩余时间返回。
+- 无法验证来源的请求（凭据缺失/不匹配、转发头缺失/多值/非法、`TRUST_PROXY=0` 时带头）按**不可信身份**处理：只吃站点级预算（登录 500 次/5 分钟、反馈 500 次/小时、指标 20000 次/小时），不会创建按访客的桶，也不会因此把其他访客挡在外面。
 - 指标只接受已发布资源/指南作为目标，每事件每日最多 200 个不同目标；未知目标静默丢弃。
 - 链接检查：协议 http/https、端口 80/443、解析结果判私网、连接固定到已校验 IP、逐跳重校验、10 秒超时、每操作者 30 次/10 分钟。
 - 响应头：CSP（Report-Only）、HSTS（HTTPS）、Permissions-Policy、COOP、`nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy`。详见 [安全设计与实现规范](SECURITY-SPEC.md)。

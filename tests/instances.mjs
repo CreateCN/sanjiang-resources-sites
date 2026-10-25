@@ -5,6 +5,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { withChildDiagnostics } from './fixtures/child-report.mjs';
 
 // 两个实例使用同一套代码、不同的数据库与媒体目录；不需要浏览器。
 const repo = fileURLToPath(new URL('..', import.meta.url));
@@ -22,7 +23,7 @@ const PASSWORD_B = 'instance-b-password-2026!';
 const USERNAME = 'shared-admin';
 
 function run(script, args, env) {
-  const result = spawnSync(process.execPath, [script, ...args], { cwd: repo, env: { ...process.env, ...env }, encoding: 'utf8', timeout: 60000 });
+  const result = withChildDiagnostics(spawnSync(process.execPath, [script, ...args], { cwd: repo, env: { ...process.env, ...env }, encoding: 'utf8', timeout: 60000 }));
   assert.equal(result.status, 0, result.stderr || result.stdout);
   return result;
 }

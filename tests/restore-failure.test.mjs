@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import sharp from 'sharp';
 import { seedFixture } from './fixtures/content.ts';
+import { withChildDiagnostics } from './fixtures/child-report.mjs';
 
 const repo = fileURLToPath(new URL('..', import.meta.url));
 const root = mkdtempSync(join(tmpdir(), 'sj-restore-failure-'));
@@ -30,9 +31,9 @@ const { businessSummary, compareBusinessSummary } = await import('../src/server/
 const PASSWORD = 'restore-failure-password-2026!';
 function sha(path) { return createHash('sha256').update(readFileSync(path)).digest('hex'); }
 function run(script, args, env = {}) {
-  return spawnSync(process.execPath, [script, ...args], {
+  return withChildDiagnostics(spawnSync(process.execPath, [script, ...args], {
     cwd: repo, env: { ...process.env, ...env }, encoding: 'utf8', timeout: 60000,
-  });
+  }));
 }
 function objectIds(mediaDir) {
   try { return readdirSync(join(mediaDir, 'objects')).sort(); } catch { return []; }
@@ -392,4 +393,69 @@ test('正常恢复：业务计数与摘要核对通过，设置与品牌完整',
   assert.equal(outcome.business.unchanged, true);
   assert.match(String(outcome.business.digest), /^[a-f0-9]{64}$/);
   assert.equal(outcome.phases.some((phase) => phase.phase === 'verify'), true);
+});
+
+/** 起一个"仍在用目标库"的进程：它持有数据库文件描述符，等同忘了停的 app。 */
+function holdDatabase(path) {
+  const code = `
+    import { DatabaseSync } from 'node:sqlite';
+    const db = new DatabaseSync(process.env.HOLD_DB);
+    db.exec('PRAGMA journal_mode=WAL');
+    db.prepare('SELECT 1').get();
+    process.stdout.write('holding\\n');
+    setTimeout(() => { db.close(); }, 20000);
+  `;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', code], {
+    env: { ...process.env, HOLD_DB: path }, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  return new Promise((resolve, reject) => {
+    child.stdout.once('data', () => resolve(child));
+    child.once('error', reject);
+    child.once('exit', (code2) => reject(new Error(`holder exited early: ${code2}`)));
+  });
+}
+
+test('数据库仍被其他进程使用时，站点恢复拒绝执行且不改动目标（SJ-03）', async () => {
+  const site = await makeSite('offline-guard-');
+  const dbBefore = sha(site.dbPath);
+  const objectsBefore = objectIds(site.mediaDir);
+  const holder = await holdDatabase(site.dbPath);
+  try {
+    const refused = restore(site);
+    assert.notEqual(refused.status, 0, '检测到使用方时必须拒绝');
+    assert.match(`${refused.stderr}${refused.stdout}`, /正在使用数据库|拒绝恢复/);
+    assert.match(`${refused.stderr}${refused.stdout}`, /offlineCheck|PID/, '要给出可操作的原因');
+    assert.equal(sha(site.dbPath), dbBefore, '拒绝时目标数据库必须字节不变');
+    assert.deepEqual(objectIds(site.mediaDir), objectsBefore, '拒绝时媒体目录必须不变');
+    // 站点恢复与数据库恢复必须给出同样的结论，避免两条命令互相矛盾。
+    const dbOnly = run('scripts/restore-db.mjs', ['--backup', site.batch + '/site.sqlite', '--database', site.dbPath, '--yes']);
+    assert.notEqual(dbOnly.status, 0, 'restore-db 在同样条件下也应拒绝');
+    assert.match(`${dbOnly.stderr}${dbOnly.stdout}`, /正在使用数据库|拒绝恢复/);
+  } finally {
+    holder.kill('SIGKILL');
+    await new Promise((resolve) => holder.once('exit', resolve));
+  }
+  // 使用方退出后，同一个批次必须能正常恢复。
+  const applied = restore(site);
+  assert.equal(applied.status, 0, applied.stderr);
+  assert.equal(JSON.parse(applied.stdout).status, 'restored');
+});
+
+test('目标目录不存在时恢复会安全创建它，而不是以内部 ENOENT 崩溃（SJ-05）', async () => {
+  const site = await makeSite('missing-target-');
+  const fresh = mkdtempSync(join(root, 'brand-new-target-'));
+  const target = join(fresh, 'nested', 'data');
+  const result = run('scripts/restore-site.mjs', [
+    '--backup', site.batch, '--database', join(target, 'site.sqlite'), '--media', join(target, 'media'), '--yes',
+  ], { NODE_ENV: 'test' });
+  assert.equal(result.status, 0, result.stderr);
+  const outcome = JSON.parse(result.stdout);
+  assert.equal(outcome.status, 'restored');
+  assert.equal(existsSync(join(target, 'site.sqlite')), true);
+  assert.equal(existsSync(join(target, 'media', 'objects')), true);
+  assert.equal(databaseFacts(join(target, 'site.sqlite')).integrity, 'ok');
+  // 诊断日志写在目标目录旁边，而不是指向内部临时文件。
+  const log = logFile(target);
+  assert.ok(log, '恢复日志应落在目标目录');
+  assert.equal(JSON.parse(readFileSync(log, 'utf8')).status, 'restored');
 });

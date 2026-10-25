@@ -35,6 +35,7 @@
 | `BACKUP_DIR` | `./backups` | 站点备份目录；不要与数据卷放在同一块盘 |
 | `BACKUP_KEEP` | `7` | 保留完整批次数量 |
 | `TRUST_PROXY` | `0`（compose 为 `1`） | 仅在应用只经自有代理访问时开启 |
+| `TRUST_PROXY_SECRET` | 无（`TRUST_PROXY=1` 时为必需） | 代理共享凭据（≥16 字符）；代理写入 `X-Sanjiang-Proxy-Secret`，应用据此采信它写的单值 `X-Forwarded-For`。缺失时 fail closed |
 | `TOTP_ENC_KEY` | 无 | 32 字节 base64url；丢失后只能离线重置双因素 |
 | `TOTP_REQUIRED_FOR` | `off` | `off` / `admin` / `admin,editor` |
 | `MEDIA_QUOTA_BYTES` | 512 MiB | 媒体总预算 |

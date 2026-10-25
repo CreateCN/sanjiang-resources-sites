@@ -9,6 +9,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { seedFixture } from './fixtures/content.ts';
+import { withChildDiagnostics } from './fixtures/child-report.mjs';
 
 const projectRoot = fileURLToPath(new URL('..', import.meta.url));
 const root = mkdtempSync(join(tmpdir(), 'sj-site-backup-'));
@@ -30,14 +31,15 @@ const { database, closeDatabase } = await import('../src/server/db.ts');
 const PASSWORD = 'site-backup-password-2026!';
 
 function run(script, args = [], extraEnv = {}) {
-  return spawnSync(process.execPath, [script, ...args], {
+  return withChildDiagnostics(spawnSync(process.execPath, [script, ...args], {
     cwd: projectRoot,
     env: { ...process.env, DATABASE_PATH: databasePath, MEDIA_DIR: mediaDir, BACKUP_DIR: backupDir, ...extraEnv },
     encoding: 'utf8', timeout: 30000,
-  });
+  }));
 }
 function sha(path) { return createHash('sha256').update(readFileSync(path)).digest('hex'); }
 function objectIds() { try { return readdirSync(join(mediaDir, 'objects')).sort(); } catch { return []; } }
+function backupBatches() { try { return readdirSync(backupDir).filter((name) => name.startsWith('site-')).sort(); } catch { return []; } }
 
 let admin;
 let view;
@@ -171,17 +173,53 @@ test('备份后篡改文件：恢复拒绝且目标保持不变', () => {
   assert.deepEqual(objectIds(), objectsBefore, '目标媒体目录不得被修改');
 });
 
-test('媒体对象缺失时备份拒绝标记成功', () => {
+test('媒体对象缺失时备份拒绝标记成功，且不留下半成品批次', () => {
   closeDatabase();
   const missing = join(mediaDir, 'objects', view.id);
   const stash = join(root, 'stash-object');
   rmSync(stash, { recursive: true, force: true });
   renameSync(missing, stash);
+  const batchesBefore = backupBatches();
   try {
     const result = run('scripts/backup-site.mjs');
     assert.notEqual(result.status, 0, '缺文件的站点不能生成成功备份');
     assert.match(`${result.stderr}${result.stdout}`, /校验失败|缺少/);
+    assert.deepEqual(backupBatches(), batchesBefore, '失败的备份必须清掉本次创建的目录，不能留在 backups/ 里');
   } finally { renameSync(stash, missing); }
+});
+
+test('从未上传过媒体、objects 目录尚不存在的新实例也能生成完整批次', () => {
+  closeDatabase();
+  // 模拟"刚初始化、还没有任何上传"的站点：媒体根目录存在，但 objects/ 从未创建。
+  const freshRoot = join(root, 'fresh-site');
+  const freshMedia = join(freshRoot, 'media');
+  const freshBackups = join(freshRoot, 'backups');
+  const freshDb = join(freshRoot, 'site.sqlite');
+  mkdirSync(freshMedia, { recursive: true });
+  const env = { DATABASE_PATH: freshDb, MEDIA_DIR: freshMedia, BACKUP_DIR: freshBackups, SITE_INIT_MODE: 'empty' };
+  const created = spawnSync(process.execPath, ['scripts/create-admin.mjs'], {
+    cwd: projectRoot, env: { ...process.env, ...env, ADMIN_USERNAME: 'freshadmin', ADMIN_PASSWORD: PASSWORD }, encoding: 'utf8',
+  });
+  assert.equal(created.status, 0, created.stderr);
+  assert.equal(existsSync(join(freshMedia, 'objects')), false, '前提：objects 目录不存在');
+  const backup = spawnSync(process.execPath, ['scripts/backup-site.mjs'], { cwd: projectRoot, env: { ...process.env, ...env }, encoding: 'utf8', timeout: 30000 });
+  assert.equal(backup.status, 0, backup.stderr);
+  const report = JSON.parse(backup.stdout);
+  assert.equal(report.status, 'complete');
+  assert.equal(report.media.files, 0);
+  const batch = report.batch;
+  assert.ok(existsSync(join(batch, 'COMPLETE')), '空站点也必须以 COMPLETE 收尾');
+  const manifest = JSON.parse(readFileSync(join(batch, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.media.files.length, 0);
+  assert.equal(manifest.database.counts.media, 0);
+  // 批次必须能被恢复；目标目录尚不存在时也要能建出来（SJ-05）。
+  const target = join(freshRoot, 'restored-target');
+  const restore = spawnSync(process.execPath, ['scripts/restore-site.mjs', '--backup', batch, '--database', join(target, 'db', 'site.sqlite'), '--media', join(target, 'media'), '--yes'], {
+    cwd: projectRoot, env: process.env, encoding: 'utf8', timeout: 30000,
+  });
+  assert.equal(restore.status, 0, restore.stderr);
+  assert.equal(JSON.parse(restore.stdout).status, 'restored');
+  assert.ok(existsSync(join(target, 'db', 'site.sqlite')), '不存在的目标目录必须被安全创建');
 });
 
 test('未结算操作存在时备份拒绝：不是一致性快照', () => {

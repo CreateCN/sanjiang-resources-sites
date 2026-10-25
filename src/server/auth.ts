@@ -3,7 +3,7 @@ import { database, transaction } from './db.ts';
 import type { User, Role } from './store.ts';
 import { isSecureSite } from './deployment-config.ts';
 import { getFrozenAuthIssuer } from './site-config.ts';
-import { audit, consumeLimit, enforceLimits, fail, hashToken, randomToken, rateLimit, requireOrigin, resetLimit, verifyPassword } from './security.ts';
+import { audit, clientKey, clientLimitRules, consumeLimit, consumeLimits, enforceLimits, fail, hashToken, randomToken, rateLimit, rateLimitClient, requireOrigin, resetLimit, verifyPassword, type ClientBudget, type ClientIdentity, type LimitRule } from './security.ts';
 import {
   base32Decode, buildOtpauthUri, classifyOtpInput, createRecoveryCodes, currentStep, encryptionKey,
   generateSecret, hashRecoveryCode, isFreshStep, openSecret, renderOtpauthSvg, requireEncryptionKey,
@@ -69,6 +69,11 @@ export function requireCsrf(request: Request, csrf: string): Session {
 export const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 export const LOGIN_USER_MAX_FAILURES = 10;
 export const LOGIN_CLIENT_MAX_FAILURES = 30;
+/** 站点级熔断：只统计全站失败次数，用于身份不可信或分布式攻击时压制（规范 §4.2）。 */
+export const LOGIN_SITE_MAX_FAILURES = 500;
+export const LOGIN_SITE_WINDOW_MS = 5 * 60 * 1000;
+const LOGIN_CLIENT_BUDGET: ClientBudget = { scope: 'login-client', maximum: LOGIN_CLIENT_MAX_FAILURES, windowMs: LOGIN_WINDOW_MS };
+const LOGIN_SITE_BUDGET: ClientBudget = { scope: 'login-site', maximum: LOGIN_SITE_MAX_FAILURES, windowMs: LOGIN_SITE_WINDOW_MS };
 
 /** Second-factor budgets (SECURITY-SPEC §4.2). */
 export const TOTP_WINDOW_MS = 15 * 60 * 1000;
@@ -81,6 +86,9 @@ export const ENROLL_CLIENT_MAX = 5;
 export const CHALLENGE_WINDOW_MS = 15 * 60 * 1000;
 export const CHALLENGE_USER_MAX = 10;
 export const CHALLENGE_CLIENT_MAX = 30;
+const TOTP_CLIENT_BUDGET: ClientBudget = { scope: 'totp-client', maximum: TOTP_CLIENT_MAX_FAILURES, windowMs: TOTP_WINDOW_MS };
+const ENROLL_CLIENT_BUDGET: ClientBudget = { scope: 'enroll-client', maximum: ENROLL_CLIENT_MAX, windowMs: ENROLL_WINDOW_MS };
+const CHALLENGE_CLIENT_BUDGET: ClientBudget = { scope: 'challenge-client', maximum: CHALLENGE_CLIENT_MAX, windowMs: CHALLENGE_WINDOW_MS };
 
 /* ------------------------------------------------------------------ policy */
 
@@ -150,7 +158,7 @@ function challengeRow(token: string): ChallengeRow | undefined {
   return row ? (row as unknown as ChallengeRow) : undefined;
 }
 
-function clientHashFor(clientId: string): string { return hashToken(`client:${clientId}`); }
+function clientHashFor(identity: ClientIdentity): string { return hashToken(`client:${clientKey(identity)}`); }
 
 function secureCookies(): boolean {
   // 与 canonical、Origin 校验共用同一个 SITE_URL 解析；配置非法时按不安全处理。
@@ -206,7 +214,7 @@ function commitDirectLogin(userId: number, expectedPasswordHash: string): string
 
 function issueChallenge(input: {
   userId: number; authVersion: number; purpose: 'login' | 'enroll';
-  clientId: string; pendingSecret?: string | null; now?: number;
+  client: ClientIdentity; pendingSecret?: string | null; now?: number;
 }): string {
   const now = input.now ?? Date.now();
   const token = randomToken();
@@ -225,7 +233,7 @@ function issueChallenge(input: {
     db.prepare(`INSERT INTO login_challenges
       (token_hash,user_id,auth_version,purpose,client_hash,attempts,pending_secret,created_at,expires_at)
       VALUES (?,?,?,?,?,0,?,?,?)`)
-      .run(hashToken(token), input.userId, input.authVersion, input.purpose, clientHashFor(input.clientId), input.pendingSecret ?? null, now, now + CHALLENGE_SECONDS * 1000);
+      .run(hashToken(token), input.userId, input.authVersion, input.purpose, clientHashFor(input.client), input.pendingSecret ?? null, now, now + CHALLENGE_SECONDS * 1000);
     audit(String(row.username), 'issue-challenge', `user:${row.id} ${input.purpose}`);
   });
   return token;
@@ -244,18 +252,18 @@ function requireEncryptionKeyOrFail(): Buffer {
  * 第一步：口令 → 直接会话（未启用且策略不要求）或挑战。
  * 口令通过但还需第二步时不清 `login-user` 失败计数：知道口令的人不该能刷掉失败预算。
  */
-export function login(username: string, password: string, clientId: string): LoginOutcome {
+export function login(username: string, password: string, client: ClientIdentity): LoginOutcome {
   const policy = requireValidPolicy();
   const name = username.trim().toLowerCase();
-  const clientRule = { scope: 'login-client', identity: clientId, maximum: LOGIN_CLIENT_MAX_FAILURES, windowMs: LOGIN_WINDOW_MS };
+  // 失败预算分三层：客户端（可信身份）或站点（不可信身份）、账号，以及站点熔断。
   const userRule = { scope: 'login-user', identity: name, maximum: LOGIN_USER_MAX_FAILURES, windowMs: LOGIN_WINDOW_MS };
-  enforceLimits([clientRule, userRule]);
+  const rules = [...clientLimitRules(client, LOGIN_CLIENT_BUDGET, LOGIN_SITE_BUDGET), userRule];
+  enforceLimits(rules);
 
   const row = database().prepare('SELECT id,username,role,active,auth_version,password_hash,totp_secret,totp_confirmed_at FROM users WHERE username=?').get(name);
   const valid = verifyPassword(password, row ? String(row.password_hash) : undefined);
   if (!valid || !row || !row.active) {
-    consumeLimit(clientRule);
-    consumeLimit(userRule);
+    consumeLimits(rules);
     fail(401, INVALID_CREDENTIALS);
   }
 
@@ -268,18 +276,18 @@ export function login(username: string, password: string, clientId: string): Log
   if (state === 'enabled') {
     if (!encryptionKey()) fail(503, '双因素加密密钥未配置，暂时无法完成登录，请联系管理员');
     rateLimit('challenge-user', name, CHALLENGE_USER_MAX, CHALLENGE_WINDOW_MS);
-    rateLimit('challenge-client', clientId, CHALLENGE_CLIENT_MAX, CHALLENGE_WINDOW_MS);
-    const token = issueChallenge({ userId, authVersion, purpose: 'login', clientId });
+    rateLimitClient(client, CHALLENGE_CLIENT_BUDGET, null);
+    const token = issueChallenge({ userId, authVersion, purpose: 'login', client });
     return { kind: 'challenge', token, purpose: 'login' };
   }
 
   if (policy.requiredFor(role)) {
     const key = requireEncryptionKeyOrFail();
-    rateLimit('enroll-client', clientId, ENROLL_CLIENT_MAX, ENROLL_WINDOW_MS);
+    rateLimitClient(client, ENROLL_CLIENT_BUDGET, null);
     rateLimit('challenge-user', name, CHALLENGE_USER_MAX, CHALLENGE_WINDOW_MS);
-    rateLimit('challenge-client', clientId, CHALLENGE_CLIENT_MAX, CHALLENGE_WINDOW_MS);
+    rateLimitClient(client, CHALLENGE_CLIENT_BUDGET, null);
     const pendingSecret = sealSecret(generateSecret(), key, secretAad(userId));
-    const token = issueChallenge({ userId, authVersion, purpose: 'enroll', clientId, pendingSecret });
+    const token = issueChallenge({ userId, authVersion, purpose: 'enroll', client, pendingSecret });
     return { kind: 'challenge', token, purpose: 'enroll' };
   }
 
@@ -289,22 +297,27 @@ export function login(username: string, password: string, clientId: string): Log
 }
 
 /** 已登录用户主动开始注册（/admin/security/）。只对未启用账户发行 enroll 挑战。 */
-export function issueEnrollChallenge(userId: number, clientId: string): string {
+export function issueEnrollChallenge(userId: number, client: ClientIdentity): string {
   requireValidPolicy();
   const row = readAccount(userId);
   if (!row || !row.active) fail(401, INVALID_CREDENTIALS);
   if (totpAccountState(row) !== 'disabled') fail(409, '该账户已启用双因素；请使用停用流程后再重新绑定');
   const key = requireEncryptionKeyOrFail();
-  rateLimit('enroll-client', clientId, ENROLL_CLIENT_MAX, ENROLL_WINDOW_MS);
+  rateLimitClient(client, ENROLL_CLIENT_BUDGET, null);
   rateLimit('challenge-user', row.username, CHALLENGE_USER_MAX, CHALLENGE_WINDOW_MS);
-  rateLimit('challenge-client', clientId, CHALLENGE_CLIENT_MAX, CHALLENGE_WINDOW_MS);
+  rateLimitClient(client, CHALLENGE_CLIENT_BUDGET, null);
   const pendingSecret = sealSecret(generateSecret(), key, secretAad(userId));
-  return issueChallenge({ userId, authVersion: row.auth_version, purpose: 'enroll', clientId, pendingSecret });
+  return issueChallenge({ userId, authVersion: row.auth_version, purpose: 'enroll', client, pendingSecret });
 }
 
 /** 失败结算：预算与尝试次数各走独立短事务，绝不随后续业务事务回滚。 */
-function settleChallengeFailure(tokenHash: string | null, clientId: string, account: { scope: string; identity: string; maximum: number; windowMs: number }): never {
-  const clientState = consumeLimit({ scope: 'totp-client', identity: clientId, maximum: TOTP_CLIENT_MAX_FAILURES, windowMs: TOTP_WINDOW_MS });
+function settleChallengeFailure(tokenHash: string | null, client: ClientIdentity, account: LimitRule): never {
+  // 不可信身份没有"每客户端"桶：此时只结算账号预算，不给攻击者一个可共享的小额度。
+  let clientRetryAfter = 0;
+  for (const rule of clientLimitRules(client, TOTP_CLIENT_BUDGET, null)) {
+    const state = consumeLimit(rule);
+    if (!state.allowed) clientRetryAfter = Math.max(clientRetryAfter, state.retryAfterMs);
+  }
   const accountState = consumeLimit(account);
   if (tokenHash) {
     transaction((db) => {
@@ -318,18 +331,18 @@ function settleChallengeFailure(tokenHash: string | null, clientId: string, acco
       }
     });
   }
-  if (!clientState.allowed || !accountState.allowed) {
-    fail(429, '尝试次数过多，请稍后重试', Math.max(clientState.retryAfterMs, accountState.retryAfterMs));
+  if (clientRetryAfter > 0 || !accountState.allowed) {
+    fail(429, '尝试次数过多，请稍后重试', Math.max(clientRetryAfter, accountState.retryAfterMs));
   }
   fail(401, INVALID_CHALLENGE);
 }
 
-function assertChallengeUsable(challenge: ChallengeRow, clientId: string, purpose: 'login' | 'enroll', now: number): void {
+function assertChallengeUsable(challenge: ChallengeRow, client: ClientIdentity, purpose: 'login' | 'enroll', now: number): void {
   if (challenge.consumed_at !== null) fail(401, INVALID_CHALLENGE);
   if (challenge.expires_at <= now) fail(401, INVALID_CHALLENGE);
   if (challenge.attempts >= CHALLENGE_MAX_ATTEMPTS) fail(401, INVALID_CHALLENGE);
   if (challenge.purpose !== purpose) fail(401, INVALID_CHALLENGE);
-  if (challenge.client_hash !== clientHashFor(clientId)) fail(401, INVALID_CHALLENGE);
+  if (challenge.client_hash !== clientHashFor(client)) fail(401, INVALID_CHALLENGE);
 }
 
 export interface VerifiedLogin { token: string; usedRecovery: boolean }
@@ -339,14 +352,14 @@ export interface VerifiedLogin { token: string; usedRecovery: boolean }
  * 条件消费挑战 → 签发会话 → 审计。任何一步失败（含审计）整体回滚。
  */
 function commitVerifiedChallenge(input: {
-  challenge: ChallengeRow; account: AccountAuthRow; sealed: string; clientId: string;
+  challenge: ChallengeRow; account: AccountAuthRow; sealed: string; client: ClientIdentity;
   kind: 'totp' | 'recovery'; step?: number; recoveryHash?: string;
 }): string {
   return transaction((db) => {
     const now = Date.now();
     const fresh = db.prepare('SELECT * FROM login_challenges WHERE token_hash=?').get(input.challenge.token_hash) as unknown as ChallengeRow | undefined;
     if (!fresh) fail(401, INVALID_CHALLENGE);
-    assertChallengeUsable(fresh!, input.clientId, 'login', now);
+    assertChallengeUsable(fresh!, input.client, 'login', now);
     const user = db.prepare('SELECT id,username,role,active,auth_version,totp_secret,totp_confirmed_at,totp_last_step FROM users WHERE id=?').get(input.account.id) as unknown as AccountAuthRow | undefined;
     if (!user || !user.active) fail(401, INVALID_CHALLENGE);
     if (user.auth_version !== input.challenge.auth_version) fail(401, INVALID_CHALLENGE);
@@ -376,30 +389,32 @@ function commitVerifiedChallenge(input: {
 
 /* --------------------------------------------------------------- login step */
 
-export function verifyLoginChallenge(challengeToken: string, rawCode: string, clientId: string): VerifiedLogin {
+export function verifyLoginChallenge(challengeToken: string, rawCode: string, client: ClientIdentity): VerifiedLogin {
   requireValidPolicy();
   const now = Date.now();
   const challenge = challengeRow(challengeToken);
   const unknownAccount = { scope: 'totp-user', identity: 'unknown', maximum: TOTP_USER_MAX_FAILURES, windowMs: TOTP_WINDOW_MS };
-  if (!challenge) settleChallengeFailure(null, clientId, unknownAccount);
-  assertChallengeUsable(challenge!, clientId, 'login', now);
+  if (!challenge) settleChallengeFailure(null, client, unknownAccount);
+  assertChallengeUsable(challenge!, client, 'login', now);
 
   const account = readAccount(challenge!.user_id);
   if (!account || !account.active || account.auth_version !== challenge!.auth_version || totpAccountState(account) !== 'enabled') {
-    settleChallengeFailure(challenge!.token_hash, clientId, unknownAccount);
+    settleChallengeFailure(challenge!.token_hash, client, unknownAccount);
   }
 
   const input = classifyOtpInput(rawCode);
-  if (!input) settleChallengeFailure(challenge!.token_hash, clientId, unknownAccount);
+  if (!input) settleChallengeFailure(challenge!.token_hash, client, unknownAccount);
 
-  const rules = [
-    { scope: 'totp-user', identity: account!.username, maximum: TOTP_USER_MAX_FAILURES, windowMs: TOTP_WINDOW_MS },
-    { scope: 'totp-client', identity: clientId, maximum: TOTP_CLIENT_MAX_FAILURES, windowMs: TOTP_WINDOW_MS },
-  ];
-  if (input!.kind === 'recovery') rules.push({ scope: 'totp-recovery-user', identity: account!.username, maximum: RECOVERY_USER_MAX_FAILURES, windowMs: RECOVERY_WINDOW_MS });
+  // 账号失败预算按输入形状分桶：恢复码失败不得消耗 TOTP 的账号预算，反之亦然。
+  // 规则必须是具名常量，**不能**用 clientLimitRules() 返回数组的下标来取：
+  // 不可信身份不会生成客户端规则，数组长度会变，按下标取会拿到 undefined
+  // （2026-10-25 终审 P1：错误恢复码因此抛 TypeError、HTTP 500、预算与尝试次数都不增加）。
+  const totpAccountRule: LimitRule = { scope: 'totp-user', identity: account!.username, maximum: TOTP_USER_MAX_FAILURES, windowMs: TOTP_WINDOW_MS };
+  const recoveryAccountRule: LimitRule = { scope: 'totp-recovery-user', identity: account!.username, maximum: RECOVERY_USER_MAX_FAILURES, windowMs: RECOVERY_WINDOW_MS };
+  const rules: LimitRule[] = [totpAccountRule, ...clientLimitRules(client, TOTP_CLIENT_BUDGET, null)];
+  if (input!.kind === 'recovery') rules.push(recoveryAccountRule);
   enforceLimits(rules);
-  // 失败预算按输入形状分桶：恢复码失败不得消耗 TOTP 的账号预算，反之亦然。
-  const accountRule = input!.kind === 'recovery' ? rules[2]! : rules[0]!;
+  const accountRule = input!.kind === 'recovery' ? recoveryAccountRule : totpAccountRule;
 
   const key = requireEncryptionKeyOrFail();
   const sealed = String(account!.totp_secret ?? '');
@@ -412,8 +427,8 @@ export function verifyLoginChallenge(challengeToken: string, rawCode: string, cl
 
   if (input!.kind === 'totp') {
     const matched = verifyTotp(secret!, input!.code, currentStep(now));
-    if (matched === null || !isFreshStep(account!.totp_last_step, matched)) settleChallengeFailure(challenge!.token_hash, clientId, accountRule);
-    const token = commitVerifiedChallenge({ challenge: challenge!, account: account!, sealed, kind: 'totp', step: matched!, clientId });
+    if (matched === null || !isFreshStep(account!.totp_last_step, matched)) settleChallengeFailure(challenge!.token_hash, client, accountRule);
+    const token = commitVerifiedChallenge({ challenge: challenge!, account: account!, sealed, kind: 'totp', step: matched!, client });
     resetLimit('login-user', account!.username);
     resetLimit('totp-user', account!.username);
     return { token, usedRecovery: false };
@@ -421,8 +436,8 @@ export function verifyLoginChallenge(challengeToken: string, rawCode: string, cl
 
   const codeHash = hashRecoveryCode(account!.id, input!.normalized);
   const usable = database().prepare('SELECT 1 FROM recovery_codes WHERE user_id=? AND code_hash=? AND used_at IS NULL').get(account!.id, codeHash);
-  if (!usable) settleChallengeFailure(challenge!.token_hash, clientId, accountRule);
-  const token = commitVerifiedChallenge({ challenge: challenge!, account: account!, sealed, kind: 'recovery', recoveryHash: codeHash, clientId });
+  if (!usable) settleChallengeFailure(challenge!.token_hash, client, accountRule);
+  const token = commitVerifiedChallenge({ challenge: challenge!, account: account!, sealed, kind: 'recovery', recoveryHash: codeHash, client });
   resetLimit('login-user', account!.username);
   resetLimit('totp-user', account!.username);
   resetLimit('totp-recovery-user', account!.username);
@@ -449,14 +464,14 @@ export interface EnrollView {
  */
 export async function enrollChallengeView(
   challengeToken: string,
-  clientId: string,
+  client: ClientIdentity,
   options: { renderSvg?: (uri: string) => Promise<string> } = {},
 ): Promise<EnrollView | undefined> {
   const now = Date.now();
   const challenge = challengeRow(challengeToken);
   if (!challenge) return undefined;
   try {
-    assertChallengeUsable(challenge, clientId, 'enroll', now);
+    assertChallengeUsable(challenge, client, 'enroll', now);
   } catch { return undefined; }
   const account = readAccount(challenge.user_id);
   if (!account || !account.active || account.auth_version !== challenge.auth_version) return undefined;
@@ -486,26 +501,26 @@ export interface EnrollResult { token: string; recoveryCodes: string[] }
  * 注册确认：只接受 6 位验证码；secret 来自挑战记录。
  * 同一事务安装因子、消费挑战、撤销旧证明、生成恢复码并签发会话。
  */
-export function confirmEnrollment(challengeToken: string, rawCode: string, clientId: string): EnrollResult {
+export function confirmEnrollment(challengeToken: string, rawCode: string, client: ClientIdentity): EnrollResult {
   requireValidPolicy();
   const now = Date.now();
   const challenge = challengeRow(challengeToken);
   const unknownAccount = { scope: 'totp-user', identity: 'unknown', maximum: TOTP_USER_MAX_FAILURES, windowMs: TOTP_WINDOW_MS };
-  if (!challenge) settleChallengeFailure(null, clientId, unknownAccount);
-  assertChallengeUsable(challenge!, clientId, 'enroll', now);
+  if (!challenge) settleChallengeFailure(null, client, unknownAccount);
+  assertChallengeUsable(challenge!, client, 'enroll', now);
 
   const account = readAccount(challenge!.user_id);
   if (!account || !account.active || account.auth_version !== challenge!.auth_version || totpAccountState(account) !== 'disabled') {
-    settleChallengeFailure(challenge!.token_hash, clientId, unknownAccount);
+    settleChallengeFailure(challenge!.token_hash, client, unknownAccount);
   }
 
   const input = classifyOtpInput(rawCode);
   // 注册确认不接受恢复码：本次绑定尚未生成恢复码。
-  if (!input || input.kind !== 'totp') settleChallengeFailure(challenge!.token_hash, clientId, unknownAccount);
+  if (!input || input.kind !== 'totp') settleChallengeFailure(challenge!.token_hash, client, unknownAccount);
 
   enforceLimits([
     { scope: 'totp-user', identity: account!.username, maximum: TOTP_USER_MAX_FAILURES, windowMs: TOTP_WINDOW_MS },
-    { scope: 'totp-client', identity: clientId, maximum: TOTP_CLIENT_MAX_FAILURES, windowMs: TOTP_WINDOW_MS },
+    ...clientLimitRules(client, TOTP_CLIENT_BUDGET, null),
   ]);
 
   const key = requireEncryptionKeyOrFail();
@@ -518,14 +533,14 @@ export function confirmEnrollment(challengeToken: string, rawCode: string, clien
   }
   const matched = verifyTotp(secret!, input!.code, currentStep(now));
   if (matched === null || !isFreshStep(account!.totp_last_step, matched)) {
-    settleChallengeFailure(challenge!.token_hash, clientId, { scope: 'totp-user', identity: account!.username, maximum: TOTP_USER_MAX_FAILURES, windowMs: TOTP_WINDOW_MS });
+    settleChallengeFailure(challenge!.token_hash, client, { scope: 'totp-user', identity: account!.username, maximum: TOTP_USER_MAX_FAILURES, windowMs: TOTP_WINDOW_MS });
   }
 
   const codes = createRecoveryCodes();
   const sessionToken = transaction((db) => {
     const fresh = db.prepare('SELECT * FROM login_challenges WHERE token_hash=?').get(challenge!.token_hash) as unknown as ChallengeRow | undefined;
     if (!fresh) fail(401, INVALID_CHALLENGE);
-    assertChallengeUsable(fresh!, clientId, 'enroll', now);
+    assertChallengeUsable(fresh!, client, 'enroll', now);
     if (String(fresh!.pending_secret) !== pendingSealed) fail(409, INVALID_CHALLENGE);
     const user = db.prepare('SELECT id,username,active,auth_version,totp_secret,totp_confirmed_at FROM users WHERE id=?').get(account!.id) as unknown as AccountAuthRow | undefined;
     if (!user || !user.active || user.auth_version !== fresh!.auth_version) fail(401, INVALID_CHALLENGE);

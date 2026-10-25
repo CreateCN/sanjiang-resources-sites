@@ -34,18 +34,26 @@
 ### 2.1 客户端身份（必须）
 
 - 应用**必须**通过唯一入口 `clientIdentity()`（`src/server/security.ts`）取得限流身份，禁止在业务代码里直接读 `X-Forwarded-For` / `clientAddress`。
-- 代理**必须**覆盖写入客户端地址，禁止追加：
+- 身份**必须**分成两种类型，禁止用一个字符串混用（`ClientIdentity`，`security.ts`）：
+
+  | 类型 | 含义 | 可用预算 |
+  |---|---|---|
+  | `client` | 来源可信：携带正确代理凭据且转发头是单个合法地址；或没有转发头时的连接对端 | 客户端桶 + 站点桶 |
+  | `unverified` | 无法归属到某个客户端：凭据缺失/错误，或转发头缺失/多值/非法/被 TRUST_PROXY=0 忽略 | **只有**站点桶 |
+
+- 代理**必须**覆盖写入客户端地址，禁止追加，并**必须**带上共享凭据：
 
   ```nginx
+  proxy_set_header X-Sanjiang-Proxy-Secret "<与 TRUST_PROXY_SECRET 相同的值>";
   proxy_set_header X-Forwarded-For $remote_addr;
   proxy_set_header X-Real-IP       $remote_addr;
   ```
 
-- 仅当 `TRUST_PROXY=1`（声明"应用只能经自己的代理访问"）时，才采信单值 `X-Forwarded-For`；以下情况一律返回 `unverified-peer` 并走站点级熔断：
-  - 头缺失或为空；
-  - 值不是合法 IP 字面量；
-  - 值包含多个地址（多跳链）。
-- 端口暴露**必须**与信任声明一致：`docker-compose.yml` 只绑定 `127.0.0.1`；若把 4321 直接对公网开放，必须同时置 `TRUST_PROXY=0`。
+- **判据必须是应用自己能验证的东西，不能用"连接对端 IP"**。本项目跑在 `@astrojs/node` standalone 模式：适配器构造 Request 时会把 `X-Forwarded-For` 的第一个值写进 `clientAddress`（`node_modules/astro/dist/core/app/node.js`），所以 `clientAddress` 在带头时就是客户端可控值，拿它判断"对端是不是我们的代理"是循环论证。2026-10-25 复核实测：直连者写 `X-Forwarded-For: 10.0.0.1` 或 `192.168.1.5`，每换一个值就能开出一份独立的访客额度。
+- 因此判据是**代理共享凭据**：`TRUST_PROXY=1` 时必须配置 `TRUST_PROXY_SECRET`（≥16 字符），代理写入 `X-Sanjiang-Proxy-Secret`；凭据不匹配、缺失，或 `TRUST_PROXY=0`，转发头一律不参与身份。凭据未配置时**必须** fail closed（全部 `unverified`），不得退回"头里是单个合法 IP 就采信"。
+- 直连部署（无代理）**必须**保持 `TRUST_PROXY=0`：此时没有转发头，身份 = 连接对端地址；一旦检测到转发头，说明前面有未登记的转发方，按 `unverified` 处理。
+- `unverified` 请求**禁止**进入任何客户端桶，只能计入站点级预算（§4.2、§6）。把它们塞进一个共享的"访客"小额度会让 30 个匿名请求关掉所有人的入口。
+- 端口暴露**必须**与信任声明一致：`docker-compose.yml` 只绑定 `127.0.0.1`。应用**无法**从进程内可靠判断宿主机端口发布或容器网络拓扑，因此暴露面只能靠 compose 绑定地址、部署检查脚本（`node scripts/check-deployment.mjs`）与文档约束。
 - 接入 CDN 时，只允许在 Nginx 用 `set_real_ip_from <CDN 网段>` + `real_ip_header` 还原 `$remote_addr`，应用代码不变、信任声明不变。
 
 ### 2.2 站点来源（必须）
@@ -123,7 +131,7 @@
   |---|---|---|---|
   | `login-user`（账号） | 10 | 15 分钟 | **仅失败**，成功后清零 |
   | `login-client`（客户端身份） | 30 | 15 分钟 | **仅失败** |
-  | `login-site`（熔断，可选） | 500 | 5 分钟 | 全站失败总数，仅用于分布式攻击压制 |
+  | `login-site`（熔断，必须） | 500 | 5 分钟 | 全站失败总数（含可信客户端），用于分布式攻击压制 |
   | `totp-user`（账号） | 10 | 15 分钟 | **仅 TOTP 失败**（含注册确认） |
   | `totp-client`（客户端身份） | 30 | 15 分钟 | TOTP、恢复码与无效挑战请求的失败 |
   | `totp-recovery-user`（账号） | 3 | 60 分钟 | **仅恢复码失败** |
@@ -132,6 +140,9 @@
   | `challenge-client`（客户端身份） | 30 | 15 分钟 | 所有挑战发行（请求计数） |
 
 - 禁止把"成功登录"计入额度（历史缺陷：运维自锁）。
+- `login-site` **必须**参与每一次失败结算；它不是"可选优化"，而是 `unverified` 身份唯一可用的保护层。
+- `totp-client` / `enroll-client` / `challenge-client` 只在身份可信时计数；不可信身份**禁止**建这类桶（此时按账号级预算与 `login-site` 收口）。
+- 失败预算的规则**必须**用具名常量表达并按输入形状直接选择；**禁止**用"客户端规则 + 账号规则"拼出的数组按下标取（不可信身份不产生客户端规则，下标会错位成 `undefined`，导致异常与"失败不计数"——2026-10-25 终审 P1）。
 - 429 **必须**返回真实剩余时间的 `Retry-After`（由 `reset_at - now` 计算），禁止硬编码常量。
 - 429 的正文不得区分"账号是否存在""是否被锁"。
 
@@ -207,11 +218,12 @@
 |---|---|---|---|
 | 账号层 | 抗口令猜测 | 小（10/15min） | 拒绝该账号的**失败**尝试 |
 | 客户端层 | 抗单点滥用 | 中（30/15min、5/h、600/h） | 拒绝该客户端 |
-| 站点层 | 抗分布式攻击 | 大（≥正常峰值 10 倍） | 拒绝或**采样降级** |
+| 站点层 | 抗分布式攻击；不可信身份的唯一保护层 | 大（≥正常峰值 10 倍） | 拒绝或**采样降级** |
 
 ### 6.2 硬性规则
 
 1. **身份必须可区分**：如果部署让所有请求共享一个身份，就等于把"客户端层"变成了"站点层"。上线前必须验证 `rate_limits` 里出现多个不同的客户端键。
+   反向检查同样必须做：`unverified` 流量**禁止**产生客户端键——出现共享的客户端键说明身份塌缩，必须按 §2.1 修部署或修实现。
 2. **窗口与文案必须一致**：`Retry-After` 由数据算出；窗口长度集中定义（禁止散落的魔法数字）。
 3. **计数语义显式**：区分"请求计数"（反馈、指标）与"失败计数"（登录）；成功路径不得扣额度。
 4. **容量必须可运营**：任何全站级阈值都要有监控与告警；命中率、429 比例、Top 客户端必须可观测（日志不含 PII）。
@@ -302,7 +314,8 @@
 
 ### 9.3 健康检查与信息暴露
 
-- `/api/health/` 只返回 `status`、`db`；`schema`、`uptime`、版本号等内部信息移到需要鉴权的端点。
+- `/api/health/` 只返回 `status`、`db`；`schema`、`uptime`、版本号等内部信息移到需要鉴权的端点（现状：`/api/health/detail/`，仅管理员会话可读）。
+- 公共探针的响应体**必须**只有这两个字段；新增字段前先确认它不是内部信息，并同步更新测试断言。
 - 404/400 页面不得回显路径、栈、SQL、内部主机名。
 - 生产关闭详细错误；异常只记录 `error.name` 与 request id。
 
@@ -342,7 +355,10 @@
 
 | 类别 | 用例 | 现状覆盖 |
 |---|---|---|
-| 身份 | 单值 XFF 被采信；多值/畸形/缺失退化；伪造不产生新桶 | `tests/server.test.mjs`（本轮新增） |
+| 身份 | 单值 XFF 被采信；多值/畸形/缺失退化；伪造不产生新桶 | `tests/server.test.mjs` |
+| 身份分层 | 非可信对端轮换 XFF 不产生客户端桶；`unverified` 流量不占用访客额度；站点熔断命中后不可绕过 | `tests/server.test.mjs`（2026-10-25 新增） |
+| 代理验证 | 凭据缺失/过短/不匹配 → `unverified`；凭据正确 + 单值地址 → `client`；带端口/多值/缺失 → `unverified`；`TRUST_PROXY=0` 忽略转发头 | `tests/server.test.mjs`（`client identity trusts a forwarded address only behind a verified proxy`）|
+| 授权顺序 | 全部管理动作对编辑者（含非法参数）返回 403；未知动作 400 | `tests/server.test.mjs`（2026-10-25 新增） |
 | 登录 | 成功不扣额度；10 次失败后 429；别的账号/客户端不受影响 | 同上 |
 | 限流文案 | `Retry-After` 与窗口一致（登录 ≤900、反馈 ≈3600） | 同上 |
 | 反馈 | 每客户端 5/h；第二客户端仍有额度；蜜罐不落库 | 同上 |
@@ -380,6 +396,9 @@
 | 媒体引用 | 结构化字段、Markdown（含引用式）、全部修订、回收站引用阻止 purge；`purging` 后拒绝新引用 | 同上 |
 | 媒体下架 | 编辑者上传不能复活、`/media/` 旧 URL 新请求 404、GET/HEAD 一致、全部 no-store | 同上 |
 | 站点备份恢复 | DB+媒体同批备份、缺图/哈希不符拒绝、中途故障回滚、DB-only 恢复被拒 | `tests/backup-site.test.mjs` |
+| 备份边界 | 从未上传媒体的新实例生成完整批次；失败不留半成品目录 | 同上（2026-10-25 新增） |
+| 恢复离线前置 | 目标库被其他进程使用时拒绝且不改文件；目标目录不存在时安全创建 | `tests/restore-failure.test.mjs`（2026-10-25 新增） |
+| 部署自检 | 凭据齐全/缺失/过短 × 普通与 `--strict` × HTTPS/HTTP × 直连提示的四类组合；`--strict` 把 warn 统一升级为 error（`raised: true`）| `tests/deployment.test.mjs` |
 | 浏览器登录 | 挑战 Cookie 在页面与 API 的传递/清除、未完成因子不能访问后台、二维码注册真实流程 | `tests/admin-e2e.mjs` |
 
 ### 11.2 黑盒回归（发布后自查）
@@ -415,14 +434,17 @@
 
 | 关注点 | 位置 |
 |---|---|
-| 客户端身份 | `src/server/security.ts#clientIdentity` |
+| 客户端身份 | `src/server/security.ts#clientIdentity`（类型 `ClientIdentity`、预算翻译 `clientLimitRules`）|
+| 代理凭据校验 | `src/server/security.ts#proxySecret/secretMatches`（头名 `PROXY_SECRET_HEADER`）|
+| 部署自检 | `scripts/check-deployment.mjs` |
+| 离线恢复前置 | `scripts/lib/offline-guard.mjs`（`restore-db` / `restore-site` 共用）|
 | 限流原语 | `src/server/security.ts#checkLimit/consumeLimit/resetLimit/enforceLimits/rateLimit` |
 | 登录流程与失败计数 | `src/server/auth.ts#login` |
 | Origin/CSRF/口令 | `src/server/security.ts#requireOrigin`、`auth.ts#requireCsrf`、`verifyPassword` |
 | 出站校验与固定连接 | `src/server/linkcheck.ts#resolvePublicTarget/pinnedFetch` |
 | 指标目标校验与容量 | `src/server/store.ts#isMetricTargetAllowed/recordEvent` |
 | 安全响应头 | `src/middleware.ts` |
-| 管理动作白名单 | `src/server/http.ts#managePost` |
+| 管理动作白名单与授权顺序 | `src/server/http.ts#MANAGE_ACTION_ROLES` / `requireManagePermission` |
 | 服务端角色校验 | `src/server/store.ts#actorUser` |
 | 审计 | `src/server/security.ts#audit`（与业务同事务） |
 | 双因素算法与密封 | `src/server/totp.ts` |
@@ -446,3 +468,6 @@
 | 2026-10-21 | 1.3 | §7 私网判定改为字节级解析（映射/NAT64/6to4/fail closed）；§5.1 增加版本永不复用墓碑、预检与提交筛选规则一致 |
 | 2026-10-21 | 1.4 | §7 明确禁止固定连接失败后回退普通请求、lookup 必须实现 all 契约、校验与连接共用解析器；回归须覆盖重绑定并断言回环 0 请求 |
 | 2026-10-22 | 1.5 | 合入 TOTP 双因素（§4.5、§4.2 新增五类预算、§4.4 恢复路径、§5.1 挑战与撤销）与图片上传/媒体库（§3.3/§3.4 输入输出上限与不可变文件组、§5.1 引用提取、§6 全局占位与配额、§8 站点级备份、§9.2 `/media/` no-store、§9.5 演练门禁）；§11.1 增补 15 类必测用例 |
+| 2026-10-25 | 1.6 | 修复本地审查 SJ-01/SJ-02：身份改为 `client` / `unverified` 两型，新增 `login-site` 站点熔断（§4.2、§6.1/6.2）；SJ-06 健康接口瘦身（§9.3）；SJ-07 授权先于参数校验（§5、§14）；SJ-03/04/05 备份恢复前置与目录处理（§8）；§11.1 增补必测用例 |
+| 2026-10-25 | 1.8 | 终审 P1/P2 修复：TOTP 恢复码失败规则改为具名常量（不可信身份下不再按下标取到 undefined）；`deploy:check --strict` 统一升级警告；§11.1 同步（§4.2、§11.1） |
+| 2026-10-25 | 1.7 | 复核修正：**删除"按对端网段信任"（`TRUSTED_PROXIES`）**——适配器把 XFF 首值当作 `clientAddress`，该判据可被直连伪造；改为可验证的**代理共享凭据** `TRUST_PROXY_SECRET` / `X-Sanjiang-Proxy-Secret`，未配置时 fail closed（§2.1、§14）。同步部署自检与测试 |
