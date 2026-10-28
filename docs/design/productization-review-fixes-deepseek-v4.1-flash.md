@@ -21,7 +21,7 @@ git diff --stat
 node --version
 ```
 
-读取 [AGENTS.md](../../AGENTS.md)、[贡献规范](../../CONTRIBUTING.md)、[安全规范](../SECURITY-SPEC.md) 和当前任务列出的实现与测试。HEAD 仍为旧提交时，审查使用 `git diff 866a75f --`，并单独读取 `git ls-files --others --exclude-standard` 列出的新增文件；仅比较两个提交会漏掉实现。
+读取 [AGENTS.md](../../AGENTS.md)、[贡献规范](../../CONTRIBUTING.md)、[安全规范](../security/SECURITY-SPEC.md) 和当前任务列出的实现与测试。HEAD 仍为旧提交时，审查使用 `git diff 866a75f --`，并单独读取 `git ls-files --others --exclude-standard` 列出的新增文件；仅比较两个提交会漏掉实现。
 
 执行约束：
 
@@ -144,7 +144,7 @@ node --test tests/release-version.test.mjs tests/release-workflow.test.mjs
 
 - [.gitignore](../../.gitignore)：`.env.*` 与现有 `.env.example` 例外。
 - [release.yml](../../.github/workflows/release.yml)：gh release create 附件，审查时 248 行。
-- [release.md](../release.md)：部署说明引用 `.env.release.example`。
+- [release.md](../deploy/release.md)：部署说明引用 `.env.release.example`。
 - 本地 `.env.release.example`，只确认其示例性质，避免输出真实凭据。
 
 审查时文件本地存在，但 `git ls-files .env.release.example` 无结果，`git check-ignore -v` 显示被 `.env.*` 忽略。新 checkout 没有此必需附件，Release 创建失败。
@@ -177,7 +177,7 @@ node --test tests/release-workflow.test.mjs
 读取：
 
 - [initialization.ts](../../src/server/initialization.ts)：anomalous/adopt 分支，审查时 165–170 行。
-- [init-site.mjs](../../scripts/init-site.mjs)、[initialization.md](../initialization.md)。
+- [init-site.mjs](../../scripts/init-site.mjs)、[initialization.md](../deploy/initialization.md)。
 - [initialization.test.mjs](../../tests/initialization.test.mjs)。
 
 接管分支无条件 `insertCategories(db, 'empty')`。最小复现：Empty 初始化，删除 initialized/seeded 标记，再 adopt；已有 general 导致 `UNIQUE constraint failed: categories.id`。应用建议接管，但接管本身不能完成。

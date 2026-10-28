@@ -10,7 +10,7 @@
 
 - [产品化工程任务书](productization-deepseek-v4.1-flash.md)
 - [第一轮 R01–R06 修复任务书](productization-review-fixes-deepseek-v4.1-flash.md)
-- [安全规范](../SECURITY-SPEC.md)
+- [安全规范](../security/SECURITY-SPEC.md)
 
 ## 1. 已复核修复与剩余状态
 
@@ -157,4 +157,4 @@ renderMarkdown('![旧截图](/images/zotero-interface.png)')
 报告原复现结果、修复后结果、实际命令及未验证边界。
 ```
 
-后续状态（2026-10-23）：B01 已修复并完成针对性回归；N01 仍待下轮处理。本文件保留审查时的原始记录，不把当时的绿灯结果当作修复证据。修复后的自动与手工复演结果见 `tests/restore-failure.test.mjs`、[运维手册](../operations.md) 与 [升级回滚](../upgrade.md)。
+后续状态（2026-10-23）：B01 已修复并完成针对性回归；N01 仍待下轮处理。本文件保留审查时的原始记录，不把当时的绿灯结果当作修复证据。修复后的自动与手工复演结果见 `tests/restore-failure.test.mjs`、[运维手册](../ops/operations.md) 与 [升级回滚](../ops/upgrade.md)。

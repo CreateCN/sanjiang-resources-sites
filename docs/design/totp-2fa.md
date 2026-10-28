@@ -1,6 +1,6 @@
 # 设计：后台 TOTP 双因素认证
 
-> 状态：**P0 已实现（2026-10-22）**；§14 已合入 [SECURITY-SPEC](../SECURITY-SPEC.md) v1.5。
+> 状态：**P0 已实现（2026-10-22）**；§14 已合入 [SECURITY-SPEC](../security/SECURITY-SPEC.md) v1.5。
 > 迁移：`010-totp-2fa`（已应用）。P1（密钥轮换 `TOTP_ENC_KEY_OLD`）与 P2（WebAuthn）未实现。
 >
 > 实现相对本文的差异（均不削弱约束）：

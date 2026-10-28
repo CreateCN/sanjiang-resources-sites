@@ -20,7 +20,7 @@
 
 ## 阅读顺序
 
-1. 需要了解"现在有什么保证"：读 [docs/SECURITY-SPEC.md](../../docs/SECURITY-SPEC.md)。
+1. 需要了解"现在有什么保证"：读 [docs/security/SECURITY-SPEC.md](../../docs/security/SECURITY-SPEC.md)。
 2. 需要了解"认证与再认证现在到底怎么算"：读 [2026-10-25-auth-review/FIX-RESULT.md](2026-10-25-auth-review/FIX-RESULT.md)；
    规范条款对应 SECURITY-SPEC v1.10 的 §4.2、§4.5、§5、§9.3。
 3. 需要了解"修了什么、怎么验证的"：读 [ROOT-CAUSE-AND-FIX.md §13](2026-10-21-attacker/ROOT-CAUSE-AND-FIX.md)

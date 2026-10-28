@@ -109,7 +109,7 @@
 - 无法验证来源的请求（凭据缺失/不匹配、转发头缺失/多值/非法、`TRUST_PROXY=0` 时带头）按**不可信身份**处理：只吃站点级预算（登录 500 次/5 分钟、反馈 500 次/小时、指标 20000 次/小时），不会创建按访客的桶，也不会因此把其他访客挡在外面。
 - 指标只接受已发布资源/指南作为目标，每事件每日最多 200 个不同目标；未知目标静默丢弃。
 - 链接检查：协议 http/https、端口 80/443、解析结果判私网、连接固定到已校验 IP、逐跳重校验、10 秒超时、每操作者 30 次/10 分钟。
-- 响应头：CSP（Report-Only）、HSTS（HTTPS）、Permissions-Policy、COOP、`nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy`。详见 [安全设计与实现规范](SECURITY-SPEC.md)。
+- 响应头：CSP（Report-Only）、HSTS（HTTPS）、Permissions-Policy、COOP、`nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy`。详见 [安全设计与实现规范](../security/SECURITY-SPEC.md)。
 - 无 JavaScript 时后台表单仍可用；失败保留未存草稿。
 - 学生反馈匿名、仅维护者可见；聚合指标不含 IP/UA/账户；搜索词截断并 90 天清理。
 - 页面统一 `nosniff`、`X-Frame-Options: DENY`、`Referrer-Policy`、`no-store`；后台 `noindex`。

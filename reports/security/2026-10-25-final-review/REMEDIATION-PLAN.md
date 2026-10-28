@@ -68,10 +68,10 @@
 
 | 文件 | 修改内容 |
 |---|---|
-| `docs/deploy-local.md` | 环境文件示例与变量表加入 `TRUST_PROXY_SECRET`；完整 Nginx 示例加入 `X-Sanjiang-Proxy-Secret`，确保所有转发到应用的 location 均获得该头；保持单值 XFF 覆盖。加入使用同一环境文件运行自检的命令。 |
-| `docs/deploy-docker.md` | 检查完整 Nginx 示例，补齐共享凭据头；若 location 自己声明 `proxy_set_header`，不能依赖上层指令自动继承。与前文凭据要求一致。 |
-| `docs/FEATURES.md` | 代理信任说明加入凭据要求及降级行为；公共健康接口改为仅 `status` / `db`，详细诊断说明管理员权限。 |
-| `docs/SECURITY-SPEC.md` | 清除必测矩阵中已删除的 CIDR 机制与 `tests/trusted-proxy.test.mjs` 引用，改为现行凭据模型的实际测试路径；核对 strict 模式说明。 |
+| `docs/deploy/deploy-local.md` | 环境文件示例与变量表加入 `TRUST_PROXY_SECRET`；完整 Nginx 示例加入 `X-Sanjiang-Proxy-Secret`，确保所有转发到应用的 location 均获得该头；保持单值 XFF 覆盖。加入使用同一环境文件运行自检的命令。 |
+| `docs/deploy/deploy-docker.md` | 检查完整 Nginx 示例，补齐共享凭据头；若 location 自己声明 `proxy_set_header`，不能依赖上层指令自动继承。与前文凭据要求一致。 |
+| `docs/product/FEATURES.md` | 代理信任说明加入凭据要求及降级行为；公共健康接口改为仅 `status` / `db`，详细诊断说明管理员权限。 |
+| `docs/security/SECURITY-SPEC.md` | 清除必测矩阵中已删除的 CIDR 机制与 `tests/trusted-proxy.test.mjs` 引用，改为现行凭据模型的实际测试路径；核对 strict 模式说明。 |
 
 所有示例均使用占位值，不写入真实凭据。说明凭据至少 16 字符、建议用密码学随机源生成 32 字符以上的值，两端一致，且不进入日志或备份。环境文件的说明应反映其包含代理秘密，不能再暗示其仅保存非敏感站点地址。
 

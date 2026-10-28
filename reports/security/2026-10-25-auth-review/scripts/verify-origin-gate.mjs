@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 验证 `docs/edge-cdn-hardening.md §3b.3` 里那条"假通过陷阱"：
+ * 验证 `docs/deploy/edge-cdn-hardening.md §3b.3` 里那条"假通过陷阱"：
  *
  * 不带 `Origin`（或与 `SITE_URL` 不一致）的认证请求会在**限流之前**被 `requireOrigin()`
  * 挡成 403，`rate_limits` 一条都不写。因此"站点计数远小于 500"这条检查在边缘规则

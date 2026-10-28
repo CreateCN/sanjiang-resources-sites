@@ -100,7 +100,7 @@ if (!input) settleChallengeFailure(...); // 结算在后
 
 ### 0c.3 部署文档与 `deploy:check` 提示（本轮新增）
 
-**`docs/edge-cdn-hardening.md` 新增 §3b「认证端点的专用边缘限速」**：
+**`docs/deploy/edge-cdn-hardening.md` 新增 §3b「认证端点的专用边缘限速」**：
 
 - 为什么必须补：给出本轮实测对照——**可信**来源被客户端层挡在 30；**不可信**来源（无共享凭据）500 次全部 401、`login-site = 500`，随后另一来源正确口令 `429 / Retry-After: 300`。应用层按设计不给不可信身份建共享小桶，所以"单来源速率"只能由边缘补。
 - 配置：`/api/login/`、`/api/login/totp/`、`/api/login/enroll/` **共用同一条 `auth` zone**（不共用就能靠轮换端点绕开）；`$binary_remote_addr` 取已还原地址；`X-Forwarded-For` 用 `$remote_addr` **覆盖**而不是 `$proxy_add_x_forwarded_for`；共享凭据头 `X-Sanjiang-Proxy-Secret`。
@@ -123,7 +123,7 @@ location ~ ^/api/login/(totp|enroll)?/?$ { ... }     # 错
 
 调换书写顺序也没用：`^~` 的优先级来自匹配规则，不来自配置文件里的位置。
 
-**修复**（`docs/edge-cdn-hardening.md §3b.2`）：
+**修复**（`docs/deploy/edge-cdn-hardening.md §3b.2`）：
 
 ```nginx
 location ^~ /api/login/ { ... }                       # 前缀比 /api/ 更长，且保留 ^~
@@ -151,7 +151,7 @@ $ node reports/security/2026-10-25-auth-review/scripts/verify-origin-gate.mjs
 OK：无/错 Origin 在限流前就 403 且不写任何计数；正确 Origin 才计数   # exit 0
 ```
 
-**修复**（`docs/edge-cdn-hardening.md §3b.3` 整体重写）：
+**修复**（`docs/deploy/edge-cdn-hardening.md §3b.3` 整体重写）：
 
 - 每条 curl 都带 `Origin: $ORIGIN`（并说明必须与 `SITE_URL` 的 origin 完全一致）；
 - 新增**第 0 条**先决检查：`nginx -T | grep -nE 'location (\^~ )?/api/'`，确认认证规则挂在更长前缀上，否则后面全部无意义；
@@ -255,7 +255,7 @@ catch → errorShape(error)         ← 与 /api/manage/ 共用同一实现
 
 ---
 
-## 5. 规范变化（`docs/SECURITY-SPEC.md`，v1.8 → v1.10）
+## 5. 规范变化（`docs/security/SECURITY-SPEC.md`，v1.8 → v1.10）
 
 | 位置 | 变化 |
 |---|---|
@@ -387,7 +387,7 @@ ALL MUTATIONS CAUGHT                     # exit 0
 | `npm run test:browser` | 需要外部已启动实例（`tests/browser.mjs` 指向固定 BASE） |
 | `npm run acceptance:proxy` | 需要运行中的反向代理与 `TRUST_PROXY_SECRET` 部署 |
 | 真实反向代理联调 | 需要容器/代理环境；`TRUST_PROXY=1` + 正确凭据 + 单值 XFF 的端到端行为仍未在 HTTP 层复测 |
-| `docs/edge-cdn-hardening.md §3b.3` 的实测 | 需要一台真实 Nginx + `SITE_URL` 的部署；本轮只写了步骤与判据，**没有执行**，因此不能声称边缘限速已验证 |
+| `docs/deploy/edge-cdn-hardening.md §3b.3` 的实测 | 需要一台真实 Nginx + `SITE_URL` 的部署；本轮只写了步骤与判据，**没有执行**，因此不能声称边缘限速已验证 |
 | §3b.2 的 location 匹配顺序 | 本机没有 `nginx`，无法实测 `^~ /api/` 是否真的屏蔽了正则块；结论依据官方匹配规则。**部署时必须先跑 §3b.3 第 0 条**（`nginx -T` 看实际加载的 location）再跑第 1–5 条 |
 
 ---
@@ -400,8 +400,8 @@ ALL MUTATIONS CAUGHT                     # exit 0
 | `src/server/auth.ts` | 修改 | `login()` 账号桶只结算失败；挑战验证**准入先于归属与结算**；`settleChallengeFailure` 支持不可归属失败并纳入 `login-site`；新增 `challengeUsable`；恢复码成功不再清 `totp-user` |
 | `src/server/http.ts` | 修改 | 四个敏感动作套 `withProofBudget`；新增 `IMPORT_PREVIEW_USER_MAX` / `IMPORT_PREVIEW_WINDOW_MS`；抽出公共 `errorShape()` 供 HTML 与 JSON 两条路径共用 |
 | `src/pages/api/import/preview.ts` | 修改 | 先授权再读体、`import-user` 预算、错误走 `errorShape()`、显式 `.ts` 导入 |
-| `docs/SECURITY-SPEC.md` | 修改 | v1.10：§4.2（含"准入先于结算"）/§4.5/§5/§6.1/§6.2.7/§9.3/§11.1/§14/§15 |
-| `docs/edge-cdn-hardening.md` | 修改 | 新增 §3b 认证端点专用边缘限速：共用一条 zone、覆盖写转发头、共享凭据、四条实测验收 |
+| `docs/security/SECURITY-SPEC.md` | 修改 | v1.10：§4.2（含"准入先于结算"）/§4.5/§5/§6.1/§6.2.7/§9.3/§11.1/§14/§15 |
+| `docs/deploy/edge-cdn-hardening.md` | 修改 | 新增 §3b 认证端点专用边缘限速：共用一条 zone、覆盖写转发头、共享凭据、四条实测验收 |
 | `scripts/check-deployment.mjs` | 修改 | 新增 `edge-rate-limit`（`info`）：明确不检测边缘限速、需人工确认 |
 | `scripts/security-audit.mjs` | 修改 | 修正计数假设与锁定预期；导入预检探测改为编辑者 403（未执行） |
 | `tests/auth-hardening.test.mjs` | **新增** | 27 例定向回归 |
@@ -415,8 +415,8 @@ ALL MUTATIONS CAUGHT                     # exit 0
 
 ```text
  git status --short
- M docs/SECURITY-SPEC.md
- M docs/edge-cdn-hardening.md
+ M docs/security/SECURITY-SPEC.md
+ M docs/deploy/edge-cdn-hardening.md
  M scripts/check-deployment.mjs
  M scripts/security-audit.mjs
  M src/pages/api/import/preview.ts
@@ -435,4 +435,4 @@ ALL MUTATIONS CAUGHT                     # exit 0
 
 ## 10. 一句话交付摘要
 
-SJ-A-01…05 及其四轮复核反馈全部落地：账号桶不再封锁正确口令（改为只拒绝失败尝试）、四条新鲜证明路径有 5/15min 账号预算与 30/15min 可信客户端预算且失败在业务事务外结算、挑战验证**准入先于归属与结算**（含畸形输入；已耗尽的客户端不能再推进站点熔断）、导入预检先授权再读体并加 10/h 预算、认证失败统一计入 `login-site`、垃圾 token 不再占用 `unknown` 占位身份、错误转换收敛到 `http.ts#errorShape()`；另补 `docs/edge-cdn-hardening.md §3b`（认证端点专用边缘限速 + 实测验收）与 `deploy:check` 的 `info` 提示；第四轮复核后把 §3b.2 的 location 改成 `^~ /api/login/`（正则块会被 §3 的 `^~ /api/` 屏蔽），§3b.3 全部请求补 `Origin` 并把核心判据换成边缘日志的 `limit_req=REJECTED`。**165/165** 通过（既有 137 + 新增 27 + 部署自检 1），`npm run check` 0/0/0（171 文件），`npm run build` 后 `dist:check` ok，实例 4/4、浏览器 36/36，**12 个定点变异全部命中**；未提交、未推送、未部署，未做全面安全认证。
+SJ-A-01…05 及其四轮复核反馈全部落地：账号桶不再封锁正确口令（改为只拒绝失败尝试）、四条新鲜证明路径有 5/15min 账号预算与 30/15min 可信客户端预算且失败在业务事务外结算、挑战验证**准入先于归属与结算**（含畸形输入；已耗尽的客户端不能再推进站点熔断）、导入预检先授权再读体并加 10/h 预算、认证失败统一计入 `login-site`、垃圾 token 不再占用 `unknown` 占位身份、错误转换收敛到 `http.ts#errorShape()`；另补 `docs/deploy/edge-cdn-hardening.md §3b`（认证端点专用边缘限速 + 实测验收）与 `deploy:check` 的 `info` 提示；第四轮复核后把 §3b.2 的 location 改成 `^~ /api/login/`（正则块会被 §3 的 `^~ /api/` 屏蔽），§3b.3 全部请求补 `Origin` 并把核心判据换成边缘日志的 `limit_req=REJECTED`。**165/165** 通过（既有 137 + 新增 27 + 部署自检 1），`npm run check` 0/0/0（171 文件），`npm run build` 后 `dist:check` ok，实例 4/4、浏览器 36/36，**12 个定点变异全部命中**；未提交、未推送、未部署，未做全面安全认证。

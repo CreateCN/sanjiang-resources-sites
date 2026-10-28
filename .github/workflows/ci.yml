@@ -19,6 +19,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - name: Docs links, anchors and index coverage
+        run: npm run docs:check
       - run: npm test
       - run: npm run build
       - name: Instance isolation (Empty + Demo, two servers)

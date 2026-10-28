@@ -133,7 +133,7 @@ export type ClientIdentity =
 export interface ClientBudget { scope: string; maximum: number; windowMs: number }
 
 const TRUST_PROXY_PATTERN = /^(1|true|on|yes)$/i;
-/** 代理必须带上的共享凭据头。名称固定，见 docs/deploy-docker.md。 */
+/** 代理必须带上的共享凭据头。名称固定，见 docs/deploy/deploy-docker.md。 */
 export const PROXY_SECRET_HEADER = 'x-sanjiang-proxy-secret';
 /** 过短的共享凭据等于没有：少于 16 字符按"未配置"处理（fail closed）。 */
 export const PROXY_SECRET_MIN_LENGTH = 16;

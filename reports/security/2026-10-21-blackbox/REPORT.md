@@ -14,7 +14,7 @@
 
 ## 环境、边界与交付状态
 
-- 基准提交：`135033be93159fcefa23a9a7b7ebb5453613c8ef`。开始时工作区已有 `README.md` 修改，以及未跟踪的 `docs/FEATURES.md`、`scripts/security-audit.mjs`；均保留。
+- 基准提交：`135033be93159fcefa23a9a7b7ebb5453613c8ef`。开始时工作区已有 `README.md` 修改，以及未跟踪的 `docs/product/FEATURES.md`、`scripts/security-audit.mjs`；均保留。
 - 使用现有 Dockerfile 重新构建生产镜像 `sanjiang-blackbox:20261021`，运行生产入口；没有使用开发服务器。应用镜像 ID 见 [deployment.txt](deployment.txt)。
 - 链路：测试客户端 → `https://localhost:8443` → Nginx → 应用 `4321`。`SITE_URL=https://localhost:8443`；数据库完全隔离。Nginx 配置见 [nginx.conf](nginx.conf)。
 - Nginx 按 README 剥离来访 `X-Forwarded-For`，并覆盖 `X-Forwarded-Proto`；请求体限制 1 MiB。没有额外添加 WAF、CSP 或限流规则，以便观察应用本身边界。

@@ -12,7 +12,7 @@
  * 前置条件（与 restore-db 一致）：app、maintenance、定时任务与所有媒体任务全部停止。
  * 工具在**任何破坏性操作之前**扫描同一 PID 命名空间内持有目标库/sidecar 的进程；
  * 检测到使用方即拒绝，不写目标文件。容器之间互相看不到对方的进程，Docker 部署
- * 必须先停 app 与 maintenance（见 docs/operations.md）。
+ * 必须先停 app 与 maintenance（见 docs/ops/operations.md）。
  */
 import { createHash } from 'node:crypto';
 import {

@@ -4,7 +4,7 @@
 本文是**约束**，不是建议清单：标注「必须」的条款在代码评审与发布门禁中逐条检查；需要偏离时走 §13 的例外流程。
 版本历史与逐版变更见文末「变更记录」；正文只描述当前必须满足的状态。
 
-配套材料：[REPORT.md](../reports/security/2026-10-21-attacker/REPORT.md)（黑盒审查）、[BF-REPORT.md](../reports/security/2026-10-21-attacker/BF-REPORT.md)（暴力测试）、[ROOT-CAUSE-AND-FIX.md](../reports/security/2026-10-21-attacker/ROOT-CAUSE-AND-FIX.md)（根因与修复记录）、[FIX-RESULT.md](../reports/security/2026-10-25-auth-review/FIX-RESULT.md)（认证与再认证修复后的证据）。
+配套材料：[REPORT.md](../../reports/security/2026-10-21-attacker/REPORT.md)（黑盒审查）、[BF-REPORT.md](../../reports/security/2026-10-21-attacker/BF-REPORT.md)（暴力测试）、[ROOT-CAUSE-AND-FIX.md](../../reports/security/2026-10-21-attacker/ROOT-CAUSE-AND-FIX.md)（根因与修复记录）、[FIX-RESULT.md](../../reports/security/2026-10-25-auth-review/FIX-RESULT.md)（认证与再认证修复后的证据）。
 
 ---
 
@@ -314,7 +314,7 @@
 - 反向代理**必须**先还原真实客户端地址（`set_real_ip_from` + `real_ip_header`），再做任何按 IP 的限流；白名单判断**必须**用改写前的 `$realip_remote_addr`，限流/日志用改写后的 `$remote_addr`。
 - 边缘层**应**配置 `limit_req` / `limit_conn` 抗 CC，并与应用层限流分工：边缘负责量，应用负责业务语义（失败次数、配额、写入去重）。
 - 回源 IP 段**必须**纳入例行核对（每次 CDN/DCDN 变更后），变更记录写入部署文档。
-- 详细配置、验证命令与"CDN 被切沙箱"应急预案见 [边缘防护](edge-cdn-hardening.md)。
+- 详细配置、验证命令与"CDN 被切沙箱"应急预案见 [边缘防护](../deploy/edge-cdn-hardening.md)。
 
 ### 9.2 安全响应头（必须）
 

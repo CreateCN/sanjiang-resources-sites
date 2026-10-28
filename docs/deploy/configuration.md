@@ -41,7 +41,7 @@
 | `MEDIA_QUOTA_BYTES` | 512 MiB | 媒体总预算 |
 | `MEDIA_MIN_FREE_BYTES` | 128 MiB | 落盘保留余量 |
 
-完整示例见 [.env.example](../.env.example)。
+完整示例见 [.env.example](../../.env.example)。
 
 ## 4. 密钥与文件权限
 
@@ -64,4 +64,4 @@ curl -fsS "$SITE_URL/api/health/" | grep '"db":"ok"'
 node -e "console.log(new URL(process.env.SITE_URL).origin)"
 ```
 
-部署前建议按 [升级与回滚](upgrade.md) 做一次离线备份与恢复演练。
+部署前建议按 [升级与回滚](../ops/upgrade.md) 做一次离线备份与恢复演练。

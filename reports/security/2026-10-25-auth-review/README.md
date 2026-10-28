@@ -4,7 +4,7 @@
 - 分支 / HEAD：`master` / `93fc92199775928ad22423c2fd17b9839f8b5a91`
 - 工作区：**开工时干净**（`git status --short` 无输出，`git diff --check` 无输出）；本轮**未修改任何业务源码**，只新增本报告目录
 - 构建产物：`dist/` 与 `src/` 一致（`node scripts/check-dist-freshness.mjs` → `{"status":"ok","distAt":"2026-10-25T04:53:58.111Z"}`）
-- 输入：审查方案 `sanjiang-auth-security-review-plan.md`（322 行）、`docs/SECURITY-SPEC.md`（v1.8）
+- 输入：审查方案 `sanjiang-auth-security-review-plan.md`（322 行）、`docs/security/SECURITY-SPEC.md`（v1.8）
 - 方式：源码审查 + 规范逐条对照 + 临时数据库定向复现；**未访问公网、未对生产环境发起任何请求、未使用真实账户或真实 TOTP 密钥**
 
 ---
@@ -111,8 +111,8 @@ requireOrigin → readForm(MANAGE_MAX_BYTES) → 动作级体积上限 → draft
 | 项 | 位置 | 状态 |
 |---|---|---|
 | `deleteUser()` | `src/server/store.ts:323` | **无任何调用点**（无路由、无 `MANAGE_ACTION_ROLES` 登记）→ 死代码，不构成入口；建议删除或补入口并写明门禁 |
-| "退出其他/全部会话"、设备列表 | `docs/SECURITY-SPEC.md:152`（**应**提供） | 未实现。§4.3 用的是"应"，不阻断发布，但撤销能力目前只能靠改密/改角色/停用/管理员重置 |
-| CSRF 令牌轮换 | `docs/SECURITY-SPEC.md:154`（**应**） | 未实现（由会话令牌派生），规范已注明"现状可接受" |
+| "退出其他/全部会话"、设备列表 | `docs/security/SECURITY-SPEC.md:152`（**应**提供） | 未实现。§4.3 用的是"应"，不阻断发布，但撤销能力目前只能靠改密/改角色/停用/管理员重置 |
+| CSRF 令牌轮换 | `docs/security/SECURITY-SPEC.md:154`（**应**） | 未实现（由会话令牌派生），规范已注明"现状可接受" |
 | `/api/import/preview/` 的**路由级**越权测试 | `tests/*.mjs` | 只有 `importer.previewImport()` 的单元用例，**没有任何用例断言该 HTTP 路由的 401/403**（见 §6 测试缺口） |
 
 ---
@@ -290,7 +290,7 @@ requireOrigin → readForm(MANAGE_MAX_BYTES) → 动作级体积上限 → draft
 10. **建议修复（三选一，必须写进规范）**
     - (a) 账号桶只拦**失败**：先 `verifyPassword`，命中则清 `login-user` 并放行（此时账号桶只限制"每窗口 10 次失败"，与 §6.1 字面一致）；**推荐**
     - (b) 改渐进退避（30s → 2m → 10m → 1h）并在每次成功后清零
-    - (c) 保留现行为，但在 §4.2 与 §13 登记为**已接受风险/例外**，并在 `docs/operations.md` 写明解锁命令与演练
+    - (c) 保留现行为，但在 §4.2 与 §13 登记为**已接受风险/例外**，并在 `docs/ops/operations.md` 写明解锁命令与演练
     - 回归：新增 `第三方 10 次失败后，正确口令在 (a)/(b) 下必须成功`（或对 (c) 增加"文档存在 + 解锁命令可用"的断言）
 
 ### SJ-A-02（Medium）｜敏感操作的"新鲜证明"完全没有失败预算：可无限次猜测当前口令与 6 位 TOTP
@@ -395,7 +395,7 @@ requireOrigin → readForm(MANAGE_MAX_BYTES) → 动作级体积上限 → draft
 
 | 项 | 原因 | 影响 |
 |---|---|---|
-| 真实反向代理链路（Nginx + `X-Sanjiang-Proxy-Secret` 正常路径） | 需要容器/代理环境；本轮只验证"凭据缺失 → `unverified`"（P-H）与 9 种组合单测 | `TRUST_PROXY=1` + **正确凭据** + 单值 XFF 的端到端行为**未在 HTTP 层复测**；发布前仍建议按 `docs/deploy-docker.md` 做一次真实反代联调 |
+| 真实反向代理链路（Nginx + `X-Sanjiang-Proxy-Secret` 正常路径） | 需要容器/代理环境；本轮只验证"凭据缺失 → `unverified`"（P-H）与 9 种组合单测 | `TRUST_PROXY=1` + **正确凭据** + 单值 XFF 的端到端行为**未在 HTTP 层复测**；发布前仍建议按 `docs/deploy/deploy-docker.md` 做一次真实反代联调 |
 | 多进程/多实例共享同一 SQLite 的并发限流语义 | 单机单进程部署形态；本轮未起多实例 | SJ-A-07 的"多写者可多放行 ≈写者数 次"仅为推理，未实测 |
 | `npm run check`（`astro check`） | 与本轮鉴权结论无关；`dist` 已是最新，说明类型检查此前通过 | 未在本轮取得新的类型检查证据 |
 | `npm test`（全量） | 会执行 `tests/linkcheck.test.mjs` 的真实 DNS / `93.184.216.34` 出站请求，违反方案 §2.5 | 全量绿灯**未在本轮复现**；只复现了 4 个鉴权相关文件 |

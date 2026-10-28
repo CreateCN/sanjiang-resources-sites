@@ -69,7 +69,7 @@ export function writeReleaseNotes(metadataFile, outputFile) {
     '',
     '## 兼容与回滚',
     '',
-    '升级前按 `docs/upgrade.md` 停写备份；数据库只前进不回退。完整支持范围见 `SECURITY.md` 与 `docs/release.md`。',
+    '升级前按 `docs/ops/upgrade.md` 停写备份；数据库只前进不回退。完整支持范围见 `SECURITY.md` 与 `docs/deploy/release.md`。',
     '',
     '## 校验',
     '',

@@ -24,21 +24,21 @@
 | 文档 | 内容 |
 |---|---|
 | [文档索引](docs/README.md) | 全部文档的分类索引、与报告目录的边界、文档维护约定 |
-| [功能清单](docs/FEATURES.md) | 已实现 / 未实现功能、明确不做与重新评估条件 |
-| [配置与边界](docs/configuration.md) | 三层配置、环境变量、SITE_URL 与密钥边界 |
-| [初始化](docs/initialization.md) | Empty/Demo、CLI、异常库接管、导入/恢复的区别 |
-| [品牌与主题](docs/branding.md) | 品牌字段、媒体、强调色、issuer 与归属开关 |
-| [静态赞助位](docs/sponsorship.md) | 数据、展示条件、URL/媒体校验、安全边界与运维 |
-| [资源范围与政策](docs/resource-policy.md) | scope/access、审核、素材与非官方边界 |
-| [升级与回滚](docs/upgrade.md) | 停写备份、升级顺序、回滚与硬中断恢复 |
-| [升级回滚演练](docs/upgrade-rehearsal.md) | 旧版本 → 候选 → 数据恢复 → 旧版本的实际记录与复现脚本 |
+| [功能清单](docs/product/FEATURES.md) | 已实现 / 未实现功能、明确不做与重新评估条件 |
+| [配置与边界](docs/deploy/configuration.md) | 三层配置、环境变量、SITE_URL 与密钥边界 |
+| [初始化](docs/deploy/initialization.md) | Empty/Demo、CLI、异常库接管、导入/恢复的区别 |
+| [品牌与主题](docs/product/branding.md) | 品牌字段、媒体、强调色、issuer 与归属开关 |
+| [静态赞助位](docs/product/sponsorship.md) | 数据、展示条件、URL/媒体校验、安全边界与运维 |
+| [资源范围与政策](docs/product/resource-policy.md) | scope/access、审核、素材与非官方边界 |
+| [升级与回滚](docs/ops/upgrade.md) | 停写备份、升级顺序、回滚与硬中断恢复 |
+| [升级回滚演练](docs/ops/upgrade-rehearsal.md) | 旧版本 → 候选 → 数据恢复 → 旧版本的实际记录与复现脚本 |
 | [图片与版权记录](public/images/CREDITS.md) | 每张截图的来源、许可与下架处理 |
-| [运维手册](docs/operations.md) | 图片构建、维护进程、站点备份恢复与时间配置 |
-| [发行与部署](docs/release.md) | 发行镜像构建、OCI 元数据、固定 digest、支持范围与检查清单 |
-| [Docker 生产部署](docs/deploy-docker.md) | Compose 拓扑、端口与源 IP、反向代理容器、备份升级与排查 |
-| [非 Docker 部署](docs/deploy-local.md) | systemd + Nginx 的宿主机安装、定时任务与备份恢复 |
-| [边缘防护（CDN/CC/DDoS）](docs/edge-cdn-hardening.md) | 源站隐身、真实 IP、边缘限流、DCDN/WAF 升级与应急预案 |
-| [安全设计与实现规范](docs/SECURITY-SPEC.md) | 身份/限流/输入输出/SSRF/响应头/验收清单等强制约束 |
+| [运维手册](docs/ops/operations.md) | 图片构建、维护进程、站点备份恢复与时间配置 |
+| [发行与部署](docs/deploy/release.md) | 发行镜像构建、OCI 元数据、固定 digest、支持范围与检查清单 |
+| [Docker 生产部署](docs/deploy/deploy-docker.md) | Compose 拓扑、端口与源 IP、反向代理容器、备份升级与排查 |
+| [非 Docker 部署](docs/deploy/deploy-local.md) | systemd + Nginx 的宿主机安装、定时任务与备份恢复 |
+| [边缘防护（CDN/CC/DDoS）](docs/deploy/edge-cdn-hardening.md) | 源站隐身、真实 IP、边缘限流、DCDN/WAF 升级与应急预案 |
+| [安全设计与实现规范](docs/security/SECURITY-SPEC.md) | 身份/限流/输入输出/SSRF/响应头/验收清单等强制约束 |
 | [安全评估档案](reports/security/README.md) | 历次安全评估报告、根因分析与证据索引 |
 | [Agent 约定](docs/agents/domain.md) | 仓库的 issue tracker、标签与领域文档约定 |
 
@@ -81,7 +81,7 @@ docker compose up -d --build             # 首次启动默认 Empty
 docker compose exec app node scripts/create-admin.mjs
 ```
 
-需要 Demo 示例时，在第一次 `up` 之前用一次性容器初始化（详见 [初始化](docs/initialization.md)）：
+需要 Demo 示例时，在第一次 `up` 之前用一次性容器初始化（详见 [初始化](docs/deploy/initialization.md)）：
 
 ```bash
 docker compose build
@@ -90,9 +90,9 @@ docker compose up -d
 ```
 
 默认镜像只包含许可明确的截图；旧站仍需原 `/images` 时，确认权利后显式使用
-`INCLUDE_LEGACY_ASSETS=1` 构建兼容素材（见 [发行与部署](docs/release.md)）。
+`INCLUDE_LEGACY_ASSETS=1` 构建兼容素材（见 [发行与部署](docs/deploy/release.md)）。
 
-完整步骤（端口/网络坑、反向代理容器、备份恢复、升级回滚、故障排查）见 [Docker 生产部署](docs/deploy-docker.md)。
+完整步骤（端口/网络坑、反向代理容器、备份恢复、升级回滚、故障排查）见 [Docker 生产部署](docs/deploy/deploy-docker.md)。
 
 ### Docker 发行镜像（固定 digest）
 
@@ -105,11 +105,11 @@ BACKUP_HOST_DIR="/srv/sanjiang/backups" \
 docker compose -f compose.release.yml up -d
 ```
 
-构建、标签、推送、验签与支持范围见 [发行与部署](docs/release.md) 与 [SECURITY.md](SECURITY.md)。
+构建、标签、推送、验签与支持范围见 [发行与部署](docs/deploy/release.md) 与 [SECURITY.md](SECURITY.md)。
 
 ### 非 Docker（宿主机）
 
-没有 Docker 时用 systemd + Nginx 直接跑生产构建，步骤与安全配置见 [非 Docker 部署](docs/deploy-local.md)。
+没有 Docker 时用 systemd + Nginx 直接跑生产构建，步骤与安全配置见 [非 Docker 部署](docs/deploy/deploy-local.md)。
 
 ## 配置
 
@@ -131,7 +131,7 @@ docker compose -f compose.release.yml up -d
 | `TOTP_ENC_KEY` | 无 | 32 字节 base64url，加密 TOTP 密钥；缺失时双因素启用/验证 fail-closed |
 | `TOTP_REQUIRED_FOR` | `off` | `off`/`admin`/`admin,editor`；切换前必须先跑 `npm run totp:policy` |
 
-环境变量示例见 [.env.example](.env.example)；任务时间（`BACKUP_UTC_HOUR`、`LINK_CHECK_UTC_*`、`METRICS_CLEANUP_UTC_HOUR`）与 `COMMIT_SHA` 的用法见 [运维手册](docs/operations.md) 与 [发行与部署](docs/release.md)；优先级与密钥边界见 [配置与部署边界](docs/configuration.md)。
+环境变量示例见 [.env.example](.env.example)；任务时间（`BACKUP_UTC_HOUR`、`LINK_CHECK_UTC_*`、`METRICS_CLEANUP_UTC_HOUR`）与 `COMMIT_SHA` 的用法见 [运维手册](docs/ops/operations.md) 与 [发行与部署](docs/deploy/release.md)；优先级与密钥边界见 [配置与部署边界](docs/deploy/configuration.md)。
 
 ## 常用命令
 
@@ -167,7 +167,7 @@ docker compose -f compose.release.yml up -d
 | `npm run deploy:check` | 部署自检：`SITE_URL`、代理凭据、Cookie 与 fail-closed 组合（`--strict` 把警告升为错误） |
 | `npm run release:check -- vX.Y.Z` | 生成并校验发行元数据（版本、source、revision、licenses） |
 | `npm run acceptance:proxy` | 用真实套接字验证代理凭据归属与"归属失败退化为站点级预算"（本地可重复） |
-| `npm run rehearsal:upgrade` | 升级回滚演练（见 [演练记录](docs/upgrade-rehearsal.md)） |
+| `npm run rehearsal:upgrade` | 升级回滚演练（见 [演练记录](docs/ops/upgrade-rehearsal.md)） |
 
 脚本全量清单与实现见 `package.json` 与 `scripts/`；带 `pre*` 前缀的是自动钩子，不单独调用。
 
@@ -176,7 +176,7 @@ docker compose -f compose.release.yml up -d
 ## 部署要点
 
 - 端口默认只绑定 `127.0.0.1:4321`，对外必须放在 HTTPS 反向代理（Nginx/Caddy）后面。
-- 上公网前先做**源站隐身**：Nginx 只允许 CDN 回源段与运维 IP，直连 `return 444`；否则源站 IP 一旦泄露，CDN 层防护可被完全绕过。见 [边缘防护](docs/edge-cdn-hardening.md)。
+- 上公网前先做**源站隐身**：Nginx 只允许 CDN 回源段与运维 IP，直连 `return 444`；否则源站 IP 一旦泄露，CDN 层防护可被完全绕过。见 [边缘防护](docs/deploy/edge-cdn-hardening.md)。
 - 有 CDN 时必须 `set_real_ip_from` + `real_ip_header` 还原访客 IP，否则 `limit_req` 与应用按访客限流都会退化成"全站一个桶"。
 - 边缘层再加 `limit_req`/`limit_conn` 抗 CC（应用层限流负责业务语义，两层不冲突）。
 - 数据（SQLite + `media/`）在命名卷 `site-data`，备份写到宿主机目录；`docker compose down -v` 会删除全部数据。
@@ -206,7 +206,7 @@ docker compose -f compose.release.yml up -d
   访问时伪造或轮换 `X-Forwarded-For` 换不到新额度。`TRUST_PROXY=1` 但没配置凭据时，
   应用 fail closed（全部按不可信身份）并在首次请求时告警；用
   `node scripts/check-deployment.mjs` 可以提前发现。
-  详见 [安全设计与实现规范](docs/SECURITY-SPEC.md)。
+  详见 [安全设计与实现规范](docs/security/SECURITY-SPEC.md)。
 - 忘记管理员密码没有邮件找回：在服务器上再创建一位管理员，或谨慎地直接操作数据库。
 
 ## 备份与恢复
@@ -258,7 +258,7 @@ npm run db:restore -- --backup ./backups/site-YYYY-MM-DD.sqlite --yes
 - 健康检查 `/api/health/` 会查询数据库，返回 `{status, db, schema, uptime}`。
 - 请求日志为 JSON 行，不记录查询串、IP、UA。
 
-更细的边界、未实现项与已知限制见 [功能清单](docs/FEATURES.md)。
+更细的边界、未实现项与已知限制见 [功能清单](docs/product/FEATURES.md)。
 
 ## 上线前核对
 
@@ -280,7 +280,7 @@ src/
 └── styles/            公开站与后台样式
 scripts/               建管理员、备份/恢复、批量链接检查、维护
 tests/                 Node、后台端到端、浏览器测试
-docs/                  产品、部署、安全、设计与 Agent 文档
+docs/                  product/ deploy/ ops/ security/ design/ agents/，入口是 docs/README.md
 ```
 
 ## 内容维护
@@ -294,7 +294,7 @@ docs/                  产品、部署、安全、设计与 Agent 文档
 - 单机 SQLite + app/maintenance 两个进程（可同机容器），无多机、高可用或读写分离。
 - 无邮件服务：无密码找回、无邮件/webhook 通知；后台以公告板提示待办。
 - 链接检查是提示而非判决，不会自动下架。
-- 图片上传、全文搜索、多语言、学生账户、评论、AI 问答、定时发布均未实现，详见 [功能清单](docs/FEATURES.md)。
+- 图片上传、全文搜索、多语言、学生账户、评论、AI 问答、定时发布均未实现，详见 [功能清单](docs/product/FEATURES.md)。
 
 ## 支持范围
 

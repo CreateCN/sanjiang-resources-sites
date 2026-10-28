@@ -575,7 +575,7 @@ target_url：拒绝其他协议、协议相对 URL、凭据、控制字符、loc
 
 **依赖**：P2-03。
 
-**修改范围**：赞助安全/浏览器/恢复测试、`docs/sponsorship.md`，必要缺陷修复。
+**修改范围**：赞助安全/浏览器/恢复测试、`docs/product/sponsorship.md`，必要缺陷修复。
 
 **执行**：覆盖 javascript/data/伪造协议、HTML、控制字符、畸形时间、媒体状态并发变化、表单重复字段、直接 API 越权、缺 Origin/CSRF、撤销会话和审计失败。
 

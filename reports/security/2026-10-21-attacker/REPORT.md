@@ -20,7 +20,7 @@
 
 在本次覆盖范围内**未复现**认证绕过、权限提升、可执行 XSS、SSRF（无法验证，见 ATK-06）、路径穿越、敏感文件下载、请求走私或缓存投毒。结论只适用于实际测试的输入与部署形态。
 
-未阅读 `src/`、构建产物、现有测试与 `scripts/security-audit.mjs`；只阅读 README、`docs/FEATURES.md`、`package.json`、`Dockerfile`、`docker-compose.yml`、`.env.example` 作为部署与功能边界。未修改任何原有源码、配置或文档（`git status` 仍为审查前状态：`README.md` 已有修改、`docs/FEATURES.md`、`scripts/security-audit.mjs`、`reports/` 未跟踪）。页面 HTML、HTTP 响应、浏览器 DOM 与运行日志属于黑盒观察对象。
+未阅读 `src/`、构建产物、现有测试与 `scripts/security-audit.mjs`；只阅读 README、`docs/product/FEATURES.md`、`package.json`、`Dockerfile`、`docker-compose.yml`、`.env.example` 作为部署与功能边界。未修改任何原有源码、配置或文档（`git status` 仍为审查前状态：`README.md` 已有修改、`docs/product/FEATURES.md`、`scripts/security-audit.mjs`、`reports/` 未跟踪）。页面 HTML、HTTP 响应、浏览器 DOM 与运行日志属于黑盒观察对象。
 
 ## 部署与环境
 

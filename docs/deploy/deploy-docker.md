@@ -48,7 +48,7 @@ SITE_INIT_NAME=你的实例名称                # 同时冻结为 TOTP issuer
 
 配置分层、origin 校验与密钥边界见 [配置与边界](configuration.md)。
 
-> `TRUST_PROXY=0` 只在"应用直连、且只服务本机单用户"时使用；否则所有访客会共享一个限流桶（详见 [SECURITY-SPEC](SECURITY-SPEC.md) §2.1）。
+> `TRUST_PROXY=0` 只在"应用直连、且只服务本机单用户"时使用；否则所有访客会共享一个限流桶（详见 [SECURITY-SPEC](../security/SECURITY-SPEC.md) §2.1）。
 
 ### 限流身份的判据：代理共享凭据
 
@@ -205,7 +205,7 @@ curl -fsS http://127.0.0.1:4321/api/health/ | grep '"db":"ok"'
 - 备份与恢复都在一次性容器中运行，**不挂载 Docker socket**；
 - 工具只检测同一 PID 命名空间的进程，跨容器/跨主机的使用者必须人工确认已停止；
 - 恢复成功后会清空会话/挑战/恢复码、递增 `auth_version`，用户需要重新登录并生成恢复码；
-- 失败或硬中断的诊断与恢复步骤见 [运维](operations.md) 与 [升级与回滚](upgrade.md)；
+- 失败或硬中断的诊断与恢复步骤见 [运维](../ops/operations.md) 与 [升级与回滚](../ops/upgrade.md)；
 - 数据卷内的 `site.sqlite.restore-*` 与 `site-restore-*.log.json` 是故障现场，确认后再人工清理；
 - 备份含口令哈希、反馈正文与品牌配置：目录 `0700`，不要进仓库，最好加密后异地保存；
 - `docker compose down -v` 会删数据卷，只在确定弃用时使用；
@@ -213,7 +213,7 @@ curl -fsS http://127.0.0.1:4321/api/health/ | grep '"db":"ok"'
 
 ## 8. 升级与回滚
 
-完整顺序、失败回退与硬中断处理见 [升级与回滚](upgrade.md)。最小步骤：
+完整顺序、失败回退与硬中断处理见 [升级与回滚](../ops/upgrade.md)。最小步骤：
 
 ```bash
 # 1. 停写并用旧版本做一次离线整站备份（见上一节）

@@ -4,7 +4,7 @@ import QRCode from 'qrcode';
 /**
  * TOTP 与密钥密封的权威实现。
  *
- * 设计约束（docs/SECURITY-SPEC.md §4.5）：
+ * 设计约束（docs/security/SECURITY-SPEC.md §4.5）：
  * - 算法固定 HMAC-SHA1 / 6 位 / 30 秒，窗口 ±1；窗口内固定跑完全部候选再返回。
  * - 密钥以 AES-256-GCM 密封，AAD 绑定 user:<id>，禁止明文或仅 base32 存放。
  * - 恢复码只存 sha256("<user_id>:<normalized>")，一次性。

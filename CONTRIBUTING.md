@@ -52,12 +52,12 @@ bash scripts/container-smoke.sh
 
 ## 文档与发行
 
-- 用户可见行为变化同步更新 `README.md`、`docs/FEATURES.md` 与相关操作文档。
+- 用户可见行为变化同步更新 `README.md`、`docs/product/FEATURES.md` 与相关操作文档。
 - 改文档后跑 `npm run docs:check`（校验链接、锚点与索引覆盖）；在 `docs/` 下新增文档时同步登记到 `docs/README.md`，设计文档登记到 `docs/design/README.md`。
 - 版本号在 `package.json`；发行镜像使用完整 40 位提交 SHA 与 `scripts/build-image.sh` 构建。
 - 发行标签与 Release 由维护者授权；PR 不触发 `.github/workflows/release.yml`，也不应修改版本标签。
 - 发布前先跑 workflow dry-run（`push_image=false`、`create_release=false`），确认镜像验收与 digest 元数据。
-- 发行步骤、支持范围与许可检查见 [docs/release.md](docs/release.md)。
+- 发行步骤、支持范围与许可检查见 [docs/deploy/release.md](docs/deploy/release.md)。
 - 不修改 `LICENSE` 的 MIT 原文；新增第三方组件时更新 `NOTICE`/`THIRD-PARTY-NOTICES.md`。
 
 ## 提交与 PR

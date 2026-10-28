@@ -1,7 +1,7 @@
 # 非 Docker 本地部署（systemd + Nginx）
 
 适用于没有 Docker、或希望直接在宿主机上跑生产构建的场景（单机 VPS、内网服务器、长期运行的开发机）。
-容器部署仍是推荐方式（见 [README](../README.md#docker推荐)）；本文是等价的宿主机方案，行为与安全边界保持一致。
+容器部署仍是推荐方式（见 [README](../../README.md#docker推荐)）；本文是等价的宿主机方案，行为与安全边界保持一致。
 
 > 关键差异只有两处：**进程由 systemd 托管**、**日志进 journald**。其余配置（`SITE_URL`、`TRUST_PROXY`、限流、备份、健康检查）与容器部署完全相同。
 
@@ -419,11 +419,11 @@ sudo -u sanjiang sqlite3 /srv/sanjiang/data/site.sqlite \
 2. 有 CDN 时，Nginx 必须先 `set_real_ip_from` + `real_ip_header` 还原访客 IP，否则 `limit_req` 和应用的按访客限流都会退化成"全站一个桶"。
 3. `X-Forwarded-For` 必须**覆盖**写入单值（`$remote_addr`），不要用 `$proxy_add_x_forwarded_for`。
 
-## 13. 安全注意事项（与 [SECURITY-SPEC](SECURITY-SPEC.md) 对应）
+## 13. 安全注意事项（与 [SECURITY-SPEC](../security/SECURITY-SPEC.md) 对应）
 
 1. **不要**把 4321 直接暴露到公网；如果必须直连（例如只在本机使用），设 `TRUST_PROXY=0`，并接受"所有请求共享一个限流桶"的语义。
 2. 应用只采信"持有 `TRUST_PROXY_SECRET` 的代理"写入的**单值** `X-Forwarded-For`（头名 `X-Sanjiang-Proxy-Secret`）。Caddy/Nginx 默认**追加** XFF，必须按本文覆盖写；凭据缺失或写错同样会退化为站点级限流。
 3. `TRUST_PROXY_SECRET` 是密钥：只放在 `/etc/sanjiang/sanjiang.env`（640）与 nginx 的 include 片段（600），不进仓库、不进备份、不进访问日志（`log_format` 不要带该头）。
 4. 备份含口令哈希与反馈正文：放仓库之外、`0700`、最好加密（`age`/`gpg`）后再异地复制。
 5. 定期：`npm audit`、`apt upgrade`、证书到期检查（certbot 自动续期需验证 `systemctl list-timers | grep certbot`）。
-6. 事故处置：先改密/停用账号撤销会话，再保全 `data/site.sqlite` 与 journal 日志，最后按 [安全档案](../reports/security/README.md) 的流程记录。
+6. 事故处置：先改密/停用账号撤销会话，再保全 `data/site.sqlite` 与 journal 日志，最后按 [安全档案](../../reports/security/README.md) 的流程记录。

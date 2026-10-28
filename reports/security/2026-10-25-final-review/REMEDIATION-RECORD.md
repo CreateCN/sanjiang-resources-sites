@@ -111,11 +111,11 @@ function report(level, code, message) {
 
 | 文件 | 改动 |
 |---|---|
-| `docs/deploy-local.md` | 环境文件示例加入 `TRUST_PROXY_SECRET`（并注明该文件因此含密钥、保持 640）；变量表新增一行；Nginx 示例加入 `include …/sanjiang-proxy-secret.conf` 与"凭据单独落盘 600"的命令；上线清单加入 `check-deployment --strict` 与"空 `login-client` = 凭据/头没配对"的判读；安全注意事项补凭据轮换与"不进日志/备份" |
-| `docs/deploy-docker.md` | Nginx 示例把 `proxy_set_header` 提到 server 级并显式警告 **nginx 是整组继承**（location 里写任意一条就会覆盖整组）；加入 `/media/` 示例与凭据 include；compose 片段挂载 `proxy-secret.conf`；补充 `--strict` 与 `raised` 说明 |
-| `docs/FEATURES.md` | 健康检查改为"只返回 `status`/`db`，详细诊断在 `/api/health/detail/`（管理员）"；限流说明补凭据要求与不可信身份的降级行为（只吃站点级预算） |
-| `docs/SECURITY-SPEC.md` | 必测矩阵删除已删除的 CIDR 机制与 `tests/trusted-proxy.test.mjs` 引用，改为现行凭据模型的实际测试路径；§4.2 增补"失败预算必须具名规则、禁止数组下标"；部署自检一行补 strict 矩阵；变更记录加 1.8 |
-| `docs/edge-cdn-hardening.md` | Caddy 示例的凭据改用占位值（不再暗示可读环境变量）|
+| `docs/deploy/deploy-local.md` | 环境文件示例加入 `TRUST_PROXY_SECRET`（并注明该文件因此含密钥、保持 640）；变量表新增一行；Nginx 示例加入 `include …/sanjiang-proxy-secret.conf` 与"凭据单独落盘 600"的命令；上线清单加入 `check-deployment --strict` 与"空 `login-client` = 凭据/头没配对"的判读；安全注意事项补凭据轮换与"不进日志/备份" |
+| `docs/deploy/deploy-docker.md` | Nginx 示例把 `proxy_set_header` 提到 server 级并显式警告 **nginx 是整组继承**（location 里写任意一条就会覆盖整组）；加入 `/media/` 示例与凭据 include；compose 片段挂载 `proxy-secret.conf`；补充 `--strict` 与 `raised` 说明 |
+| `docs/product/FEATURES.md` | 健康检查改为"只返回 `status`/`db`，详细诊断在 `/api/health/detail/`（管理员）"；限流说明补凭据要求与不可信身份的降级行为（只吃站点级预算） |
+| `docs/security/SECURITY-SPEC.md` | 必测矩阵删除已删除的 CIDR 机制与 `tests/trusted-proxy.test.mjs` 引用，改为现行凭据模型的实际测试路径；§4.2 增补"失败预算必须具名规则、禁止数组下标"；部署自检一行补 strict 矩阵；变更记录加 1.8 |
+| `docs/deploy/edge-cdn-hardening.md` | Caddy 示例的凭据改用占位值（不再暗示可读环境变量）|
 
 所有示例均为占位值，未写入真实凭据。
 
@@ -134,7 +134,7 @@ function report(level, code, message) {
 src/server/auth.ts                      P1 规则选择 + LimitRule 类型
 src/server/http.ts                      注释（不再提"对端地址"判定）
 scripts/check-deployment.mjs            strict 统一升级
-docs/deploy-local.md / deploy-docker.md / FEATURES.md / SECURITY-SPEC.md / edge-cdn-hardening.md   文档同步
+docs/deploy/deploy-local.md / deploy-docker.md / FEATURES.md / SECURITY-SPEC.md / edge-cdn-hardening.md   文档同步
 tests/totp-server.test.mjs              P1 回归 ×3
 tests/server.test.mjs                   P1 HTTP 回归 ×1
 tests/deployment.test.mjs               strict 矩阵重写（5 项）
@@ -260,7 +260,7 @@ tests/fixtures/child-report.mjs         新增：子进程失败诊断（不重�
   端口发布与容器网络，本地一律测不到，仍按 §8 的第 2～4 条由运维在目标环境确认；
 - 不并入 `npm test`：它需要构建产物与空闲端口，属发布门禁而非单元测试；已挂
   `preacceptance:proxy → check-dist-freshness`，避免拿旧 `dist` 出假结论；
-- 文档入口：`docs/deploy-local.md` §10 第 4b 项、`docs/deploy-docker.md` §12。
+- 文档入口：`docs/deploy/deploy-local.md` §10 第 4b 项、`docs/deploy/deploy-docker.md` §12。
 
 ### 9.5 第三轮实际执行
 
@@ -291,8 +291,8 @@ tests/fixtures/child-report.mjs         新增：子进程失败诊断（不重�
 ```
 scripts/proxy-acceptance.mjs        新增：反代联调门禁（真实套接字，11 项判据）
 package.json                        acceptance:proxy / preacceptance:proxy（先查 dist 新鲜度）
-docs/deploy-local.md                §10 上线清单新增 4b 项
-docs/deploy-docker.md               §12 上线核对新增一条（容器内运行）
+docs/deploy/deploy-local.md                §10 上线清单新增 4b 项
+docs/deploy/deploy-docker.md               §12 上线核对新增一条（容器内运行）
 reports/security/2026-10-25-final-review/README.md            §12 补记（结论与四条条件不变）
 reports/security/2026-10-25-final-review/REMEDIATION-RECORD.md §8 注解 + §9
 ```

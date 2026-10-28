@@ -137,7 +137,7 @@ docker compose -f compose.release.yml up -d
 - 无 `build:`，不读取源码；主机只需要 Docker 与 Compose。
 - 首次启动默认 Empty；需要 Demo 时在第一次启动前用一次性容器执行 `init-site.mjs --mode demo`。
 - `APP_PORT` 只改宿主端口，容器仍监听 4321。
-- 反向代理、源 IP、TLS、备份与升级见 [Docker 部署](deploy-docker.md) 与 [升级与回滚](upgrade.md)。
+- 反向代理、源 IP、TLS、备份与升级见 [Docker 部署](deploy-docker.md) 与 [升级与回滚](../ops/upgrade.md)。
 - 管理员初始化：`docker compose -f compose.release.yml run --rm --no-deps app node scripts/create-admin.mjs`。
 
 ## 7. 支持范围
@@ -167,7 +167,7 @@ docker compose -f compose.release.yml up -d
 
 ## 9. 安全与渠道
 
-- 漏洞报告遵循 [SECURITY.md](../SECURITY.md)；
+- 漏洞报告遵循 [SECURITY.md](../../SECURITY.md)；
 - 当前私密渠道标注为待配置，发布前必须由维护者启用 GitHub Private Vulnerability Reporting 或填写真实安全邮箱；
 - 不要在发行说明中虚构安全联系方式或响应时限。
 

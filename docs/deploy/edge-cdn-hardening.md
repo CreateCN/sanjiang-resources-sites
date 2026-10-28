@@ -4,7 +4,7 @@
 适用于 Docker 与宿主机两种部署（配置片段以 Nginx 为准，Caddy 差异在 §9 单列）。
 
 > 前置事实（来自本仓库当前实现，务必先读）：
-> 1. 应用自己承担了**按访客**的限流（登录/反馈/指标），身份来自 `TRUST_PROXY=1` + `TRUST_PROXY_SECRET` 共享凭据 + 代理覆盖写入的单值 `X-Forwarded-For`（见 [SECURITY-SPEC](SECURITY-SPEC.md) §2.1、§6）。**边缘层如果改坏了客户端地址或漏了凭据头，应用层限流会立刻退化成"全站一个桶"。**
+> 1. 应用自己承担了**按访客**的限流（登录/反馈/指标），身份来自 `TRUST_PROXY=1` + `TRUST_PROXY_SECRET` 共享凭据 + 代理覆盖写入的单值 `X-Forwarded-For`（见 [SECURITY-SPEC](../security/SECURITY-SPEC.md) §2.1、§6）。**边缘层如果改坏了客户端地址或漏了凭据头，应用层限流会立刻退化成"全站一个桶"。**
 > 2. 当前中间件对所有响应下发 `Cache-Control: no-store`，所以 CDN 目前**只能回源、不能缓存 HTML**。想用边缘缓存扛量，需要先改代码放行 `/_astro/*`、`/images/*` 的缓存（未在本文实施，见 §8）。
 > 3. 源站默认只把 4321 绑在 `127.0.0.1`。任何"为了省事直接暴露 4321/80/443"的操作都会让下面所有防护失效。
 
@@ -329,7 +329,7 @@ echo "login-site=$n"
 2. **不要在攻击中放开源站白名单**。把白名单整体打开 = 把源站直接交给攻击者，通常 5 分钟内就会被打挂。
 3. **预置一个不公开的运维入口**：例如 `ops.example.edu`，只允许运维固定 IP + 监控探针，用同一套 Nginx（不同 `server` 块、独立白名单），平时不用、出事时用来登录后台改内容/导数据。
 4. **静态兜底页（可选）**：CDN 或对象存储放一个"维护中"静态页，切换 DNS 到它，保证访客看到的是说明而不是超时。
-5. **记录与复盘**：保存 CDN 侧日志、账单、时间线；按 [安全档案](../reports/security/README.md) 的流程归档。
+5. **记录与复盘**：保存 CDN 侧日志、账单、时间线；按 [安全档案](../../reports/security/README.md) 的流程归档。
 
 这条预案的价值在于：**你不需要在被打的时候做架构决策**——决策已经提前做完并演练过。
 
@@ -361,7 +361,7 @@ echo "login-site=$n"
 
 ## 8. 与本项目现状的两处冲突（必须先知道）
 
-1. **`no-store` 让 CDN 只能回源**：中间件对所有响应设置 `Cache-Control: no-store`。这意味着 CDN 无法缓存 HTML，静态资源也大概率回源，抗量能力大打折扣。若要利用边缘缓存，需要改代码：对 `/_astro/*`（带内容哈希）与 `/images/optimized/*` 放行 `public, max-age=31536000, immutable`，其余仍 `no-store`。**这是代码改动，本文不实施**，需按 [SECURITY-SPEC](SECURITY-SPEC.md) 走评审。
+1. **`no-store` 让 CDN 只能回源**：中间件对所有响应设置 `Cache-Control: no-store`。这意味着 CDN 无法缓存 HTML，静态资源也大概率回源，抗量能力大打折扣。若要利用边缘缓存，需要改代码：对 `/_astro/*`（带内容哈希）与 `/images/optimized/*` 放行 `public, max-age=31536000, immutable`，其余仍 `no-store`。**这是代码改动，本文不实施**，需按 [SECURITY-SPEC](../security/SECURITY-SPEC.md) 走评审。
 2. **应用限流依赖 `TRUST_PROXY=1` + 共享凭据 + 单值 XFF**：Nginx 在 `real_ip` 之后必须同时写
    `proxy_set_header X-Sanjiang-Proxy-Secret "<TRUST_PROXY_SECRET>";` 与
    `proxy_set_header X-Forwarded-For $remote_addr;`；**不要**改成 `$proxy_add_x_forwarded_for`，

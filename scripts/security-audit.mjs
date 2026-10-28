@@ -1,5 +1,5 @@
 // Local-only, bounded security probes. Uses the dedicated data/security-audit DB.
-// Start the production server as documented in reports/security/README.md (or docs/deploy-local.md for a non-Docker setup).
+// Start the production server as documented in reports/security/README.md (or docs/deploy/deploy-local.md for a non-Docker setup).
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { randomBytes } from 'node:crypto';

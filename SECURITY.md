@@ -5,7 +5,7 @@
 - 当前维护预发布版本 **0.2.x**；只对最新发行版提供安全修复。
 - 支持环境：Node.js 24.x；Linux amd64 上的 Docker 镜像已在本次发行流程中验证。
 - 未验证：Windows 容器、arm64 镜像、多机/外部数据库、第三方 CDN 插件组合。不要假定这些组合获得同等支持。
-- 安全边界与实现约束见 [SECURITY-SPEC.md](docs/SECURITY-SPEC.md)。
+- 安全边界与实现约束见 [SECURITY-SPEC.md](docs/security/SECURITY-SPEC.md)。
 
 ## 私密报告渠道
 

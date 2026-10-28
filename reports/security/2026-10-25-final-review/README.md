@@ -33,7 +33,7 @@ git diff --check               → 无输出（clean）
 | 源码 | `src/server/security.ts`、`auth.ts`、`http.ts`、`migrations.ts`、`src/lib/private-address.ts`、`src/pages/api/health/detail.ts`（新增） |
 | 脚本 | `scripts/restore-site.mjs`、`restore-db.mjs`、`backup-site.mjs`、`security-audit.mjs`、`scripts/lib/offline-guard.mjs`（新增）、`scripts/check-deployment.mjs`（新增）、`scripts/check-dist-freshness.mjs`（新增） |
 | 测试 | `tests/server.test.mjs`、`migrations.test.mjs`、`backup-site.test.mjs`、`restore-failure.test.mjs`、`totp-server.test.mjs`、`tests/deployment.test.mjs`（新增） |
-| 文档 | `README.md`、`.env.example`、`docker-compose.yml`、`docs/SECURITY-SPEC.md`、`configuration.md`、`deploy-docker.md`、`deploy-local.md`、`edge-cdn-hardening.md`、`operations.md`、`upgrade.md`、`package.json`、`reports/security/README.md`、`reports/security/2026-10-25-fix/README.md`（新增） |
+| 文档 | `README.md`、`.env.example`、`docker-compose.yml`、`docs/security/SECURITY-SPEC.md`、`configuration.md`、`deploy-docker.md`、`deploy-local.md`、`edge-cdn-hardening.md`、`operations.md`、`upgrade.md`、`package.json`、`reports/security/README.md`、`reports/security/2026-10-25-fix/README.md`（新增） |
 
 ---
 
@@ -87,7 +87,7 @@ Reflect.set(request, clientAddressSymbol, clientIp);
 
 **影响面（重要）**：这是**破坏性配置变更**——升级后必须同时设置 `TRUST_PROXY_SECRET` 与反代的
 `X-Sanjiang-Proxy-Secret`。未设置时站点仍可访问，但按访客计的额度失效（退化为站点级）。
-已写入 `docs/upgrade.md` §0、`README`、`.env.example`、`docker-compose.yml`、`docs/deploy-docker.md`。
+已写入 `docs/ops/upgrade.md` §0、`README`、`.env.example`、`docker-compose.yml`、`docs/deploy/deploy-docker.md`。
 
 ### N-02（Medium，已修复）｜"用 dist 的测试"会静默跑旧代码
 
@@ -131,7 +131,7 @@ Reflect.set(request, clientAddressSymbol, clientIp);
 | 1 | 应用与反代在同一 Docker 网络 | 正常：代理持有凭据并覆盖写 XFF → 按访客分桶（实测见 §2 N-01 复测） |
 | 2 | 应用与其他**不可信容器**共享私网 | 不可信容器没有凭据 → 一律 `unverified`（只吃站点预算）；不能靠伪造私网 XFF 获得访客额度 |
 | 3 | 其他私网客户端能直连应用端口 | 同上：没有凭据 → `unverified`。**但端口暴露仍是风险**（可耗尽站点预算、可探测），必须按部署检查收敛 |
-| 4 | 多层反代 | 只要最内层写入"真实客户端地址 + 凭据"即可；中间层必须用 `real_ip` 还原 `$remote_addr`（见 `docs/edge-cdn-hardening.md`） |
+| 4 | 多层反代 | 只要最内层写入"真实客户端地址 + 凭据"即可；中间层必须用 `real_ip` 还原 `$remote_addr`（见 `docs/deploy/edge-cdn-hardening.md`） |
 | 5 | CDN / 外部代理 | 源站只接受 CDN 回源段 + 由 Nginx 写凭据与单值 XFF；应用不解析 CDN 头 |
 | 6 | 代理容器地址变化 / 网络重建 | 无影响：判据不是 IP，凭据与地址无关 |
 
@@ -180,7 +180,7 @@ Reflect.set(request, clientAddressSymbol, clientIp);
 - **零修改**：测试断言拒绝时目标 DB 的 sha256 不变、`objects/` 目录列表不变。
 - **`--assume-offline` 语义**：只覆盖"系统没有 `/proc`、无法检测"的情形，**不覆盖"检测到使用方"**（与 `restore-db` 一致），不是默认绕过。
 - **WAL/SHM**：目标库、`-wal`、`-shm` 都纳入 fd 扫描；恢复流程本身在替换前删除旧 sidecar，失败按日志回滚（既有测试覆盖）。
-- **能力边界（明确写入报告，不夸大）**：只在**同一 PID 命名空间**内有效。容器之间互相看不到对方进程，因此 Docker 部署必须由运维先 `docker compose stop app maintenance`，并确认没有其他容器挂载同一数据卷。`docs/operations.md` 已写成命令示例 + 前置检查；`restore-db`/`restore-site` 的输出里也带了同样的提示。
+- **能力边界（明确写入报告，不夸大）**：只在**同一 PID 命名空间**内有效。容器之间互相看不到对方进程，因此 Docker 部署必须由运维先 `docker compose stop app maintenance`，并确认没有其他容器挂载同一数据卷。`docs/ops/operations.md` 已写成命令示例 + 前置检查；`restore-db`/`restore-site` 的输出里也带了同样的提示。
 - **误导性成功**：`restore-site` 只有走完 `verify` 阶段才写 `status: restored`；失败路径写 `status: error` 并回滚（既有 + 新增测试覆盖）。
 
 ---

@@ -240,7 +240,7 @@ rateLimit('login-site', 'site', 500, 5 * 60 * 1000);
 **文档同步（必须一起改，否则下一个部署的人会踩同一个坑）**
 
 - `README.md`「部署要点」现在写的是"反向代理**不要**透传 `X-Forwarded-For`"，对应 Nginx 示例里的 `proxy_set_header X-Forwarded-For "";`。这正是把所有访客压成一只桶的原因。应改为"代理**覆盖**写入单个真实地址"（`X-Forwarded-For $remote_addr`），并说明"应用只接受单值、信任本机代理"。
-- `docs/FEATURES.md`「安全与隐私」里的限流描述需要补上三个实际数值（登录 10/账号/15 分钟、反馈 5/小时、指标 600/小时）和"窗口与 `Retry-After` 一致"的要求。
+- `docs/product/FEATURES.md`「安全与隐私」里的限流描述需要补上三个实际数值（登录 10/账号/15 分钟、反馈 5/小时、指标 600/小时）和"窗口与 `Retry-After` 一致"的要求。
 - 部署检查项：确认 4321 端口没有对公网暴露（`docker-compose.yml` 已绑定 `127.0.0.1`，保持）。
 
 验收：
@@ -371,7 +371,7 @@ reset(userKey);   // 成功后清空该账号的失败计数（IP 桶保持较�
 | `src/server/linkcheck.ts` | 新增 `resolvePublicTarget()`（端口白名单 80/443 + 解析结果校验）；连接固定到已校验 IP（undici `Agent.connect.lookup`）；GET 回退不下载响应体；逐跳重校验 | RC-7 |
 | `src/middleware.ts` | 增加 CSP（Report-Only）、HSTS（HTTPS 时）、Permissions-Policy、COOP、`X-Permitted-Cross-Domain-Policies` | RC-8 |
 | `docker-compose.yml` / `.env.example` / `README.md` | 新增 `TRUST_PROXY`；部署示例从"剥离 XFF"改为"覆盖写入单值 XFF + X-Real-IP"；补 `TRUST_PROXY` 配置说明 | RC-1 |
-| `docs/SECURITY-SPEC.md` | 新增《网站安全设计与实现规范》 | — |
+| `docs/security/SECURITY-SPEC.md` | 新增《网站安全设计与实现规范》 | — |
 | `tests/server.test.mjs` | 新增 4 组回归用例（身份、登录计数语义、反馈额度与 Retry-After、指标目标校验与容量） | 全部 |
 | `package.json` / `package-lock.json` | 显式依赖 `undici`（固定连接用） | RC-7 |
 

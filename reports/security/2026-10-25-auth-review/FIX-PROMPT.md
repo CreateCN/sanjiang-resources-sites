@@ -1,6 +1,6 @@
 # 认证审查修复提示词
 
-你在 `/media/sunhao/F/Project/sanjiang-resources-site` 工作。请落实认证安全修复，完成源码、规范、回归测试和交付说明。先读 `AGENTS.md`、`docs/agents/`、`docs/SECURITY-SPEC.md` 及本目录审查报告；以当前实现和可重复证据为准。
+你在 `/media/sunhao/F/Project/sanjiang-resources-site` 工作。请落实认证安全修复，完成源码、规范、回归测试和交付说明。先读 `AGENTS.md`、`docs/agents/`、`docs/security/SECURITY-SPEC.md` 及本目录审查报告；以当前实现和可重复证据为准。
 
 ## 范围与约束
 

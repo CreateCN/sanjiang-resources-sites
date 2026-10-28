@@ -80,7 +80,7 @@ docker compose run --rm --no-deps app node scripts/init-site.mjs --mode empty --
 | `site:restore` | 整站灾备（DB + 媒体） | 替换数据库与媒体，按安全语义清空认证 |
 
 内容导入不是初始化，也不会创建首个管理员。完整恢复前必须停止所有写入者，步骤见
-[升级与回滚](upgrade.md) 与 [运维](operations.md)。
+[升级与回滚](../ops/upgrade.md) 与 [运维](../ops/operations.md)。
 
 ## 7. 初始化后检查
 

@@ -170,7 +170,7 @@ Compose 默认启动 `app` 与 `maintenance` 两个容器，使用同一镜像�
 备份在独立子进程中运行，不会直接阻塞 Web 进程的事件循环，但仍消耗磁盘与数据库资源。
 备份文件权限为 `0600`，包含密码哈希和反馈；生产环境应另行安排异机副本与恢复演练。
 **定时任务的备份只是数据库诊断快照**，不含媒体二进制，不能保证 DB 与媒体同批一致。完整灾备必须
-停写后运行 `site:backup`，步骤见 [升级与回滚](upgrade.md) 与 [Docker 部署](deploy-docker.md) §7。
+停写后运行 `site:backup`，步骤见 [升级与回滚](upgrade.md) 与 [Docker 部署](../deploy/deploy-docker.md) §7。
 
 停止定时任务：`docker compose stop maintenance`。手动备份和检查入口仍可使用：
 

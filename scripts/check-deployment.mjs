@@ -77,7 +77,7 @@ export function evaluateDeployment(env = process.env, options = {}) {
   report('info', 'edge-rate-limit',
     '边缘按真实 IP 的限速无法自动检查：本脚本不检测 Nginx/CDN 的 limit_req/limit_conn，'
     + '也不代表它们已经配置。请人工确认 /api/login/、/api/login/totp/、/api/login/enroll/ '
-    + '三个认证端点共用同一条按还原后 $remote_addr 的限速，并按 docs/edge-cdn-hardening.md §3b 实测验收');
+    + '三个认证端点共用同一条按还原后 $remote_addr 的限速，并按 docs/deploy/edge-cdn-hardening.md §3b 实测验收');
 
   const errors = findings.filter((finding) => finding.level === 'error');
   return { event: 'deployment-check', status: errors.length > 0 ? 'error' : 'ok', strict, findings };
