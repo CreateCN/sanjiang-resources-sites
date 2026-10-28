@@ -105,6 +105,16 @@ test('CLI 契约：strict 下生产 HTTP 退出 1，且 JSON 标出被升级的�
   assert.equal(report.findings.find((entry) => entry.code === 'site-url-not-https').raised, true);
 });
 
+test('判定矩阵：边缘限速只做 info 提示，strict 不因它失败', () => {
+  const result = judge({ SITE_URL: 'https://res.example.edu', TRUST_PROXY: '1', TRUST_PROXY_SECRET: SECRET }, true);
+  const edge = finding(result, 'edge-rate-limit');
+  assert.ok(edge, '必须有一条说明边缘限速无法自动判定的提示');
+  assert.equal(edge.level, 'info', '不可自动判定的项必须是 info，否则 --strict 会永远失败');
+  assert.match(edge.message, /人工确认|无法自动/);
+  assert.doesNotMatch(edge.message, /已检测|已生效|检测到 Nginx/);
+  assert.equal(result.status, 'ok', '严格模式不该被这条提示拖成失败');
+});
+
 test('部署自检不声称能检测端口发布或容器网络', () => {
   const source = spawnSync(process.execPath, ['-e', 'process.stdout.write(require("node:fs").readFileSync("scripts/check-deployment.mjs","utf8"))'], {
     cwd: repo, encoding: 'utf8',

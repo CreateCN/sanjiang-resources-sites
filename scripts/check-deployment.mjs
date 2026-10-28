@@ -5,7 +5,7 @@
  *   node scripts/check-deployment.mjs            # 普通检查
  *   node scripts/check-deployment.mjs --strict   # 把"可运行但降级"的提示升级为错误
  *
- * 它回答三个问题：
+ * 它回答三个问题（另有一条 `info` 提示说明"边缘限速无法自动判定"）：
  * 1. `SITE_URL` 是否是一个可用于 Origin 校验与 Cookie 的绝对地址；
  * 2. `TRUST_PROXY=1` 时是否配置了可用于验证代理的共享凭据（`TRUST_PROXY_SECRET`，
  *    长度 ≥ 16）。缺失时应用 fail closed：所有请求按不可信身份处理，只吃站点级限流；
@@ -70,6 +70,14 @@ export function evaluateDeployment(env = process.env, options = {}) {
     report('warn', 'proxy-header-check',
       '请确认反向代理没有注入 X-Forwarded-For：该头存在时应用无法确认对端，会一律按不可信身份处理');
   }
+
+  // 边缘限速无法由应用进程判定：只做提示，**不声称**已检测到 Nginx/CDN 的 limit_req。
+  // 用 info 而不是 warn——`--strict` 会把 warn 升级成 error，一条不可自动判定的项
+  // 会让严格模式永远失败，把真正的降级信号淹掉。
+  report('info', 'edge-rate-limit',
+    '边缘按真实 IP 的限速无法自动检查：本脚本不检测 Nginx/CDN 的 limit_req/limit_conn，'
+    + '也不代表它们已经配置。请人工确认 /api/login/、/api/login/totp/、/api/login/enroll/ '
+    + '三个认证端点共用同一条按还原后 $remote_addr 的限速，并按 docs/edge-cdn-hardening.md §3b 实测验收');
 
   const errors = findings.filter((finding) => finding.level === 'error');
   return { event: 'deployment-check', status: errors.length > 0 ? 'error' : 'ok', strict, findings };

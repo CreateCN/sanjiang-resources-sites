@@ -109,13 +109,26 @@ try {
   assert.equal(hits.length, 1);
   record('ssrf-ipv4-mapped-loopback', { input: url, normalized, checked, hits });
   record('unbounded-anonymous-event-body', await oversized('/api/event/', undefined, 'application/json', '{"padding":"', 2 * 1024 * 1024, '"}'));
-  record('unbounded-editor-import-body-before-csrf', await oversized('/api/import/preview/', e.cookie, 'application/x-www-form-urlencoded', 'payload=', 4 * 1024 * 1024));
+  // 导入预检现在先授权再读体（SJ-A-03），因此不再用"发 4 MiB 体"来探测它：
+  // 编辑者会在读取请求体之前就拿到 403，发送大体积只会把探测卡在背压上。
+  const deniedImport = await post('/api/import/preview/', { csrf: e.csrf, payload: '{}' }, { cookie: e.cookie });
+  assert.equal(deniedImport.status, 403);
+  record('editor-import-preview-denied', { status: deniedImport.status });
+  // 账号失败桶的契约（2026-10-25 SJ-A-01）：
+  // - 成功的登录从不消耗额度，所以这里必须正好发 10 次失败才把它打满（旧脚本写 9 次，
+  //   注释还错误地假定先前那次成功登录占了 1 个额度）；
+  // - 打满后拒绝的是该账号的**失败尝试**，正确口令仍然必须能登录。
   const attempts = [];
-  // Initial successful admin login already consumed one of the ten user slots.
-  for (let i = 0; i < 9; i++) attempts.push((await post('/api/login/', { username: admin.username, password: 'wrong' }, { forwarded: '198.51.100.10' })).status);
-  const blocked = await post('/api/login/', { username: admin.username, password });
-  assert.equal(blocked.status, 429);
-  record('targeted-account-lockout', { attackerBucket: 'forwarded-peer', victimBucket: 'socket-peer', wrongPasswordAttempts: attempts, correctPasswordStatus: blocked.status });
+  for (let i = 0; i < 10; i++) attempts.push((await post('/api/login/', { username: admin.username, password: 'wrong' }, { forwarded: '198.51.100.10' })).status);
+  const stillFailing = await post('/api/login/', { username: admin.username, password: 'wrong' }, { forwarded: '198.51.100.10' });
+  assert.equal(stillFailing.status, 429);
+  const legit = await post('/api/login/', { username: admin.username, password });
+  assert.equal(legit.status, 303);
+  record('account-failure-budget', {
+    wrongPasswordAttempts: attempts,
+    failureAfterExhaustion: stillFailing.status,
+    correctPasswordStatus: legit.status,
+  });
 } finally {
   // Restore test-account access; never clear limits belonging to other users.
   const { hashToken } = await import('../src/server/security.ts');

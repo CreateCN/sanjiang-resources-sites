@@ -251,19 +251,33 @@ function requireEncryptionKeyOrFail(): Buffer {
 /**
  * 第一步：口令 → 直接会话（未启用且策略不要求）或挑战。
  * 口令通过但还需第二步时不清 `login-user` 失败计数：知道口令的人不该能刷掉失败预算。
+ *
+ * **账号桶不拦截正确口令**（SECURITY-SPEC §4.2、本地审查 SJ-A-01）：
+ * `login-user` 按用户名聚合，任何未认证的第三方都能用 10 个错误口令填满它。若在
+ * 口令校验之前用它做准入，合法维护者拿着正确口令也会被拒 → 一个匿名来源就能锁死
+ * 某个账号的登录。因此：
+ * - 客户端层与站点层仍在昂贵 KDF **之前**准入（这两层由连接身份决定，第三方填不满）；
+ * - 账号桶只在**失败之后**结算，它的作用是拒绝该账号的**失败尝试**（第 11 次起 429），
+ *   而不是禁止该账号登录。
+ * 取舍已写入 §4.2：账号桶不再限制实际 KDF 次数，资源保护由客户端层与站点层承担。
  */
 export function login(username: string, password: string, client: ClientIdentity): LoginOutcome {
   const policy = requireValidPolicy();
   const name = username.trim().toLowerCase();
-  // 失败预算分三层：客户端（可信身份）或站点（不可信身份）、账号，以及站点熔断。
+  // 失败预算分三层：客户端（可信身份）或站点（不可信身份）、站点熔断、账号。
+  const clientRules = clientLimitRules(client, LOGIN_CLIENT_BUDGET, LOGIN_SITE_BUDGET);
   const userRule = { scope: 'login-user', identity: name, maximum: LOGIN_USER_MAX_FAILURES, windowMs: LOGIN_WINDOW_MS };
-  const rules = [...clientLimitRules(client, LOGIN_CLIENT_BUDGET, LOGIN_SITE_BUDGET), userRule];
-  enforceLimits(rules);
+  enforceLimits(clientRules);
 
   const row = database().prepare('SELECT id,username,role,active,auth_version,password_hash,totp_secret,totp_confirmed_at FROM users WHERE username=?').get(name);
   const valid = verifyPassword(password, row ? String(row.password_hash) : undefined);
   if (!valid || !row || !row.active) {
-    consumeLimits(rules);
+    // 只有失败才计数；错口令 / 未知用户 / 停用账户走同一段逻辑，响应完全一致。
+    // 用 consumeLimit() 的返回值判断"这一次是否超出额度"：checkLimit() 是准入语义
+    // （count == maximum 即视为已耗尽），在"刚刚记下第 10 次失败"之后会误判为超限。
+    consumeLimits(clientRules);
+    const account = consumeLimit(userRule);
+    if (!account.allowed) fail(429, '请求过于频繁，请稍后重试', account.retryAfterMs);
     fail(401, INVALID_CREDENTIALS);
   }
 
@@ -310,15 +324,25 @@ export function issueEnrollChallenge(userId: number, client: ClientIdentity): st
   return issueChallenge({ userId, authVersion: row.auth_version, purpose: 'enroll', client, pendingSecret });
 }
 
-/** 失败结算：预算与尝试次数各走独立短事务，绝不随后续业务事务回滚。 */
-function settleChallengeFailure(tokenHash: string | null, client: ClientIdentity, account: LimitRule): never {
-  // 不可信身份没有"每客户端"桶：此时只结算账号预算，不给攻击者一个可共享的小额度。
-  let clientRetryAfter = 0;
-  for (const rule of clientLimitRules(client, TOTP_CLIENT_BUDGET, null)) {
+/**
+ * 失败结算：预算与尝试次数各走独立短事务，绝不随后续业务事务回滚。
+ *
+ * 归属规则（SECURITY-SPEC §4.2 / §6.2.7）：
+ * - `tokenHash` 只在"这次失败确实属于某个真实账号"时传入（挑战存在、未消费、
+ *   未过期、用途正确、客户端绑定通过）。垃圾 token 与绑定不符的请求不能推进
+ *   别人的挑战尝试次数；
+ * - `account` 为 null 表示这次失败无法归属到账号：只结算可信客户端桶与站点熔断。
+ *   绝不使用 `unknown` 之类的字符串占位身份——那是合法用户名，会与真实账户共用同一个桶。
+ */
+function settleChallengeFailure(tokenHash: string | null, client: ClientIdentity, account: LimitRule | null): never {
+  // 站点熔断参与每一次认证失败结算（§4.2）：不可信身份因此仍然有站点级保护。
+  const rules: LimitRule[] = [...clientLimitRules(client, TOTP_CLIENT_BUDGET, LOGIN_SITE_BUDGET)];
+  if (account) rules.push(account);
+  let retryAfterMs = 0;
+  for (const rule of rules) {
     const state = consumeLimit(rule);
-    if (!state.allowed) clientRetryAfter = Math.max(clientRetryAfter, state.retryAfterMs);
+    if (!state.allowed) retryAfterMs = Math.max(retryAfterMs, state.retryAfterMs);
   }
-  const accountState = consumeLimit(account);
   if (tokenHash) {
     transaction((db) => {
       const row = db.prepare('SELECT attempts FROM login_challenges WHERE token_hash=?').get(tokenHash);
@@ -331,18 +355,26 @@ function settleChallengeFailure(tokenHash: string | null, client: ClientIdentity
       }
     });
   }
-  if (clientRetryAfter > 0 || !accountState.allowed) {
-    fail(429, '尝试次数过多，请稍后重试', Math.max(clientRetryAfter, accountState.retryAfterMs));
+  if (retryAfterMs > 0) {
+    fail(429, '尝试次数过多，请稍后重试', retryAfterMs);
   }
   fail(401, INVALID_CHALLENGE);
 }
 
+/**
+ * 挑战是否"可用且属于这个客户端"。用途、绑定、消费状态、有效期、尝试次数全都要过；
+ * 只有通过之后，才允许把这次失败记到该账号头上或推进它的尝试次数。
+ */
+function challengeUsable(challenge: ChallengeRow, client: ClientIdentity, purpose: 'login' | 'enroll', now: number): boolean {
+  return challenge.consumed_at === null
+    && challenge.expires_at > now
+    && challenge.attempts < CHALLENGE_MAX_ATTEMPTS
+    && challenge.purpose === purpose
+    && challenge.client_hash === clientHashFor(client);
+}
+
 function assertChallengeUsable(challenge: ChallengeRow, client: ClientIdentity, purpose: 'login' | 'enroll', now: number): void {
-  if (challenge.consumed_at !== null) fail(401, INVALID_CHALLENGE);
-  if (challenge.expires_at <= now) fail(401, INVALID_CHALLENGE);
-  if (challenge.attempts >= CHALLENGE_MAX_ATTEMPTS) fail(401, INVALID_CHALLENGE);
-  if (challenge.purpose !== purpose) fail(401, INVALID_CHALLENGE);
-  if (challenge.client_hash !== clientHashFor(client)) fail(401, INVALID_CHALLENGE);
+  if (!challengeUsable(challenge, client, purpose, now)) fail(401, INVALID_CHALLENGE);
 }
 
 export interface VerifiedLogin { token: string; usedRecovery: boolean }
@@ -392,18 +424,26 @@ function commitVerifiedChallenge(input: {
 export function verifyLoginChallenge(challengeToken: string, rawCode: string, client: ClientIdentity): VerifiedLogin {
   requireValidPolicy();
   const now = Date.now();
+  // **准入先于归属与结算**：客户端层与站点层必须在任何失败结算之前检查。
+  // 否则一个已经耗尽 30 次可信客户端预算的来源，仍能靠随后的垃圾请求继续把
+  // `login-site` 推到熔断——那样"每客户端 30 次"就没能保护全站桶（SJ-A-04 复核 P2）。
+  // 这里只读检查、不消费；结算仍然只在真正的失败分支发生一次。
+  enforceLimits(clientLimitRules(client, TOTP_CLIENT_BUDGET, LOGIN_SITE_BUDGET));
   const challenge = challengeRow(challengeToken);
-  const unknownAccount = { scope: 'totp-user', identity: 'unknown', maximum: TOTP_USER_MAX_FAILURES, windowMs: TOTP_WINDOW_MS };
-  if (!challenge) settleChallengeFailure(null, client, unknownAccount);
-  assertChallengeUsable(challenge!, client, 'login', now);
+  // 垃圾/未知 token：无法归属账号 → 只结算可信客户端桶与站点熔断，不写任何账号桶。
+  if (!challenge) settleChallengeFailure(null, client, null);
+
+  // 已知 token 也必须先确认"这次请求确实属于该账号 + 该客户端 + 该用途"，
+  // 才允许把失败记到账号头上或推进它的尝试次数。否则外部请求可以用别人的
+  // token 反复扣别人的额度、烧别人的尝试机会。
+  if (!challengeUsable(challenge!, client, 'login', now)) settleChallengeFailure(null, client, null);
 
   const account = readAccount(challenge!.user_id);
+  // 账号状态已变（停用 / 改密 / 因子被重置）：token 已不可用。这与"猜错"无关，
+  // 所以只结算客户端与站点层，不动账号桶。
   if (!account || !account.active || account.auth_version !== challenge!.auth_version || totpAccountState(account) !== 'enabled') {
-    settleChallengeFailure(challenge!.token_hash, client, unknownAccount);
+    settleChallengeFailure(null, client, null);
   }
-
-  const input = classifyOtpInput(rawCode);
-  if (!input) settleChallengeFailure(challenge!.token_hash, client, unknownAccount);
 
   // 账号失败预算按输入形状分桶：恢复码失败不得消耗 TOTP 的账号预算，反之亦然。
   // 规则必须是具名常量，**不能**用 clientLimitRules() 返回数组的下标来取：
@@ -411,10 +451,14 @@ export function verifyLoginChallenge(challengeToken: string, rawCode: string, cl
   // （2026-10-25 终审 P1：错误恢复码因此抛 TypeError、HTTP 500、预算与尝试次数都不增加）。
   const totpAccountRule: LimitRule = { scope: 'totp-user', identity: account!.username, maximum: TOTP_USER_MAX_FAILURES, windowMs: TOTP_WINDOW_MS };
   const recoveryAccountRule: LimitRule = { scope: 'totp-recovery-user', identity: account!.username, maximum: RECOVERY_USER_MAX_FAILURES, windowMs: RECOVERY_WINDOW_MS };
-  const rules: LimitRule[] = [totpAccountRule, ...clientLimitRules(client, TOTP_CLIENT_BUDGET, null)];
-  if (input!.kind === 'recovery') rules.push(recoveryAccountRule);
-  enforceLimits(rules);
-  const accountRule = input!.kind === 'recovery' ? recoveryAccountRule : totpAccountRule;
+
+  const input = classifyOtpInput(rawCode);
+  // **先选定账号规则并准入，再结算**——畸形输入也一样。畸形证明同样是一次"猜"，
+  // 但它必须先被账号预算准入：否则账号桶已经打满（10）时，一次畸形提交仍会把
+  // 计数推到 11、并额外烧掉一次挑战尝试（2026-10-25 复核 P3 的顺序契约偏差）。
+  const accountRule = input?.kind === 'recovery' ? recoveryAccountRule : totpAccountRule;
+  enforceLimits([accountRule]);
+  if (!input) settleChallengeFailure(challenge!.token_hash, client, totpAccountRule);
 
   const key = requireEncryptionKeyOrFail();
   const sealed = String(account!.totp_secret ?? '');
@@ -429,6 +473,7 @@ export function verifyLoginChallenge(challengeToken: string, rawCode: string, cl
     const matched = verifyTotp(secret!, input!.code, currentStep(now));
     if (matched === null || !isFreshStep(account!.totp_last_step, matched)) settleChallengeFailure(challenge!.token_hash, client, accountRule);
     const token = commitVerifiedChallenge({ challenge: challenge!, account: account!, sealed, kind: 'totp', step: matched!, client });
+    // 成功不计失败预算、不清客户端/站点累计，只清本次登录与本次因子的账号桶。
     resetLimit('login-user', account!.username);
     resetLimit('totp-user', account!.username);
     return { token, usedRecovery: false };
@@ -439,7 +484,7 @@ export function verifyLoginChallenge(challengeToken: string, rawCode: string, cl
   if (!usable) settleChallengeFailure(challenge!.token_hash, client, accountRule);
   const token = commitVerifiedChallenge({ challenge: challenge!, account: account!, sealed, kind: 'recovery', recoveryHash: codeHash, client });
   resetLimit('login-user', account!.username);
-  resetLimit('totp-user', account!.username);
+  // 只清恢复码桶：TOTP 的账号失败桶属于另一个因子，成功用一个因子不得抹掉另一个的累计。
   resetLimit('totp-recovery-user', account!.username);
   return { token, usedRecovery: true };
 }
@@ -504,24 +549,24 @@ export interface EnrollResult { token: string; recoveryCodes: string[] }
 export function confirmEnrollment(challengeToken: string, rawCode: string, client: ClientIdentity): EnrollResult {
   requireValidPolicy();
   const now = Date.now();
+  // 与 verifyLoginChallenge 同一套顺序：客户端与站点层准入 → 归属判定 → 结算。
+  enforceLimits(clientLimitRules(client, TOTP_CLIENT_BUDGET, LOGIN_SITE_BUDGET));
   const challenge = challengeRow(challengeToken);
-  const unknownAccount = { scope: 'totp-user', identity: 'unknown', maximum: TOTP_USER_MAX_FAILURES, windowMs: TOTP_WINDOW_MS };
-  if (!challenge) settleChallengeFailure(null, client, unknownAccount);
-  assertChallengeUsable(challenge!, client, 'enroll', now);
+  // 垃圾 token / 绑定不符 / 状态已变都不记账到账号，只看可信客户端桶与站点熔断。
+  if (!challenge) settleChallengeFailure(null, client, null);
+  if (!challengeUsable(challenge!, client, 'enroll', now)) settleChallengeFailure(null, client, null);
 
   const account = readAccount(challenge!.user_id);
   if (!account || !account.active || account.auth_version !== challenge!.auth_version || totpAccountState(account) !== 'disabled') {
-    settleChallengeFailure(challenge!.token_hash, client, unknownAccount);
+    settleChallengeFailure(null, client, null);
   }
 
+  const totpAccountRule: LimitRule = { scope: 'totp-user', identity: account!.username, maximum: TOTP_USER_MAX_FAILURES, windowMs: TOTP_WINDOW_MS };
+  // 与登录第二步同一顺序：先准入，再结算（畸形输入同样先准入）。
+  enforceLimits([totpAccountRule]);
   const input = classifyOtpInput(rawCode);
   // 注册确认不接受恢复码：本次绑定尚未生成恢复码。
-  if (!input || input.kind !== 'totp') settleChallengeFailure(challenge!.token_hash, client, unknownAccount);
-
-  enforceLimits([
-    { scope: 'totp-user', identity: account!.username, maximum: TOTP_USER_MAX_FAILURES, windowMs: TOTP_WINDOW_MS },
-    ...clientLimitRules(client, TOTP_CLIENT_BUDGET, null),
-  ]);
+  if (!input || input.kind !== 'totp') settleChallengeFailure(challenge!.token_hash, client, totpAccountRule);
 
   const key = requireEncryptionKeyOrFail();
   const pendingSealed = String(challenge!.pending_secret ?? '');
@@ -533,7 +578,7 @@ export function confirmEnrollment(challengeToken: string, rawCode: string, clien
   }
   const matched = verifyTotp(secret!, input!.code, currentStep(now));
   if (matched === null || !isFreshStep(account!.totp_last_step, matched)) {
-    settleChallengeFailure(challenge!.token_hash, client, { scope: 'totp-user', identity: account!.username, maximum: TOTP_USER_MAX_FAILURES, windowMs: TOTP_WINDOW_MS });
+    settleChallengeFailure(challenge!.token_hash, client, totpAccountRule);
   }
 
   const codes = createRecoveryCodes();

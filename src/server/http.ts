@@ -1,6 +1,6 @@
 import { randomToken, HttpError, fail, rateLimit, rateLimitClient, requireOrigin, clientIdentity, type ClientBudget, type ClientIdentity } from './security.ts';
 import { challengeCookie, challengeTokenFrom, confirmEnrollment, getSession, login, logout, requireCsrf, sessionCookie, verifyLoginChallenge } from './auth.ts';
-import { disableTotp, regenerateRecoveryCodes, resetTotpByAdmin, verifyFreshPassword } from './account.ts';
+import { disableTotp, regenerateRecoveryCodes, requireFreshPassword, resetTotpByAdmin, withProofBudget } from './account.ts';
 import { changeGuidePublication, changePublication, createReport, createUser, deleteCategory, discontinueResource, findManagedResource, isMetricTargetAllowed, pingDatabase, purgeTrashGuide, purgeTrashResource, reactivateResource, recordEvent, restoreGuideRevision, restoreResourceRevision, restoreTrashGuide, restoreTrashResource, saveCategory, saveGuide, saveLinkCheck, saveResource, updateReport, updateUser } from './store.ts';
 import { checkResourceLink } from './linkcheck.ts';
 import { issueEnrollChallenge } from './auth.ts';
@@ -86,7 +86,16 @@ function jsonResponse(payload: unknown, status = 200): Response {
 }
 
 function escape(value: string): string { return value.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!); }
-function errorResponse(request: Request, error: unknown, draft?: string): Response {
+/**
+ * 异常 → (状态码, 面向用户的文案, 响应头) 的**唯一实现**（SECURITY-SPEC §9.3、§10.1）。
+ *
+ * 为什么单独暴露：HTML 错误页与 JSON 错误体只是两种渲染方式，不能各自实现一套
+ * 状态转换、`Retry-After` 计算和"非 `HttpError` 只记名字"的日志规则——那正是
+ * 2026-10-25 SJ-A-03 复核查到的重复实现（`/api/import/preview/` 曾自己写了一份）。
+ */
+export interface ErrorShape { status: number; message: string; headers: Headers }
+
+export function errorShape(error: unknown): ErrorShape {
   const status = error instanceof HttpError ? error.status : 500;
   const message = error instanceof HttpError ? error.message : '服务暂时不可用，请稍后重试';
   if (!(error instanceof HttpError)) console.error('API operation failed:', error instanceof Error ? error.name : 'UnknownError');
@@ -95,6 +104,11 @@ function errorResponse(request: Request, error: unknown, draft?: string): Respon
     const retryAfterMs = error instanceof HttpError ? error.retryAfterMs : undefined;
     headers.set('Retry-After', String(Math.max(1, Math.ceil((retryAfterMs ?? 60_000) / 1000))));
   }
+  return { status, message, headers };
+}
+
+function errorResponse(request: Request, error: unknown, draft?: string): Response {
+  const { status, message, headers } = errorShape(error);
   if (request.headers.get('accept')?.includes('application/json')) {
     headers.set('Content-Type', 'application/json; charset=utf-8');
     return new Response(JSON.stringify({ error: message, ...(draft ? { draft } : {}) }), { status, headers });
@@ -117,6 +131,9 @@ function identity(context: Context): ClientIdentity {
 /** 匿名反馈：每客户端 5 次/小时；不可信身份只吃站点预算。 */
 export const REPORTS_CLIENT_BUDGET: ClientBudget = { scope: 'reports-client', maximum: 5, windowMs: 60 * 60 * 1000 };
 export const REPORTS_SITE_BUDGET: ClientBudget = { scope: 'reports-site', maximum: 500, windowMs: 60 * 60 * 1000 };
+/** 导入预检：昂贵（5 MiB 体 + zod 校验），按操作者 10 次/小时。 */
+export const IMPORT_PREVIEW_USER_MAX = 10;
+export const IMPORT_PREVIEW_WINDOW_MS = 60 * 60 * 1000;
 /** 事件统计：每客户端 600 次/小时；站点层 20000 次/小时。 */
 export const EVENT_CLIENT_BUDGET: ClientBudget = { scope: 'event-client', maximum: 600, windowMs: 60 * 60 * 1000 };
 export const EVENT_SITE_BUDGET: ClientBudget = { scope: 'event-site', maximum: 20000, windowMs: 60 * 60 * 1000 };
@@ -385,23 +402,33 @@ export async function managePost(context: Context): Promise<Response> {
         purgeMedia(session.user, text(form, 'id'), versionNumber(form));
         return redirect('/admin/media/');
       case 'begin-totp-enroll': {
-        if (!verifyFreshPassword(session.user, text(form, 'password'))) fail(403, '当前口令不正确');
-        const token = issueEnrollChallenge(session.user.id, identity(context));
+        // 只校验口令的流程：成功后**不清** proof-user，否则会抹平其他敏感动作
+        // 已经累计的因子失败（§4.2）。
+        const token = withProofBudget(session.user.username, identity(context), { clearsOnSuccess: false }, () => {
+          requireFreshPassword(session.user, text(form, 'password'));
+          return issueEnrollChallenge(session.user.id, identity(context));
+        });
         return redirect('/admin/login/enroll/', challengeCookie(token));
       }
       case 'disable-totp': {
-        disableTotp(session.user, text(form, 'password'), text(form, 'code'));
+        withProofBudget(session.user.username, identity(context), { clearsOnSuccess: true }, () => {
+          disableTotp(session.user, text(form, 'password'), text(form, 'code'));
+        });
         return redirect('/admin/login/', [sessionCookie('', true, secureCookie(context.request)), challengeCookie()]);
       }
       case 'regenerate-recovery': {
-        const result = regenerateRecoveryCodes(session.user, text(form, 'password'), text(form, 'code'));
+        const result = withProofBudget(session.user.username, identity(context), { clearsOnSuccess: true }, () =>
+          regenerateRecoveryCodes(session.user, text(form, 'password'), text(form, 'code')));
         const headers = new Headers({ ...privateHeaders, 'Content-Type': 'text/html; charset=utf-8' });
         headers.set('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
         headers.append('Set-Cookie', sessionCookie(result.token, false, secureCookie(context.request)));
         return new Response(recoveryCodesPage(result.codes), { status: 200, headers });
       }
       case 'reset-totp': {
-        resetTotpByAdmin(session.user, numberField(form, 'id'), versionNumber(form), text(form, 'password'), text(form, 'code'), text(form, 'reason'));
+        // 证明预算记**操作者**：换目标不能换额度（§4.2）。
+        withProofBudget(session.user.username, identity(context), { clearsOnSuccess: true }, () => {
+          resetTotpByAdmin(session.user, numberField(form, 'id'), versionNumber(form), text(form, 'password'), text(form, 'code'), text(form, 'reason'));
+        });
         return redirect('/admin/users/');
       }
       case 'restore-trash-resource': restoreTrashResource(session.user, text(form, 'id')); return redirect('/admin/trash/');

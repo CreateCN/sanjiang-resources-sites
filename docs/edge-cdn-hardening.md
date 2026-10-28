@@ -169,6 +169,144 @@ server {
 
 ---
 
+## 3b. 认证端点的专用边缘限速（2026-10-25 鉴权审查后补）
+
+### 3b.1 为什么这三个端点必须单独一条 zone
+
+应用层的 `login-site` 是**总量**熔断（500 次失败 / 5 分钟），不是单来源速率限制。2026-10-25 的鉴权审查实测：
+
+| 情形 | 实测结果 |
+|---|---|
+| 同一**可信**来源连续提交垃圾挑战 token | 前 30 次 401，之后 429；`totp-client` 与 `login-site` 都停在 30——被客户端层挡住 |
+| 同一**不可信**来源（`TRUST_PROXY=1` 但没带共享凭据 → `unverified`） | 500 次全部 401，`login-site = 500`，**随后另一来源用正确口令也 429 / `Retry-After: 300`** |
+
+第二行就是必须补边缘限速的原因：`unverified` 请求没有客户端桶，每次只记 1 次站点计数，
+单来源在一个窗口内就能把全站熔断打满。应用层按设计**不**给不可信身份建共享小桶
+（那会让 30 个匿名请求关掉所有人的入口，见 SECURITY-SPEC §2.1），所以"单来源速率"
+只能由边缘补齐。
+
+三个端点**必须共用同一条 zone**，否则轮换端点就能把这层绕开：
+
+- `POST /api/login/`（口令）
+- `POST /api/login/totp/`（TOTP / 恢复码）
+- `POST /api/login/enroll/`（注册确认）
+
+### 3b.2 配置
+
+```nginx
+# http {}
+# 认证端点专用：比通用 api 更紧，且三个端点共用一个 zone
+limit_req_zone $binary_remote_addr zone=auth:10m rate=1r/s;
+limit_req_status 429;
+log_format auth_edge '$remote_addr "$request" $status limit_req=$limit_req_status';
+
+# server {}
+# 前缀必须比 §3 的 `location ^~ /api/` **更长**，并保留 `^~`。
+location ^~ /api/login/ {
+    limit_req  zone=auth burst=5 nodelay;
+    limit_conn conn 5;
+    access_log /var/log/nginx/auth_edge.log auth_edge;
+    proxy_pass http://127.0.0.1:4321;
+    proxy_set_header X-Forwarded-For       $remote_addr;   # 覆盖，不追加
+    proxy_set_header X-Real-IP             $remote_addr;   # 覆盖，不追加
+    proxy_set_header X-Sanjiang-Proxy-Secret "<与 TRUST_PROXY_SECRET 相同的值>";
+}
+```
+
+**为什么不能写成 `location ~ ^/api/login/...`（第一版就是这么写错的）**：
+§3 里有 `location ^~ /api/`。Nginx 的匹配顺序是"先找最长前缀，若该前缀带 `^~` 就**跳过全部正则 location**"。
+`/api/login/totp/` 同时匹配 `^~ /api/` 与那个正则，但 `^~` 命中后正则根本不会被求值——
+于是认证 zone、专用日志与共享凭据头**一个都不生效**，请求照常走 §3 的通用 `api` zone
+（而且不带 `X-Sanjiang-Proxy-Secret`，应用把所有请求当 `unverified`）。
+调换书写顺序没用：`^~` 的优先级来自匹配规则，不来自配置文件里的位置。
+
+`location ^~ /api/login/` 覆盖三个认证端点：
+
+| 请求 | 命中的 location | 说明 |
+|---|---|---|
+| `POST /api/login/` | `^~ /api/login/` | 前缀 `/api/login/` 比 `/api/` 长 |
+| `POST /api/login/totp/` | `^~ /api/login/` | 同上 |
+| `POST /api/login/enroll/` | `^~ /api/login/` | 同上 |
+
+其他要点：
+
+- 用 `^~` 而不是裸前缀：裸前缀虽然当前也会命中（§3 的正则不匹配 API 路径），但以后新增一条正则 location 就可能被抢走，`^~` 把这个不确定性直接去掉。
+- `$binary_remote_addr` 必须取**已还原**的地址（先 `set_real_ip_from` + `real_ip_header`，见 §1.1/§1.2）。不还原时所有请求共享几十个 CDN 节点 IP，等于给几个 IP 设了全站配额。
+- `X-Forwarded-For` 用 `$remote_addr` **覆盖**，不要用 `$proxy_add_x_forwarded_for`（后者追加，会变成多值，应用按 `unverified` 处理，访客额度整体失效）。
+- 共享凭据头名固定为 `X-Sanjiang-Proxy-Secret`，值必须与 `TRUST_PROXY_SECRET` 完全一致（≥16 字符）。缺了它会 fail closed：站点仍可访问，但所有请求退化为 `unverified`，按访客计的额度失效。
+- `burst=5` 是为了让一次登录（口令 + TOTP）不被误伤；不要设成几十——那等于放弃这层保护。
+
+### 3b.3 实测验收（必须人工执行）
+
+应用进程**看不到** Nginx 配置，`node scripts/check-deployment.mjs` 对边缘限速只输出一条 `info` 提示，**不代表它已经检测到限速**。
+
+> **两个已知的"假通过"陷阱，必须先避开：**
+> 1. **请求不带 `Origin`**（或与 `SITE_URL` 不一致）：应用在限流之前就 403，`rate_limits` 一条都不写。
+>    于是"站点计数远小于 500"必然成立——什么都证明不了。下面每条 curl 都带 `Origin`。
+> 2. **只看数据库计数**：身份可信时单来源本来就被应用层挡在 30（`totp-client` 上限），
+>    所以 `login-site ≤ 30` 在边缘规则完全没生效时也成立。**判据必须是边缘日志里的
+>    `limit_req=REJECTED`**，数据库计数只能用来确认"请求确实到达了处理器"。
+
+```bash
+SITE=https://res.example.edu
+ORIGIN=$SITE     # 必须与 SITE_URL 的 origin 完全一致，否则请求在限流前就 403
+FORM=(-H "Origin: $ORIGIN" -H 'Content-Type: application/x-www-form-urlencoded')
+DB=/srv/sanjiang/data/site.sqlite
+AUTHLOG=/var/log/nginx/auth_edge.log
+
+# 0) 规则是否真的挂在认证前缀上（先看这条，后面才有意义）
+nginx -T 2>/dev/null | grep -nE 'location (\^~ )?/api/'
+#   期望：看到 `location ^~ /api/login/`，且它内部有 limit_req zone=auth
+#   若只有 `location ^~ /api/`（或只有 `location ~ ^/api/login/...`），说明规则被屏蔽，回到 3b.2
+
+# 1) 三个端点共用一条 zone：各打 40 次，都必须出现 429
+for path in /api/login/ /api/login/totp/ /api/login/enroll/; do
+  echo "== $path"
+  for i in $(seq 1 40); do
+    curl -s -o /dev/null -w '%{http_code}\n' -X POST "$SITE$path" "${FORM[@]}" \
+      -d 'code=123456&username=x&password=y'
+  done | sort | uniq -c
+done
+#   期望：出现 429，且不是"40 个 403"（403 说明缺 Origin 或走到了错误的 location）
+
+# 2) 边缘规则确实命中（**核心判据**）
+before=$(grep -c 'limit_req=REJECTED' "$AUTHLOG" 2>/dev/null || echo 0)
+#   ... 重复执行第 1 条 ...
+after=$(grep -c 'limit_req=REJECTED' "$AUTHLOG" 2>/dev/null || echo 0)
+echo "edge rejected: $before -> $after"
+#   期望 after > before。两次相同 = 边缘规则没生效（日志为空则连 location 都没进）
+
+# 3) 应用侧身份仍按访客分桶
+sqlite3 "$DB" "SELECT key,count FROM rate_limits WHERE key LIKE 'login-client:%';"
+#   多个不同哈希 = 正常（每个访客一个桶）；只有一个 = real_ip 或 TRUST_PROXY 配错
+
+# 4) 共享凭据生效：不带凭据不建客户端桶，带凭据才建
+q="SELECT COUNT(*) FROM rate_limits WHERE key LIKE 'login-client:%';"
+a=$(sqlite3 "$DB" "$q")
+curl -s -o /dev/null -X POST http://127.0.0.1:4321/api/login/ "${FORM[@]}" -d 'username=x&password=y'
+b=$(sqlite3 "$DB" "$q")
+curl -s -o /dev/null -X POST http://127.0.0.1:4321/api/login/ "${FORM[@]}" \
+  -H 'X-Forwarded-For: 203.0.113.10' -H "X-Sanjiang-Proxy-Secret: $TRUST_PROXY_SECRET" -d 'username=x&password=y'
+c=$(sqlite3 "$DB" "$q")
+echo "client buckets: $a -> $b -> $c"
+#   期望 b = a（无凭据 → unverified → 不建客户端桶），c = b + 1（有凭据 → 建桶）
+
+# 5) 单来源不能把站点熔断打满（辅助判据，**不能单独用来证明边缘已生效**）
+for i in $(seq 1 600); do
+  curl -s -o /dev/null -X POST "$SITE/api/login/totp/" "${FORM[@]}" -d 'code=123456'
+done
+n=$(sqlite3 "$DB" "SELECT COALESCE(MAX(count),0) FROM rate_limits WHERE key LIKE 'login-site:%';")
+echo "login-site=$n"
+#   n = 0        → 请求根本没到处理器（缺 Origin / 走错 location），这条检查假通过
+#   n = 500      → 边缘没拦，站点熔断已被单来源打满
+#   0 < n < 500  → 正常，但**仍需第 2 条**才能确认是边缘拦的（身份可信时应用层也会挡在 30）
+```
+
+第 2 条是唯一能区分"边缘真的拦了"与"应用层顺手挡住了"的判据。第 5 条只用于发现
+"请求根本没到达"和"边缘完全缺失"，不能反过来当作边缘已生效的证明。
+
+---
+
 ## 4. 第二层：CDN 控制台的免费访问控制
 
 | 能力 | 建议 | 说明 |
