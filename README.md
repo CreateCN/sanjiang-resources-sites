@@ -19,8 +19,11 @@
 
 ## 文档
 
+完整分类索引见 [docs/README.md](docs/README.md)（按"我要做什么"查表）；下表是主要入口。
+
 | 文档 | 内容 |
 |---|---|
+| [文档索引](docs/README.md) | 全部文档的分类索引、与报告目录的边界、文档维护约定 |
 | [功能清单](docs/FEATURES.md) | 已实现 / 未实现功能、明确不做与重新评估条件 |
 | [配置与边界](docs/configuration.md) | 三层配置、环境变量、SITE_URL 与密钥边界 |
 | [初始化](docs/initialization.md) | Empty/Demo、CLI、异常库接管、导入/恢复的区别 |
@@ -128,7 +131,7 @@ docker compose -f compose.release.yml up -d
 | `TOTP_ENC_KEY` | 无 | 32 字节 base64url，加密 TOTP 密钥；缺失时双因素启用/验证 fail-closed |
 | `TOTP_REQUIRED_FOR` | `off` | `off`/`admin`/`admin,editor`；切换前必须先跑 `npm run totp:policy` |
 
-环境变量示例见 [.env.example](.env.example)。
+环境变量示例见 [.env.example](.env.example)；任务时间（`BACKUP_UTC_HOUR`、`LINK_CHECK_UTC_*`、`METRICS_CLEANUP_UTC_HOUR`）与 `COMMIT_SHA` 的用法见 [运维手册](docs/operations.md) 与 [发行与部署](docs/release.md)；优先级与密钥边界见 [配置与部署边界](docs/configuration.md)。
 
 ## 常用命令
 
@@ -154,6 +157,19 @@ docker compose -f compose.release.yml up -d
 | `npm run media:reconcile` | 媒体离线对账（默认 dry-run；`--yes` 执行，`--clear-guard` 确认写入者已停止） |
 | `npm run site:backup` | 站点级备份：DB + 全部媒体对象 + 哈希清单（离线一致性） |
 | `npm run site:restore -- --backup <批次目录> --yes` | 站点级恢复：暂存校验 → 迁移与认证净化 → 可回滚切换 |
+| `npm run images:build` | 生成 `public/images/optimized/` 的响应式 WebP（`dev/check/build/test` 前自动执行） |
+| `npm run metrics:clean` | 清理过期指标行（维护进程定时调用） |
+| `npm run test:server` | 只跑后端/内容单元与集成测试（`tests/server.test.mjs`） |
+| `npm run test:assets` | 素材矩阵：默认镜像缺席旧截图、兼容镜像含旧截图、旧引用降级为占位（需要 Docker） |
+| `npm run test:seed` | 写入浏览器测试用的显式夹具（`tests/fixtures/seed-site.mjs`） |
+| `npm run docs:check` | 文档链接、锚点与 `docs/` 索引覆盖检查（改文档后跑） |
+| `npm run dist:check` | 确认 `dist/` 与 `src/` 同批次（浏览器/实例测试的前置） |
+| `npm run deploy:check` | 部署自检：`SITE_URL`、代理凭据、Cookie 与 fail-closed 组合（`--strict` 把警告升为错误） |
+| `npm run release:check -- vX.Y.Z` | 生成并校验发行元数据（版本、source、revision、licenses） |
+| `npm run acceptance:proxy` | 用真实套接字验证代理凭据归属与"归属失败退化为站点级预算"（本地可重复） |
+| `npm run rehearsal:upgrade` | 升级回滚演练（见 [演练记录](docs/upgrade-rehearsal.md)） |
+
+脚本全量清单与实现见 `package.json` 与 `scripts/`；带 `pre*` 前缀的是自动钩子，不单独调用。
 
 浏览器测试默认使用 `/usr/bin/google-chrome`，可通过 `CHROME_PATH`、`TEST_BASE_URL` 覆盖。CI 在 Node 24 上执行 check → test → build、实例隔离、后台端到端、生产服务器冒烟与公开浏览器测试，并额外执行容器冒烟及默认/兼容素材验收。
 

@@ -50,6 +50,7 @@
     "release:check": "node scripts/release-check.mjs",
     "deploy:check": "node scripts/check-deployment.mjs",
     "dist:check": "node scripts/check-dist-freshness.mjs",
+    "docs:check": "node scripts/check-docs.mjs",
     "preacceptance:proxy": "node scripts/check-dist-freshness.mjs",
     "acceptance:proxy": "node scripts/proxy-acceptance.mjs",
     "rehearsal:upgrade": "bash scripts/upgrade-rehearsal.sh"

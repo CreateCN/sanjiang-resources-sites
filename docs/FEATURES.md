@@ -75,7 +75,7 @@
 | ◻ | 外部通知 | 邮件、企业微信/飞书 webhook 未实现；当前仅在后台公告板提示 | — |
 | ◻ | 多角色审批流 | 仅管理员/编辑者两角色；无逐级审核 | — |
 | ◻ | 邮件找回密码 | 忘记密码只能在服务器上再建管理员 | — |
-| ✅ | 双因素认证（TOTP，P0） | 服务端二维码（`qrcode`）+ 6 位验证确认后启用；挑战一次性（5 分钟、绑定用途/客户端/`auth_version`、5 次失败作废）；AES-256-GCM 加密密钥；10 个一次性恢复码；`off/admin/admin,editor` 强制策略需配套离线撤销命令；管理员重置、`totp:reset` CLI、旧库恢复净化 | `src/server/totp.ts`、`src/server/auth.ts`、`src/pages/admin/security.astro` |
+| ✅ | 双因素认证（TOTP，P0） | 服务端二维码（`qrcode`）+ 6 位验证确认后启用；挑战一次性（5 分钟、绑定用途/客户端/`auth_version`、5 次失败作废）；AES-256-GCM 加密密钥；10 个一次性恢复码；`off/admin/admin,editor` 强制策略需配套离线撤销命令；管理员重置、`totp:reset` CLI、旧库恢复净化；启用/停用/重生成/重置四个动作要求**新鲜证明**，并按操作者计 `proof-user` / `proof-client` 失败预算 | `src/server/totp.ts`、`src/server/auth.ts`、`src/server/account.ts`、`src/pages/admin/security.astro` |
 | ◻ | 公开投稿后台 | 推荐类内容走匿名反馈，人工整理；无投稿工作流 | — |
 
 ## 运维与质量
@@ -90,7 +90,7 @@
 | ✅ | 健康检查 | `/api/health/` 查 `SELECT 1`，只返回 `status` / `db`；迁移版本与运行时长在 `/api/health/detail/`，仅管理员会话可读 | `src/server/http.ts` |
 | ✅ | 结构化日志 | 每请求一行 JSON（request id、方法、路径、状态、耗时），不记查询串/IP/UA | `src/server/log.ts` |
 | ✅ | CI | Node 24：check → test → build → 生产服务器冒烟 | `.github/workflows/ci.yml` |
-| ✅ | 测试覆盖 | `npm test` 268 项（内容/后端/Markdown/链接检查/备份/恢复/WAL 回滚/迁移）、后台端到端 36 项、公开浏览器 10 项；CI 另跑实例隔离、容器冒烟与默认/兼容素材验收，浏览器测试依赖 Chromium | `tests/` |
+| ✅ | 测试覆盖 | `npm test`（内容/后端/Markdown/链接检查/备份/恢复/WAL 回滚/迁移/认证加固；用例数随文件增长，以运行输出为准）、后台端到端 36 项、公开浏览器 10 项；CI 另跑实例隔离、容器冒烟与默认/兼容素材验收，浏览器测试依赖 Chromium | `tests/` |
 | ✅ | 定时维护与状态页 | Compose 的 `maintenance` 容器（或宿主机 systemd timer/cron）按 UTC 配置执行数据库诊断备份、链接检查和指标清理；每 30 秒写心跳，`/admin/maintenance/` 只读展示进程状态、任务阶段、退出码、下次计划与异常链接，页面本身不启动任务；单任务超时 15 分钟，失败 15 分钟后重试，租约防止重复执行 | `scripts/maintenance.mjs`、`src/server/maintenance-status.ts`、`src/pages/admin/maintenance.astro` |
 | ◻ | 监控与告警 | 无 uptime 监控、错误聚合或告警通道 | — |
 | ◻ | 日志轮转与集中收集 | 日志写 stdout，轮转交给 Docker/宿主 | — |
@@ -104,7 +104,8 @@
 
 - scrypt 密码哈希；会话令牌只存哈希、8 小时有效；`HttpOnly` + `SameSite=Strict`，HTTPS 下加 `Secure`。
 - 写操作逐次校验角色、CSRF 与会话令牌、同源 Origin。
-- 限流按访客分层（需 `TRUST_PROXY=1` **且** `TRUST_PROXY_SECRET` 与反代的 `X-Sanjiang-Proxy-Secret` 一致，并由代理覆盖写入单值 `X-Forwarded-For`）：登录失败 10 次/账号/15 分钟、30 次/客户端/15 分钟；反馈 5 次/客户端/小时；指标 600 次/客户端/小时。成功登录不消耗额度，`Retry-After` 按真实剩余时间返回。
+- 限流按访客分层（需 `TRUST_PROXY=1` **且** `TRUST_PROXY_SECRET` 与反代的 `X-Sanjiang-Proxy-Secret` 一致，并由代理覆盖写入单值 `X-Forwarded-For`）：登录失败 10 次/账号/15 分钟、30 次/客户端/15 分钟；反馈 5 次/客户端/小时；指标 600 次/客户端/小时。成功登录不消耗额度，`Retry-After` 按真实剩余时间返回。账号桶只在**失败之后**结算，因此第三方刷满它不会挡住正确口令；口令校验的实际次数由客户端层与站点层限制。
+- 再认证与导入另有独立预算：敏感操作的新鲜证明 `proof-user` 5 次/15 分钟（按操作者）、`proof-client` 30 次/15 分钟（仅失败），导入预检 `import-user` 10 次/小时（按请求计）。预算在昂贵校验之前检查，失败在业务事务之外结算。
 - 无法验证来源的请求（凭据缺失/不匹配、转发头缺失/多值/非法、`TRUST_PROXY=0` 时带头）按**不可信身份**处理：只吃站点级预算（登录 500 次/5 分钟、反馈 500 次/小时、指标 20000 次/小时），不会创建按访客的桶，也不会因此把其他访客挡在外面。
 - 指标只接受已发布资源/指南作为目标，每事件每日最多 200 个不同目标；未知目标静默丢弃。
 - 链接检查：协议 http/https、端口 80/443、解析结果判私网、连接固定到已校验 IP、逐跳重校验、10 秒超时、每操作者 30 次/10 分钟。

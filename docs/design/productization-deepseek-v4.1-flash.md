@@ -70,7 +70,7 @@ node --version
 | 事实 | 代码入口 | 对实施的影响 |
 |---|---|---|
 | 数据库惰性打开，先迁移，再检查 `metadata.seeded` | [db.ts](../../src/server/db.ts) | build/check 不应初始化生产库 |
-| 未 seeded 时写入 12 条资源的草稿和公开快照 | [resources.ts](../../src/data/resources.ts) | Empty 必须替换默认初始化路径，不能只改页面 |
+| 未 seeded 时写入 12 条资源的草稿和公开快照 | [demo.ts](../../src/data/demo.ts)（原文写 `src/data/resources.ts`，已拆分） | Empty 必须替换默认初始化路径，不能只改页面 |
 | 当前迁移为 001–010 | [migrations.ts](../../src/server/migrations.ts) | 实施时重新确认末尾编号，追加迁移 |
 | 现有 settings 只含精选和场景，Schema 为 strict | [settings.ts](../../src/server/settings.ts) | 品牌单独用键，避免破坏旧首页配置 |
 | 资源公开读取多处直接 JSON.parse | [store.ts](../../src/server/store.ts) | scope 缺省适配不能只写 Zod default |

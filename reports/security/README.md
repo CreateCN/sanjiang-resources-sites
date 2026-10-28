@@ -14,13 +14,19 @@
 | [2026-10-25-fix/README.md](2026-10-25-fix/README.md) | 本地审查（SJ-01…SJ-12）的修复记录、前后对照与保留项分析 | 修复过程记录；SJ-01 方案已在终审中修正（见终审 N-01）|
 | [2026-10-25-final-review/README.md](2026-10-25-final-review/README.md) | 终审：独立代码复核、凭据模型修正（N-01）、发布顺序检查与验收结论 | **当前权威**：发布验收以本文为准 |
 | [2026-10-25-final-review/REMEDIATION-PLAN.md](2026-10-25-final-review/REMEDIATION-PLAN.md) / [REMEDIATION-RECORD.md](2026-10-25-final-review/REMEDIATION-RECORD.md) | 终审后 P1（恢复码失败不计数/500）与两项 P2（strict 自检、部署文档）的修复方案与复验记录 | 已实施；发布条件仍见终审 §11 |
+| [2026-10-25-auth-review/README.md](2026-10-25-auth-review/README.md) | 本地鉴权审查（SJ-A-01…A-08）：入口—角色—守卫—副作用矩阵、探针 P-A…P-L、规范偏差清单 | 结论有效；其中四个前提已在修复轮被更正，以 `FIX-PROMPT.md` 与 `FIX-RESULT.md` 为准 |
+| [2026-10-25-auth-review/FIX-PROMPT.md](2026-10-25-auth-review/FIX-PROMPT.md) / [FIX-RESULT.md](2026-10-25-auth-review/FIX-RESULT.md) | SJ-A-01…A-05 的修复约束、四轮复核意见与修复后证据（`probe-output-after-fix.log`） | **当前权威**：认证/再认证/导入预检的最终行为以本文为准 |
 | [TEARDOWN-2026-10-21.md](TEARDOWN-2026-10-21.md) | 早期测试环境撤回记录 | 仅存档 |
 
 ## 阅读顺序
 
 1. 需要了解"现在有什么保证"：读 [docs/SECURITY-SPEC.md](../../docs/SECURITY-SPEC.md)。
-2. 需要了解"修了什么、怎么验证的"：读 [ROOT-CAUSE-AND-FIX.md §13](2026-10-21-attacker/ROOT-CAUSE-AND-FIX.md)。
-3. 需要了解"当时怎么打的"：读 REPORT / BF-REPORT 及其 `evidence/`。
+2. 需要了解"认证与再认证现在到底怎么算"：读 [2026-10-25-auth-review/FIX-RESULT.md](2026-10-25-auth-review/FIX-RESULT.md)；
+   规范条款对应 SECURITY-SPEC v1.10 的 §4.2、§4.5、§5、§9.3。
+3. 需要了解"修了什么、怎么验证的"：读 [ROOT-CAUSE-AND-FIX.md §13](2026-10-21-attacker/ROOT-CAUSE-AND-FIX.md)
+   与 [2026-10-25-final-review/README.md](2026-10-25-final-review/README.md)。
+4. 需要了解"当时怎么打的"：读 REPORT / BF-REPORT 及其 `evidence/`。
+5. 按目录时间线读：blackbox → attacker → isolated-partial → fix → auth-review → final-review。
 
 ## 版本控制范围
 

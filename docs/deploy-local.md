@@ -1,7 +1,7 @@
 # 非 Docker 本地部署（systemd + Nginx）
 
 适用于没有 Docker、或希望直接在宿主机上跑生产构建的场景（单机 VPS、内网服务器、长期运行的开发机）。
-容器部署仍是推荐方式（见 [README](../README.md#docker)）；本文是等价的宿主机方案，行为与安全边界保持一致。
+容器部署仍是推荐方式（见 [README](../README.md#docker推荐)）；本文是等价的宿主机方案，行为与安全边界保持一致。
 
 > 关键差异只有两处：**进程由 systemd 托管**、**日志进 journald**。其余配置（`SITE_URL`、`TRUST_PROXY`、限流、备份、健康检查）与容器部署完全相同。
 

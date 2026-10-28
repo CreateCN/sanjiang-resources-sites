@@ -1,7 +1,7 @@
 # 2026-10-25 本地安全审查问题修复记录
 
 对象：`37ed44c74a723290f03b53bb2025617a9d00042c`（`master`）+ 本轮未提交的修复改动。
-输入：[/tmp/sanjiang-local-security-report.md](/tmp/sanjiang-local-security-report.md)（本地审查报告，未入库；本文只记录修复，不改写原文）。
+输入：`/tmp/sanjiang-local-security-report.md`（本地审查报告，**未入库、不可复现**，路径仅作来源说明；本文只记录修复，不改写原文）。
 
 结论先行：
 
